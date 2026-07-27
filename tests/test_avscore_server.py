@@ -325,6 +325,8 @@ class ProfileRunnerTests(unittest.TestCase):
             "analysis failed",
             "unknown flag: --format",
             "engine initialization failed",
+            "unknown flag: --engine-mode",
+            "unrecognized option --engineX",
         ):
             with self.subTest(stderr=stderr):
                 runner = RecordingRunner(
@@ -376,6 +378,15 @@ class ProfileParsingTests(unittest.TestCase):
         del payload["profile"]["steering"]
         with self.assertRaises(AvscoreError):
             parse_profile(__import__("json").dumps(payload))
+
+    def test_rejects_nonstandard_json_constants_outside_scores(self):
+        valid_profile = __import__("json").dumps(profile_payload())
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                raw = valid_profile[:-1] + f', "extra": {constant}' + "}"
+
+                with self.assertRaises(AvscoreError):
+                    parse_profile(raw)
 
     def test_build_report_model_has_stable_defaults_and_metadata(self):
         payload = {"profile": {key: {"score": 25} for key in DIMENSIONS}}

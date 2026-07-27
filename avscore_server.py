@@ -77,7 +77,7 @@ def _is_unknown_engine_option(stderr):
     return bool(
         re.search(
             r"(?:unknown|unrecognized)\s+(?:flag|option)(?::|\s)+"
-            r"(?:['\"])?--engine(?:['\"])?",
+            r"(?:['\"])?--engine(?![A-Za-z0-9_-])(?:['\"])?",
             stderr,
             re.IGNORECASE,
         )
@@ -88,7 +88,7 @@ def parse_profile(raw):
     """Parse and validate the seven core profile scores."""
 
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, parse_constant=_reject_json_constant)
     except (json.JSONDecodeError, TypeError, UnicodeDecodeError, ValueError):
         raise AvscoreError("agentsview 返回了无效的画像 JSON") from None
     if not isinstance(payload, dict):
@@ -108,6 +108,10 @@ def parse_profile(raw):
         ):
             raise AvscoreError("agentsview 返回了无效的画像分数")
     return payload
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"invalid JSON constant: {value}")
 
 
 def build_report_model(profile, project, project_session_count, degraded):
