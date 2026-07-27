@@ -90,6 +90,48 @@ test_detection_and_binary_priority() {
   rm -rf "$FIXTURE"
 }
 
+test_unsupported_platform_stops() {
+  new_fixture
+  write_agentsview
+  write_python
+  output=$(STUB_OS=Plan9 AVSCORE_NO_BROWSER=1 run_launcher env)
+  status=$?
+  arch_output=$(STUB_ARCH=sparc AVSCORE_NO_BROWSER=1 run_launcher env)
+  arch_status=$?
+  if [ "$status" -ne 0 ] &&
+     assert_contains "$output" "Unsupported OS" &&
+     [ "$arch_status" -ne 0 ] &&
+     assert_contains "$arch_output" "Unsupported architecture"; then
+    pass "rejects unsupported OS and architecture"
+  else
+    fail "rejects unsupported OS and architecture"
+  fi
+  rm -rf "$FIXTURE"
+}
+
+test_invalid_explicit_binary_never_downloads() {
+  new_fixture
+  write_python
+  cat > "$FIXTURE/bin/curl" <<'EOF'
+#!/bin/sh
+printf called > "$CURL_CALLED"
+exit 0
+EOF
+  chmod +x "$FIXTURE/bin/curl"
+  output=$(CURL_CALLED="$FIXTURE/curl-called" \
+    AVSCORE_BINARY_PATH="$FIXTURE/missing-agentsview" \
+    AVSCORE_NO_BROWSER=1 run_launcher env)
+  status=$?
+  if [ "$status" -ne 0 ] &&
+     assert_contains "$output" "AVSCORE_BINARY_PATH 指向的文件不存在" &&
+     [ ! -e "$FIXTURE/curl-called" ]; then
+    pass "does not download when explicit binary path is invalid"
+  else
+    fail "does not download when explicit binary path is invalid"
+  fi
+  rm -rf "$FIXTURE"
+}
+
 test_sync_failure_and_skip() {
   new_fixture
   write_agentsview
@@ -155,6 +197,7 @@ EOF
      assert_contains "$args" "$FIXTURE/agentsview custom" &&
      assert_contains "$args" "$FIXTURE/output dir" &&
      [ "$browser_url" = "http://127.0.0.1:43123/?token=a%20b" ] &&
+     assert_contains "$output" "无法自动打开浏览器，请手动访问" &&
      assert_contains "$output" "http://127.0.0.1:43123/?token=a%20b"; then
     pass "quotes server arguments and preserves URL when browser fails"
   else
@@ -190,11 +233,101 @@ test_signal_forwarding() {
   rm -rf "$FIXTURE"
 }
 
+run_install_case() {
+  checksum_mode=$1
+  (
+    export HOME="$FIXTURE/home"
+    export AVSCORE_SOURCE_ONLY=1
+    source "$ROOT_DIR/avscore.sh"
+    curl() {
+      output_path=""
+      url=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -o) output_path=$2; shift 2 ;;
+          -*) shift ;;
+          *) url=$1; shift ;;
+        esac
+      done
+      case "$url" in
+        */SHA256SUMS)
+          case "$CHECKSUM_MODE" in
+            missing) printf '%s  %s\n' goodhash another-file > "$output_path" ;;
+            mismatch) printf '%s  %s\n' wronghash agentsview-linux-amd64 > "$output_path" ;;
+            match) printf '%s  %s\n' goodhash agentsview-linux-amd64 > "$output_path" ;;
+          esac
+          ;;
+        *) printf 'new-binary' > "$output_path" ;;
+      esac
+    }
+    sha256_file() { printf '%s\n' goodhash; }
+    CHECKSUM_MODE=$checksum_mode
+    install_agentsview linux amd64 v1.2.3
+  )
+}
+
+test_download_checksum_safety_and_atomic_install() {
+  new_fixture
+  mkdir -p "$FIXTURE/home/.local/bin"
+  printf 'old-binary' > "$FIXTURE/home/.local/bin/agentsview"
+
+  missing=$(run_install_case missing 2>&1)
+  missing_status=$?
+  after_missing=$(cat "$FIXTURE/home/.local/bin/agentsview")
+  mismatch=$(run_install_case mismatch 2>&1)
+  mismatch_status=$?
+  after_mismatch=$(cat "$FIXTURE/home/.local/bin/agentsview")
+  success=$(run_install_case match 2>&1)
+  success_status=$?
+  after_success=$(cat "$FIXTURE/home/.local/bin/agentsview")
+  temp_count=$(find "$FIXTURE/home/.local/bin" -name '.agentsview.avscore.*' | wc -l | tr -d ' ')
+
+  if [ "$missing_status" -ne 0 ] &&
+     assert_contains "$missing" "SHA256SUMS 中未找到" &&
+     [ "$after_missing" = "old-binary" ] &&
+     [ "$mismatch_status" -ne 0 ] &&
+     assert_contains "$mismatch" "SHA256 校验失败" &&
+     [ "$after_mismatch" = "old-binary" ] &&
+     [ "$success_status" -eq 0 ] &&
+     assert_contains "$success" "SHA256 校验通过" &&
+     [ "$after_success" = "new-binary" ] &&
+     [ "$temp_count" -eq 0 ]; then
+    pass "verifies downloads before atomically replacing the binary"
+  else
+    fail "verifies downloads before atomically replacing the binary"
+  fi
+  rm -rf "$FIXTURE"
+}
+
+test_resolve_version_rejects_malformed_semver_redirect() {
+  (
+    AVSCORE_SOURCE_ONLY=1 source "$ROOT_DIR/avscore.sh"
+    VERSION=latest
+    curl() {
+      case "$*" in
+        *latest.json*) return 1 ;;
+        *) printf '%s' 'https://example.test/releases/tag/v1.2.3evil' ;;
+      esac
+    }
+    resolve_version
+  ) >/dev/null 2>&1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    pass "rejects malformed semver redirects"
+  else
+    fail "rejects malformed semver redirects"
+  fi
+}
+
 test_detection_and_binary_priority
+test_unsupported_platform_stops
+test_invalid_explicit_binary_never_downloads
 test_sync_failure_and_skip
 test_python_and_template_errors
 test_server_args_and_browser_failure
 test_signal_forwarding
+test_download_checksum_safety_and_atomic_install
+test_resolve_version_rejects_malformed_semver_redirect
 
 printf '1..%d\n' "$((PASS + FAIL))"
 [ "$FAIL" -eq 0 ]

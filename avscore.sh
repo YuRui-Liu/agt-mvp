@@ -111,12 +111,13 @@ resolve_version() {
     return 0
   fi
   final_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASE_BASE_URL/latest" 2>/dev/null || true)
-  case "$final_url" in
-    */releases/tag/v[0-9]*.[0-9]*.[0-9]*) printf '%s\n' "${final_url##*/releases/tag/}"; return 0 ;;
-  esac
+  if printf '%s\n' "$final_url" | grep -Eq '/releases/tag/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+    printf '%s\n' "${final_url##*/releases/tag/}"
+    return 0
+  fi
   json=$(curl -fsSL "$RELEASE_BASE_URL/latest.json" 2>/dev/null || true)
   ver=$(printf '%s\n' "$json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' | head -1)
-  if [ -n "$ver" ]; then
+  if printf '%s\n' "$ver" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
     printf 'v%s\n' "$ver"
     return 0
   fi
@@ -149,7 +150,7 @@ verify_download() {
   fi
   expected=$(awk -v f="$release_name" '{name=$2; sub(/^\*/, "", name); if (name==f) {print $1; exit}}' "$checksums")
   if [ -z "$expected" ]; then
-    error "SHA256SUMS 中未找到 $release_name，拒绝安装"
+    error "SHA256SUMS 中未找到 ${release_name}，拒绝安装"
     return 1
   fi
   actual=$(sha256_file "$downloaded") || return 1
@@ -197,9 +198,17 @@ install_agentsview() {
 
   mkdir -p "$install_dir"
   install_tmp="$install_dir/.agentsview.avscore.$$"
-  cp "$download" "$install_tmp"
+  if ! cp "$download" "$install_tmp"; then
+    rm -f "$install_tmp"
+    error "无法暂存 agentsview 二进制"
+    return 1
+  fi
   fix_binary "$install_tmp"
-  mv "$install_tmp" "$final_bin"
+  if ! mv "$install_tmp" "$final_bin"; then
+    rm -f "$install_tmp"
+    error "无法原子安装 agentsview 二进制"
+    return 1
+  fi
   if [ "$os" = darwin ]; then
     codesign -s - "$final_bin" 2>/dev/null || true
   fi
