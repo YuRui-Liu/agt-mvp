@@ -1,12 +1,21 @@
 import subprocess
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from avscore_server import (
+    AnalysisBusyError,
+    AnalysisCoordinator,
     AvscoreError,
     CommandRunner,
+    atomic_write,
+    build_report_model,
     load_sessions,
     normalize_sessions,
+    parse_profile,
+    run_profile,
     safe_error,
 )
 
@@ -19,6 +28,36 @@ class FakeRunner:
     def run(self, args):
         self.args = args
         return self.result
+
+
+DIMENSIONS = (
+    "steering",
+    "execution",
+    "engineering",
+    "planning",
+    "product",
+    "autonomy",
+    "adaptation",
+)
+
+
+def profile_payload(score=50):
+    return {
+        "generated_at": "2026-07-27T09:00:00Z",
+        "profile": {key: {"score": score} for key in DIMENSIONS},
+        "archetype": {"primary": "系统设计者", "confidence": 0.8},
+        "evolution": {"trend_prediction": "保持稳健", "key_shifts": []},
+    }
+
+
+class RecordingRunner:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls = []
+
+    def run(self, args):
+        self.calls.append(args)
+        return next(self.results)
 
 
 class SessionNormalizationTests(unittest.TestCase):
@@ -226,6 +265,205 @@ class SafeErrorTests(unittest.TestCase):
 
         self.assertEqual(error, "session list failed")
         self.assertNotIn("secret", error)
+
+
+class ProfileRunnerTests(unittest.TestCase):
+    def result(self, returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+    def test_project_is_passed_as_one_literal_argument(self):
+        project = "repo; touch /tmp/not-run $(whoami)"
+        runner = RecordingRunner(
+            [self.result(stdout=__import__("json").dumps(profile_payload()))]
+        )
+
+        profile, degraded = run_profile(runner, project)
+
+        self.assertEqual(
+            runner.calls,
+            [
+                [
+                    "profile",
+                    "--json",
+                    "--engine",
+                    "statistical",
+                    "--project",
+                    project,
+                ]
+            ],
+        )
+        self.assertFalse(degraded)
+        self.assertEqual(profile["profile"]["steering"]["score"], 50)
+
+    def test_falls_back_only_when_engine_option_is_unknown(self):
+        for stderr in (
+            "unknown flag: --engine",
+            "unrecognized option '--engine'",
+            "unknown option --engine",
+        ):
+            with self.subTest(stderr=stderr):
+                runner = RecordingRunner(
+                    [
+                        self.result(returncode=2, stderr=stderr),
+                        self.result(
+                            stdout=__import__("json").dumps(profile_payload())
+                        ),
+                    ]
+                )
+
+                _, degraded = run_profile(runner, "atr")
+
+                self.assertTrue(degraded)
+                self.assertEqual(
+                    runner.calls[1],
+                    ["profile", "--json", "--project", "atr"],
+                )
+
+    def test_does_not_fallback_for_other_failures(self):
+        for stderr in (
+            "database is locked",
+            "analysis failed",
+            "unknown flag: --format",
+            "engine initialization failed",
+        ):
+            with self.subTest(stderr=stderr):
+                runner = RecordingRunner(
+                    [self.result(returncode=1, stderr=stderr)]
+                )
+
+                with self.assertRaisesRegex(AvscoreError, "画像分析失败"):
+                    run_profile(runner, "atr")
+
+                self.assertEqual(len(runner.calls), 1)
+
+    def test_fallback_failure_is_safe(self):
+        runner = RecordingRunner(
+            [
+                self.result(returncode=2, stderr="unknown flag: --engine"),
+                self.result(returncode=1, stderr="token=secret"),
+            ]
+        )
+
+        with self.assertRaises(AvscoreError) as raised:
+            run_profile(runner, "atr")
+
+        self.assertNotIn("secret", str(raised.exception))
+
+
+class ProfileParsingTests(unittest.TestCase):
+    def test_accepts_nested_and_direct_dimension_shapes(self):
+        nested = parse_profile(__import__("json").dumps(profile_payload()))
+        direct_payload = profile_payload()
+        direct_payload.update(direct_payload.pop("profile"))
+        direct = parse_profile(__import__("json").dumps(direct_payload))
+
+        self.assertEqual(nested["profile"]["adaptation"]["score"], 50)
+        self.assertEqual(direct["adaptation"]["score"], 50)
+
+    def test_rejects_invalid_json_and_invalid_core_scores(self):
+        invalid_scores = [None, "50", float("nan"), float("inf"), -1, 101]
+        with self.assertRaises(AvscoreError):
+            parse_profile("{")
+
+        for score in invalid_scores:
+            with self.subTest(score=score):
+                payload = profile_payload()
+                payload["profile"]["steering"]["score"] = score
+                with self.assertRaises(AvscoreError):
+                    parse_profile(__import__("json").dumps(payload))
+
+        payload = profile_payload()
+        del payload["profile"]["steering"]
+        with self.assertRaises(AvscoreError):
+            parse_profile(__import__("json").dumps(payload))
+
+    def test_build_report_model_has_stable_defaults_and_metadata(self):
+        payload = {"profile": {key: {"score": 25} for key in DIMENSIONS}}
+
+        model = build_report_model(payload, "atr", 7, True)
+
+        self.assertEqual(model["project"], "atr")
+        self.assertEqual(model["project_session_count"], 7)
+        self.assertTrue(model["generated_at"])
+        self.assertEqual(model["engine"], "compatibility")
+        self.assertTrue(model["degraded"])
+        self.assertEqual(model["archetype"], {"primary": "未知", "confidence": 0})
+        self.assertEqual(
+            model["trend"], {"prediction": "暂无演化数据", "key_shifts": []}
+        )
+        self.assertEqual(
+            [item["key"] for item in model["dimensions"]], list(DIMENSIONS)
+        )
+        self.assertTrue(
+            all(item["summary"] and item["evidence"] for item in model["dimensions"])
+        )
+
+    def test_build_report_model_preserves_supported_profile_fields(self):
+        model = build_report_model(profile_payload(), "atr", 3, False)
+
+        self.assertEqual(model["generated_at"], "2026-07-27T09:00:00Z")
+        self.assertEqual(model["engine"], "statistical")
+        self.assertEqual(model["archetype"]["primary"], "系统设计者")
+        self.assertEqual(model["trend"]["prediction"], "保持稳健")
+        self.assertEqual(model["dimensions"][0]["score"], 50)
+
+
+class AnalysisCoordinatorTests(unittest.TestCase):
+    def test_rejects_concurrent_work_and_releases_after_success(self):
+        coordinator = AnalysisCoordinator()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def first():
+            with coordinator:
+                entered.set()
+                release.wait(2)
+
+        thread = threading.Thread(target=first)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        with self.assertRaises(AnalysisBusyError):
+            with coordinator:
+                pass
+        release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        with coordinator:
+            pass
+
+    def test_releases_after_exception(self):
+        coordinator = AnalysisCoordinator()
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            with coordinator:
+                raise RuntimeError("boom")
+
+        with coordinator:
+            pass
+
+
+class AtomicWriteTests(unittest.TestCase):
+    def test_creates_parent_and_replaces_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "report.html"
+
+            atomic_write(path, "new report")
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "new report")
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    @mock.patch("avscore_server.os.replace", side_effect=OSError("replace failed"))
+    def test_replace_failure_preserves_old_file_and_cleans_temp(self, replace):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.html"
+            path.write_text("old report", encoding="utf-8")
+
+            with self.assertRaises(OSError):
+                atomic_write(path, "new report")
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "old report")
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            replace.assert_called_once()
 
 
 if __name__ == "__main__":
