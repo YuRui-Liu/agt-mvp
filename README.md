@@ -51,13 +51,15 @@ AVSCORE_NO_BROWSER=1 bash avscore.sh
 
 | 变量 | 默认值 / 作用 |
 | --- | --- |
-| `AVSCORE_BINARY_PATH` | 强制指定 `agentsview` 可执行文件；同目录平台二进制仍优先 |
+| `AVSCORE_BINARY_PATH` | 显式指定 `agentsview` 可执行文件，查找优先级最高 |
 | `AVSCORE_OUTPUT_DIR` | `~/.agentsview/reports`；更改报告输出目录 |
 | `AVSCORE_SKIP_SYNC=1` | 显式跳过启动前同步，使用已有本地数据 |
 | `AVSCORE_NO_BROWSER=1` | 不自动打开浏览器，只打印访问地址 |
 | `AVSCORE_RELEASE_URL` | 覆盖脚本内置的 release 基础地址，用于受信任镜像 |
 | `AVSCORE_VERSION` | `latest`；指定下载版本，如 `1.2.3` |
 | `AVSCORE_SKIP_CHECKSUM=1` | 跳过下载文件的 SHA-256 校验；仅应在理解风险时使用 |
+
+二进制按实际脚本顺序查找：显式 `AVSCORE_BINARY_PATH` → 脚本同目录的平台二进制 → `PATH` 中的 `agentsview` → `~/.local/bin/agentsview` → `/usr/local/bin/agentsview`。显式路径不存在或不可执行时会直接停止，不会悄悄换用其他二进制。
 
 ## 隐私与安全
 
