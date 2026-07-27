@@ -1,4 +1,5 @@
 from pathlib import Path
+import struct
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -12,6 +13,12 @@ class AitiAssetTests(unittest.TestCase):
         data = poster.read_bytes()
         self.assertGreater(len(data), 8)
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(data[12:16], b"IHDR")
+        width, height = struct.unpack(">II", data[16:24])
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+        self.assertEqual(data[-12:-8], b"\x00\x00\x00\x00")
+        self.assertEqual(data[-8:-4], b"IEND")
 
     def test_qr_is_local_svg_with_aiti_branding(self):
         qr = ROOT / "assets" / "aiti-qr.svg"

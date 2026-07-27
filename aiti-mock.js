@@ -1,20 +1,34 @@
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = { createMock: factory };
-  }
-  if (root) {
+  } else if (root) {
     let browserStorage;
+    let browserCrypto;
     try {
       browserStorage = root.localStorage;
     } catch (_error) {
       browserStorage = undefined;
     }
-    root.AITIMock = factory({ storage: browserStorage });
+    try {
+      browserCrypto = root.crypto;
+    } catch (_error) {
+      browserCrypto = undefined;
+    }
+    root.AITIMock = factory({ storage: browserStorage, crypto: browserCrypto });
   }
 })(typeof globalThis === 'undefined' ? this : globalThis, function createMock(options) {
   'use strict';
 
   const storage = options && options.storage;
+  const injectedRandomBytes = options && options.randomBytes;
+  let cryptoSource = options && options.crypto;
+  if (!cryptoSource) {
+    try {
+      cryptoSource = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+    } catch (_error) {
+      cryptoSource = undefined;
+    }
+  }
   const storageKey = 'aiti-demo-state-v1';
   const defaultState = {
     profile: { typeCode: 'CPQL', title: '精密系统设计师', score: 88 },
@@ -30,14 +44,14 @@
   }
 
   function validState(value) {
-    return Boolean(
-      value
-      && typeof value === 'object'
-      && value.profile
-      && typeof value.profile === 'object'
+    if (!(
+      value && typeof value === 'object'
+      && value.profile && typeof value.profile === 'object'
       && Number.isFinite(value.profile.score)
-      && Array.isArray(value.ids)
-      && value.ids.every((item) => (
+      && Array.isArray(value.ids) && Array.isArray(value.applications)
+    )) return false;
+
+    const validIds = value.ids.every((item) => (
         item
         && typeof item === 'object'
         && /^[A-Z0-9]{6}$/.test(item.value)
@@ -46,9 +60,32 @@
         && item.aitiId === item.value
         && typeof item.phone === 'string'
         && typeof item.associated === 'boolean'
-      ))
-      && Array.isArray(value.applications),
-    );
+    ));
+    if (!validIds) return false;
+
+    const idsByValue = new Map(value.ids.map((item) => [item.value, item]));
+    if (idsByValue.size !== value.ids.length) return false;
+
+    const applicationIds = new Set();
+    const validApplications = value.applications.every((application) => {
+      if (!(
+        application
+        && typeof application === 'object'
+        && validateId(application.aitiId)
+        && typeof application.jobName === 'string'
+        && application.jobName.length > 0
+        && Number.isFinite(application.score)
+        && typeof application.level === 'string'
+        && application.level.length > 0
+      )) return false;
+      const linkedId = idsByValue.get(application.aitiId);
+      if (!linkedId || !linkedId.associated || applicationIds.has(application.aitiId)) {
+        return false;
+      }
+      applicationIds.add(application.aitiId);
+      return true;
+    });
+    return validApplications;
   }
 
   function readState() {
@@ -106,23 +143,46 @@
   }
 
   function maskPhone(phone) {
-    return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
+    let digits;
+    try {
+      digits = String(phone || '').replace(/\D/g, '');
+    } catch (_error) {
+      return '未绑定手机号';
+    }
+    return digits.length === 11
+      ? `${digits.slice(0, 3)}****${digits.slice(-4)}`
+      : '未绑定手机号';
+  }
+
+  function randomBytes(length) {
+    let bytes;
+    if (typeof injectedRandomBytes === 'function') {
+      bytes = injectedRandomBytes(length);
+    } else if (cryptoSource && typeof cryptoSource.getRandomValues === 'function') {
+      bytes = cryptoSource.getRandomValues(new Uint8Array(length));
+    } else {
+      throw new Error('无法安全生成唯一 AITI ID：安全随机源不可用');
+    }
+    if (!bytes || bytes.length !== length) {
+      throw new Error('无法安全生成唯一 AITI ID：安全随机源返回无效数据');
+    }
+    return bytes;
   }
 
   function nextId() {
     const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
     const chars = `${letters}0123456789`;
-    let value;
-    do {
-      const letter = letters[Math.floor(Math.random() * letters.length)];
-      const digit = String(Math.floor(Math.random() * 10));
+    const maxAttempts = 32;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const bytes = randomBytes(6);
       const tail = Array.from(
-        { length: 4 },
-        () => chars[Math.floor(Math.random() * chars.length)],
+        bytes.slice(2),
+        (byte) => chars[byte % chars.length],
       ).join('');
-      value = `${letter}${digit}${tail}`;
-    } while (state.ids.some((entry) => entry.value === value));
-    return value;
+      const value = `${letters[bytes[0] % letters.length]}${bytes[1] % 10}${tail}`;
+      if (!state.ids.some((entry) => entry.value === value)) return value;
+    }
+    throw new Error('无法安全生成唯一 AITI ID：随机 ID 连续碰撞');
   }
 
   function generateId(phone) {
