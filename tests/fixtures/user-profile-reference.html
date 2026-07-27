@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><style>
+.site-header{position:relative;z-index:10;width:min(1180px, calc(100% - 40px));height:84px;margin:0 auto;display:flex;align-items:center;justify-content:space-between}
+.hero{position:relative;width:min(1180px, calc(100% - 40px));min-height:680px;margin:8px auto 0;padding:68px 62px;display:grid;grid-template-columns:minmax(0, 0.93fr) minmax(420px, 1.07fr);align-items:center;gap:48px;border:1px solid rgba(231, 212, 194, 0.88);border-radius:46px;box-shadow:var(--shadow)}
+.radar-layout{display:grid;grid-template-columns:minmax(0, 1.03fr) minmax(360px, 0.97fr);gap:24px;align-items:stretch}
+.radar-panel{position:relative;min-height:560px;padding:30px 24px 22px;display:grid;place-items:center;overflow:hidden}
+.dimension-tabs{margin-top:auto;padding-top:26px;display:grid;grid-template-columns:repeat(4, minmax(0, 1fr));gap:8px}
+.need-section{position:relative;margin-top:112px;padding:104px 0;color:white}
+.closing{width:min(1100px, calc(100% - 40px));margin:0 auto;padding:112px 0 64px}
+@media (max-width: 980px){.radar-layout{grid-template-columns:1fr}.need-grid{grid-template-columns:1fr}}
+@media (max-width: 680px){.dimension-tabs{grid-template-columns:repeat(2, minmax(0, 1fr))}.closing{padding-top:82px}}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+</style></head><body>
+<header class="site-header"></header><section class="hero"></section>
+<div class="radar-layout"><div class="radar-panel"></div><div class="dimension-tabs"></div></div>
+<section class="need-section"></section><section class="closing"></section>
+</body></html>

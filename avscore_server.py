@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import threading
+from urllib.parse import quote
 
 
 class AvscoreError(RuntimeError):
@@ -31,6 +32,7 @@ DIMENSIONS = (
 )
 
 SELECTION_TEMPLATE = Path(__file__).with_name("session-selection.html.tmpl")
+REPORT_TEMPLATE = Path(__file__).with_name("avscore.html.tmpl")
 _TEMPLATE_PLACEHOLDER = re.compile(r"{{(.*?)}}", re.DOTALL)
 
 
@@ -57,6 +59,40 @@ def render_selection(groups, token, template_path=SELECTION_TEMPLATE):
     ).replace("\u2029", "\\u2029")
     bootstrap = bootstrap.replace("{{", "\\u007b\\u007b")
     rendered = template.replace("{{BOOTSTRAP_JSON}}", bootstrap)
+    if "{{" in rendered:
+        raise AvscoreError("template marker remains after rendering")
+    return rendered
+
+
+def render_report(report_model, token, template_path=REPORT_TEMPLATE):
+    """Render a self-contained report with script-safe JSON data."""
+
+    template = Path(template_path).read_text(encoding="utf-8")
+    required = {"REPORT_JSON", "RETURN_URL"}
+    placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
+    unknown = placeholders - required
+    if unknown:
+        raise AvscoreError(
+            "unknown template placeholder: " + ", ".join(sorted(unknown))
+        )
+    missing = required - placeholders
+    if missing:
+        raise AvscoreError(
+            "missing template placeholder: " + ", ".join(sorted(missing))
+        )
+    report_json = json.dumps(
+        report_model, ensure_ascii=False, separators=(",", ":")
+    )
+    report_json = (
+        report_json.replace("<", "\\u003c")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+        .replace("{{", "\\u007b\\u007b")
+    )
+    rendered = template.replace("{{REPORT_JSON}}", report_json)
+    rendered = rendered.replace(
+        "{{RETURN_URL}}", "/?token=" + quote(str(token), safe="")
+    )
     if "{{" in rendered:
         raise AvscoreError("template marker remains after rendering")
     return rendered
@@ -180,7 +216,20 @@ def build_report_model(profile, project, project_session_count, degraded):
             }
         )
 
-    primary = _nonempty_text(archetype.get("primary")) or "未知"
+    primary = _nonempty_text(archetype.get("primary")) or "协作画像"
+    title = _nonempty_text(archetype.get("title")) or primary
+    code = _nonempty_text(archetype.get("code")) or "7D"
+    summary = (
+        _nonempty_text(archetype.get("summary"))
+        or "这份画像呈现当前项目中可观察到的 AI 协作倾向。"
+    )
+    traits = archetype.get("traits")
+    if not isinstance(traits, list):
+        traits = []
+    traits = [_nonempty_text(item) for item in traits]
+    traits = [item for item in traits if item][:4]
+    if not traits:
+        traits = ["项目协作", "七维观察", "基于会话"]
     confidence = archetype.get("confidence", 0)
     if (
         isinstance(confidence, bool)
@@ -201,7 +250,14 @@ def build_report_model(profile, project, project_session_count, degraded):
         "generated_at": generated_at,
         "engine": "compatibility" if degraded else "statistical",
         "degraded": bool(degraded),
-        "archetype": {"primary": primary, "confidence": confidence},
+        "archetype": {
+            "primary": primary,
+            "code": code,
+            "title": title,
+            "summary": summary,
+            "traits": traits,
+            "confidence": confidence,
+        },
         "trend": {
             "prediction": (
                 _nonempty_text(evolution.get("trend_prediction"))

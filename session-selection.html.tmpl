@@ -395,8 +395,8 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   } catch (_) {
     data = {groups: [], token: ""};
     list.replaceChildren(stateNode("error", "无法加载会话", "页面数据异常，请刷新后重试。"));
-    consent.disabled = true;
     updateButton();
+    consent.disabled = true;
   }
 })();
 </script>

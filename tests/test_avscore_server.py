@@ -17,6 +17,7 @@ from avscore_server import (
     load_sessions,
     normalize_sessions,
     parse_profile,
+    render_report,
     render_selection,
     run_profile,
     safe_error,
@@ -436,7 +437,17 @@ class ProfileParsingTests(unittest.TestCase):
         self.assertTrue(model["generated_at"])
         self.assertEqual(model["engine"], "compatibility")
         self.assertTrue(model["degraded"])
-        self.assertEqual(model["archetype"], {"primary": "未知", "confidence": 0})
+        self.assertEqual(
+            model["archetype"],
+            {
+                "primary": "协作画像",
+                "code": "7D",
+                "title": "协作画像",
+                "summary": "这份画像呈现当前项目中可观察到的 AI 协作倾向。",
+                "traits": ["项目协作", "七维观察", "基于会话"],
+                "confidence": 0,
+            },
+        )
         self.assertEqual(
             model["trend"], {"prediction": "暂无演化数据", "key_shifts": []}
         )
@@ -633,6 +644,52 @@ class SelectionRenderingTests(unittest.TestCase):
 
             with self.assertRaisesRegex(AvscoreError, "template marker"):
                 render_selection([], "token", template_path=template)
+
+
+class ReportRenderingTests(unittest.TestCase):
+    def test_render_report_embeds_real_model_and_safe_return_url(self):
+        payload = profile_payload()
+        payload["archetype"].update(
+            {
+                "code": "REAL",
+                "title": "真实画像",
+                "summary": "项目 <b>摘要</b>",
+                "traits": ["系统化", "<script>alert(1)</script>"],
+            }
+        )
+        payload["profile"]["steering"].update(
+            {"title": "引导 <强>", "summary": "不形成 <img>", "evidence": "证据"}
+        )
+        model = build_report_model(payload, "项目 <x>", 3, False)
+
+        rendered = render_report(model, "a token&next=/x")
+
+        self.assertNotRegex(rendered, r"{{.*?}}")
+        self.assertNotIn("<script>alert(1)</script>", rendered)
+        self.assertNotIn("<b>摘要</b>", rendered)
+        self.assertNotIn("<img>", rendered)
+        self.assertIn("/?token=a%20token%26next%3D%2Fx", rendered)
+        match = re.search(
+            r'<script type="application/json" id="report-data">(.*?)</script>',
+            rendered,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(json.loads(match.group(1)), model)
+
+    def test_render_report_rejects_unknown_or_missing_placeholders(self):
+        model = build_report_model(profile_payload(), "atr", 3, False)
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "report.html"
+            template.write_text(
+                "{{REPORT_JSON}} {{RETURN_URL}} {{UNKNOWN}}", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(AvscoreError, "unknown template placeholder"):
+                render_report(model, "token", template)
+
+            template.write_text("{{REPORT_JSON}}", encoding="utf-8")
+            with self.assertRaisesRegex(AvscoreError, "missing template placeholder"):
+                render_report(model, "token", template)
 
 
 if __name__ == "__main__":

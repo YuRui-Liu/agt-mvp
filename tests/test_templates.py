@@ -5,6 +5,9 @@ import subprocess
 
 
 TEMPLATE = Path(__file__).parents[1] / "session-selection.html.tmpl"
+REPORT_TEMPLATE = Path(__file__).parents[1] / "avscore.html.tmpl"
+REPORT_INTERACTION_TEST = Path(__file__).parent / "report_interactions.js"
+REPORT_REFERENCE = Path(__file__).parent / "fixtures" / "user-profile-reference.html"
 REFERENCE = Path(__file__).parent / "fixtures" / "session-selection-reference.html"
 INTERACTION_TEST = Path(__file__).parent / "session_selection_interactions.js"
 
@@ -161,6 +164,73 @@ class SessionSelectionTemplateTests(unittest.TestCase):
             set(re.findall(r"{{([A-Z0-9_]+)}}", self.template)),
             {"BOOTSTRAP_JSON"},
         )
+
+    def test_bootstrap_failure_keeps_consent_disabled(self):
+        catch = self.template.split("} catch (_) {", 1)[1]
+        self.assertLess(catch.index("updateButton();"), catch.index("consent.disabled = true;"))
+
+
+class ReportTemplateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.template = REPORT_TEMPLATE.read_text(encoding="utf-8")
+        cls.reference = REPORT_REFERENCE.read_text(encoding="utf-8")
+
+    def test_matches_reference_core_css_declarations(self):
+        reference_rules = css_rules(self.reference)
+        template_rules = css_rules(self.template)
+        for selector in (
+            ".site-header",
+            ".hero",
+            ".radar-layout",
+            ".radar-panel",
+            ".dimension-tabs",
+            ".need-section",
+            ".closing",
+        ):
+            with self.subTest(selector=selector):
+                for name, value in reference_rules[selector].items():
+                    self.assertEqual(template_rules[selector].get(name), value)
+
+    def test_preserves_full_visual_and_responsive_contract(self):
+        for token in (
+            ".site-header",
+            ".hero",
+            ".radar-layout",
+            ".radar-panel",
+            ".dimension-tabs",
+            ".need-section",
+            ".closing",
+            "@media (max-width: 980px)",
+            "@media (max-width: 680px)",
+            "@media (prefers-reduced-motion: reduce)",
+            'id="radarShape"',
+            'id="dimensionTabs"',
+            'id="metricGrid"',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.template)
+
+    def test_uses_only_safe_report_placeholders_and_no_demo_dependencies(self):
+        self.assertEqual(
+            set(re.findall(r"{{([A-Z0-9_]+)}}", self.template)),
+            {"REPORT_JSON", "RETURN_URL"},
+        )
+        for forbidden in ("KwAITI", "_kwaiti-mock.js", "MOCK", "fetch("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.template)
+        self.assertIn('id="report-data"', self.template)
+        self.assertIn("JSON.parse", self.template)
+
+    def test_report_radar_and_selection_logic_execute_in_node(self):
+        result = subprocess.run(
+            ["node", "--test", str(REPORT_INTERACTION_TEST)],
+            cwd=REPORT_TEMPLATE.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
