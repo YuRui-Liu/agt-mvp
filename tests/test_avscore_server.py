@@ -546,7 +546,7 @@ class SelectionRenderingTests(unittest.TestCase):
         )
 
     def test_render_selection_prevents_script_breakout(self):
-        attack = '</script><img src=x onerror="alert(1)">'
+        attack = '</script><img src=x onerror="alert(1)">{{unknown}}'
         groups = [
             {
                 "agent": attack,
@@ -575,11 +575,30 @@ class SelectionRenderingTests(unittest.TestCase):
     def test_render_selection_rejects_unknown_template_placeholders(self):
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "selection.html.tmpl"
+            for marker in (
+                "{{UNKNOWN_PLACEHOLDER}}",
+                "{{unknown}}",
+                "{{ Mixed_Placeholder }}",
+                "{{ spaces are unknown }}",
+            ):
+                with self.subTest(marker=marker):
+                    template.write_text(
+                        "{{BOOTSTRAP_JSON}} " + marker, encoding="utf-8"
+                    )
+
+                    with self.assertRaisesRegex(
+                        AvscoreError, "unknown template placeholder"
+                    ):
+                        render_selection([], "token", template_path=template)
+
+    def test_render_selection_rejects_template_markers_left_after_rendering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "selection.html.tmpl"
             template.write_text(
-                "{{BOOTSTRAP_JSON}} {{UNKNOWN_PLACEHOLDER}}", encoding="utf-8"
+                "{{BOOTSTRAP_JSON}} {{ malformed marker", encoding="utf-8"
             )
 
-            with self.assertRaisesRegex(ValueError, "unknown template placeholder"):
+            with self.assertRaisesRegex(AvscoreError, "template marker"):
                 render_selection([], "token", template_path=template)
 
 

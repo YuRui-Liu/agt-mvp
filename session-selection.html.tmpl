@@ -19,7 +19,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   box-shadow:0 8px 22px rgba(255,107,18,.28)}
 .brand-text strong{font-size:14px;display:block;letter-spacing:.04em}
 .brand-text span{font-size:11px;color:var(--ink-soft);letter-spacing:.1em;text-transform:uppercase}
-.main{padding:40px 40px 140px;max-width:900px;margin:0 auto}
+.main{padding:40px 40px 100px;max-width:900px;margin:0 auto}
 .hero-text h1{font-size:34px;font-weight:850;letter-spacing:-.05em;line-height:1.15;margin-bottom:10px}
 .hero-text h1 span{color:var(--orange)}
 .hero-text p{color:var(--ink-soft);font-size:15px;line-height:1.7}
@@ -236,7 +236,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
         const title = document.createElement("strong");
         title.textContent = text(session.title) || "未命名会话";
         const time = document.createElement("span");
-        time.textContent = displayTime(session.ended_at);
+        time.textContent = `${displayTime(session.ended_at)} · ${text(session.project)}`;
         copy.append(title, time);
         const sessionMeta = document.createElement("span");
         sessionMeta.className = "session-meta";

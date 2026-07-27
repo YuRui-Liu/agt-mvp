@@ -31,7 +31,7 @@ DIMENSIONS = (
 )
 
 SELECTION_TEMPLATE = Path(__file__).with_name("session-selection.html.tmpl")
-_TEMPLATE_PLACEHOLDER = re.compile(r"{{([A-Z0-9_]+)}}")
+_TEMPLATE_PLACEHOLDER = re.compile(r"{{(.*?)}}", re.DOTALL)
 
 
 def render_selection(groups, token, template_path=SELECTION_TEMPLATE):
@@ -41,11 +41,11 @@ def render_selection(groups, token, template_path=SELECTION_TEMPLATE):
     placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
     unknown = placeholders - {"BOOTSTRAP_JSON"}
     if unknown:
-        raise ValueError(
+        raise AvscoreError(
             "unknown template placeholder: " + ", ".join(sorted(unknown))
         )
     if "BOOTSTRAP_JSON" not in placeholders:
-        raise ValueError("missing template placeholder: BOOTSTRAP_JSON")
+        raise AvscoreError("missing template placeholder: BOOTSTRAP_JSON")
 
     bootstrap = json.dumps(
         {"groups": groups, "token": token},
@@ -55,7 +55,11 @@ def render_selection(groups, token, template_path=SELECTION_TEMPLATE):
     bootstrap = bootstrap.replace("<", "\\u003c").replace(
         "\u2028", "\\u2028"
     ).replace("\u2029", "\\u2029")
-    return template.replace("{{BOOTSTRAP_JSON}}", bootstrap)
+    bootstrap = bootstrap.replace("{{", "\\u007b\\u007b")
+    rendered = template.replace("{{BOOTSTRAP_JSON}}", bootstrap)
+    if "{{" in rendered:
+        raise AvscoreError("template marker remains after rendering")
+    return rendered
 
 
 class CommandRunner:
