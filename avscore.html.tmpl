@@ -1366,24 +1366,49 @@
       function renderAitiIdentity(item) {
         const generatedDate = new Date().toISOString().slice(0, 10).replaceAll("-", ".");
         const applyUrl = `${applicationUrl}&aitiId=${encodeURIComponent(item.value)}&source=aiti`;
+        const create = (tag, className, text) => {
+          const element = document.createElement(tag);
+          if (className) element.className = className;
+          if (text !== undefined) element.textContent = String(text);
+          return element;
+        };
         aitiInlinePanel.classList.add("is-result");
         aitiInlineForm.hidden = true;
         aitiIdentityResult.hidden = false;
-        aitiIdentityResult.innerHTML = `
-          <div class="aiti-id-card">
-            <p class="aiti-id-eyebrow">YOUR AITI ID</p>
-            <h2>专属 AITI 身份码</h2>
-            <strong>${item.value}</strong>
-            <p>绑定手机：${item.phone}</p>
-            <dl class="aiti-id-meta"><dt>生成日期</dt><dd>${generatedDate}</dd>
-              <dt>AI 协作类型</dt><dd>${report.archetype.title}</dd></dl>
-          </div>
-          <div class="aiti-qr-card">
-            <img class="aiti-qr-image" src="${qrUrl}" alt="扫码投递你的简历" />
-            <h2>扫码投递你的简历</h2>
-            <p>让招聘方快速认识你的 AI 协作优势</p>
-            <a class="primary-link" href="${applyUrl}" data-aiti-apply>投递简历 <span aria-hidden="true">→</span></a>
-          </div>`;
+        const idCard = create("div", "aiti-id-card");
+        idCard.append(
+          create("p", "aiti-id-eyebrow", "YOUR AITI ID"),
+          create("h2", "", "专属 AITI 身份码"),
+          create("strong", "", item.value),
+        );
+        const phone = create("p");
+        phone.append(
+          create("span", "", "绑定手机："),
+          create("span", "", item.phone),
+        );
+        const meta = create("dl", "aiti-id-meta");
+        meta.append(
+          create("dt", "", "生成日期"),
+          create("dd", "", generatedDate),
+          create("dt", "", "AI 协作类型"),
+          create("dd", "", report.archetype.title),
+        );
+        idCard.append(phone, meta);
+
+        const qrCard = create("div", "aiti-qr-card");
+        const qrImage = create("img", "aiti-qr-image");
+        qrImage.setAttribute("src", qrUrl);
+        qrImage.setAttribute("alt", "扫码投递你的简历");
+        const apply = create("a", "primary-link", "投递简历 →");
+        apply.setAttribute("href", applyUrl);
+        apply.setAttribute("data-aiti-apply", "");
+        qrCard.append(
+          qrImage,
+          create("h2", "", "扫码投递你的简历"),
+          create("p", "", "让招聘方快速认识你的 AI 协作优势"),
+          apply,
+        );
+        aitiIdentityResult.replaceChildren(idCard, qrCard);
       }
 
       function restoreLatestAitiId() {

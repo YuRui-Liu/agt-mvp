@@ -40,6 +40,10 @@ class Element {
   append(...children) {
     this.children.push(...children);
   }
+  replaceChildren(...children) {
+    this.children = [...children];
+    this.innerHTML = "";
+  }
   addEventListener(type, handler) {
     (this.listeners[type] ||= []).push(handler);
   }
@@ -54,8 +58,9 @@ class Element {
 }
 
 function executeReport(report, options = {}) {
+  const reportJson = JSON.stringify(report).replaceAll("<", "\\u003c");
   const rendered = template
-    .replace("{{REPORT_JSON}}", JSON.stringify(report))
+    .replace("{{REPORT_JSON}}", reportJson)
     .replace("{{AITI_MOCK_JS}}", fs.readFileSync("aiti-mock.js", "utf8"))
     .replaceAll("{{APPLICATION_URL}}", "/application?token=real")
     .replaceAll("{{POSTER_URL}}", "/assets/poster.png?token=real")
@@ -202,9 +207,10 @@ test("AITI identity flow expands, validates, generates, restores, and links with
   ids.get("aitiCode").value = "123456";
   ids.get("verifyAitiButton").dispatch("click");
   assert.equal(ids.get("aitiIdentityResult").hidden, false);
-  assert.match(ids.get("aitiIdentityResult").innerHTML, /138\*\*\*\*8000/);
-  assert.match(ids.get("aitiIdentityResult").innerHTML, /\/assets\/aiti-qr\.svg\?token=real/);
-  assert.match(ids.get("aitiIdentityResult").innerHTML, /\/application\?token=real&amp;aitiId=|\/application\?token=real&aitiId=/);
+  const resultChildren = ids.get("aitiIdentityResult").children;
+  assert.equal(resultChildren[0].children[3].children[1].textContent, "138****8000");
+  assert.equal(resultChildren[1].children[0].getAttribute("src"), "/assets/aiti-qr.svg?token=real");
+  assert.match(resultChildren[1].children[3].getAttribute("href"), /^\/application\?token=real&aitiId=/);
   assert.ok(storage.get("aiti-demo-last-generated-id"));
 });
 
@@ -219,11 +225,43 @@ test("AITI restores the latest unassociated ID", () => {
     "aiti-demo-last-generated-id": "A7TI8P",
   }});
   assert.equal(ids.get("aitiInlinePanel").hidden, false);
-  assert.match(ids.get("aitiIdentityResult").innerHTML, /A7TI8P/);
+  assert.equal(ids.get("aitiIdentityResult").children[0].children[2].textContent, "A7TI8P");
 });
 
 test("unavailable localStorage does not stop report rendering", () => {
   const {ids} = executeReport(report, {storageThrows: true});
   assert.equal(ids.get("profile-title").textContent, "真实画像");
   assert.equal(ids.get("radarDots").children.length, 7);
+});
+
+test("restored identity treats storage phone and report title as text", () => {
+  const attackPhone = '<img src=x onerror="globalThis.pwned=true">';
+  const attackTitle = '<script>globalThis.pwned=true</script>';
+  const hostileReport = {
+    ...report,
+    archetype: {...report.archetype, title: attackTitle},
+  };
+  const state = {
+    profile: {typeCode: "REAL", title: "真实画像", score: 88},
+    ids: [{value: "A7TI8P", aitiId: "A7TI8P", phone: attackPhone, associated: false}],
+    applications: [],
+  };
+  const {ids, context} = executeReport(hostileReport, {storage: {
+    "aiti-demo-state-v1": JSON.stringify(state),
+    "aiti-demo-last-generated-id": "A7TI8P",
+  }});
+  const result = ids.get("aitiIdentityResult");
+  const descendants = [];
+  const visit = element => {
+    descendants.push(element);
+    element.children.forEach(visit);
+  };
+  result.children.forEach(visit);
+  assert.equal(result.innerHTML, "");
+  assert.equal(descendants.some(element => ["IMG", "SCRIPT"].includes(element.tagName)
+    && element.getAttribute("onerror")), false);
+  assert.equal(descendants.some(element => element.tagName === "SCRIPT"), false);
+  assert.equal(descendants.some(element => element.textContent === attackPhone), true);
+  assert.equal(descendants.some(element => element.textContent === attackTitle), true);
+  assert.equal(context.pwned, undefined);
 });
