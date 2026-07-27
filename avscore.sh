@@ -259,10 +259,15 @@ main() {
   server_py="$script_dir/avscore_server.py"
   selection_template="$script_dir/session-selection.html.tmpl"
   profile_template="$script_dir/avscore.html.tmpl"
+  application_template="$script_dir/job-application.html.tmpl"
+  assets_dir="$script_dir/assets"
   command -v python3 >/dev/null 2>&1 || { error "启动 avscore 需要 python3，请先安装 Python 3"; return 1; }
   require_file "$server_py" "服务脚本" || return 1
   require_file "$selection_template" "会话选择模板" || return 1
   require_file "$profile_template" "画像模板" || return 1
+  require_file "$application_template" "投递模板" || return 1
+  require_file "$assets_dir/poster.png" "AITI 海报" || return 1
+  require_file "$assets_dir/aiti-qr.svg" "AITI 二维码" || return 1
 
   if bin=$(find_agentsview_bin); then
     info "已检测到 agentsview：$bin"
@@ -294,6 +299,8 @@ main() {
     --binary "$bin"
     --selection-template "$selection_template"
     --profile-template "$profile_template"
+    --application-template "$application_template"
+    --assets-dir "$assets_dir"
     --output-dir "$OUTPUT_DIR"
   )
   python3 "${server_args[@]}" >"$startup_log" 2>&1 &

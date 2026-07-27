@@ -103,6 +103,8 @@ def running_server(tmp_path, *, token="fixed secret", sessions=None, coordinator
         binary="agentsview",
         selection_template=Path(__file__).parents[1] / "session-selection.html.tmpl",
         profile_template=Path(__file__).parents[1] / "avscore.html.tmpl",
+        application_template=Path(__file__).parents[1] / "job-application.html.tmpl",
+        assets_dir=Path(__file__).parents[1] / "assets",
         output_dir=Path(tmp_path),
         port=0,
     )
@@ -829,6 +831,51 @@ class ReportRenderingTests(unittest.TestCase):
 
 
 class HttpServerTests(unittest.TestCase):
+    def test_application_and_fixed_assets_are_query_authenticated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                token = quote("fixed secret")
+                expected = {
+                    "/application": ("text/html; charset=utf-8", b"AITI ID"),
+                    "/assets/aiti-mock.js": (
+                        "text/javascript; charset=utf-8",
+                        b"AITIMock",
+                    ),
+                    "/assets/poster.png": ("image/png", (Path(__file__).parents[1] / "assets/poster.png").read_bytes()),
+                    "/assets/aiti-qr.svg": ("image/svg+xml; charset=utf-8", b"<svg"),
+                }
+                for path, (mime, marker) in expected.items():
+                    status, _, _ = request(server, "GET", path + "?token=wrong")
+                    self.assertEqual(status, 403)
+                    status, headers, body = request(server, "GET", path + "?token=" + token)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(headers["Content-Type"], mime)
+                    self.assertEqual(headers["Content-Length"], str(len(body)))
+                    self.assertEqual(headers["Cache-Control"], "no-store")
+                    if path.endswith(".png"):
+                        self.assertEqual(body, marker)
+                        self.assertIn("attachment", headers["Content-Disposition"])
+                        self.assertIn("AITI-", headers["Content-Disposition"])
+                    else:
+                        self.assertIn(marker, body)
+
+    def test_application_assets_head_and_traversal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                token = quote("fixed secret")
+                for path in (
+                    "/application",
+                    "/assets/aiti-mock.js",
+                    "/assets/poster.png",
+                    "/assets/aiti-qr.svg",
+                ):
+                    status, headers, body = request(server, "HEAD", path + "?token=" + token)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body, b"")
+                    self.assertGreater(int(headers["Content-Length"]), 0)
+                for path in ("/assets/../avscore_server.py", "/assets/%2e%2e/avscore_server.py"):
+                    status, _, _ = request(server, "GET", path + "?token=" + token)
+                    self.assertEqual(status, 404)
     def test_selection_health_authentication_and_security_headers(self):
         with tempfile.TemporaryDirectory() as directory:
             with running_server(directory) as (server, _runner):
@@ -1268,6 +1315,8 @@ class ServerCliTests(unittest.TestCase):
                 "--binary", "bin",
                 "--selection-template", "selection",
                 "--profile-template", "profile",
+                "--application-template", "application",
+                "--assets-dir", "assets",
                 "--output-dir", "out",
                 "--port", "1234",
             ]
@@ -1275,6 +1324,8 @@ class ServerCliTests(unittest.TestCase):
         self.assertEqual(args.binary, "bin")
         self.assertEqual(args.selection_template, "selection")
         self.assertEqual(args.profile_template, "profile")
+        self.assertEqual(args.application_template, "application")
+        self.assertEqual(args.assets_dir, "assets")
         self.assertEqual(args.output_dir, "out")
         self.assertEqual(args.port, 1234)
 
@@ -1297,6 +1348,8 @@ class ServerCliTests(unittest.TestCase):
                     "--binary", "bin",
                     "--selection-template", "selection",
                     "--profile-template", "profile",
+                    "--application-template", "application",
+                    "--assets-dir", "assets",
                     "--output-dir", "out",
                 ]
             )

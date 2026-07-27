@@ -51,6 +51,8 @@ DIMENSIONS = (
 
 SELECTION_TEMPLATE = Path(__file__).with_name("session-selection.html.tmpl")
 REPORT_TEMPLATE = Path(__file__).with_name("avscore.html.tmpl")
+APPLICATION_TEMPLATE = Path(__file__).with_name("job-application.html.tmpl")
+ASSETS_DIR = Path(__file__).with_name("assets")
 AITI_MOCK_SCRIPT = Path(__file__).with_name("aiti-mock.js")
 _TEMPLATE_PLACEHOLDER = re.compile(r"{{(.*?)}}", re.DOTALL)
 
@@ -158,6 +160,24 @@ def _escape_template_text(value):
     """Escape HTML and literal template openers while preserving browser text."""
 
     return html.escape(str(value)).replace("{", "&#123;")
+
+
+def render_application(token, template_path=APPLICATION_TEMPLATE):
+    template = Path(template_path).read_text(encoding="utf-8")
+    placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
+    required = {"AITI_MOCK_JS", "RETURN_URL"}
+    if placeholders != required:
+        raise AvscoreError("invalid application template placeholders")
+    script = AITI_MOCK_SCRIPT.read_text(encoding="utf-8")
+    if "</script" in script.lower() or "{{" in script:
+        raise AvscoreError("unsafe AITI mock script")
+    rendered = template.replace("{{AITI_MOCK_JS}}", script)
+    rendered = rendered.replace(
+        "{{RETURN_URL}}", "/report?token=" + quote(str(token), safe="")
+    )
+    if "{{" in rendered:
+        raise AvscoreError("template marker remains after rendering")
+    return rendered
 
 
 class CommandRunner:
@@ -473,10 +493,22 @@ class ServerConfig:
     profile_template: Path
     output_dir: Path
     port: int = 0
+    application_template: Path = APPLICATION_TEMPLATE
+    assets_dir: Path = ASSETS_DIR
 
 
 class AvscoreApp:
     def __init__(self, config, runner, token, groups, coordinator=None):
+        required_files = (
+            config.selection_template,
+            config.profile_template,
+            config.application_template,
+            config.assets_dir / "poster.png",
+            config.assets_dir / "aiti-qr.svg",
+        )
+        missing = [str(path) for path in required_files if not Path(path).is_file()]
+        if missing:
+            raise AvscoreError("missing required file: " + ", ".join(missing))
         self.config = config
         self.runner = runner
         self.token = token
@@ -489,6 +521,9 @@ class AvscoreApp:
         }
         self.selection_html = render_selection(
             groups, token, config.selection_template
+        )
+        self.application_html = render_application(
+            token, config.application_template
         )
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -591,7 +626,10 @@ class AvscoreHTTPServer(ThreadingHTTPServer):
 class AvscoreRequestHandler(BaseHTTPRequestHandler):
     server_version = "avscore"
     sys_version = ""
-    _GET_PATHS = frozenset(("/", "/report", "/api/health"))
+    _GET_PATHS = frozenset((
+        "/", "/report", "/api/health", "/application",
+        "/assets/aiti-mock.js", "/assets/poster.png", "/assets/aiti-qr.svg",
+    ))
     _POST_PATHS = frozenset(("/api/analyze",))
     _KNOWN_PATHS = _GET_PATHS | _POST_PATHS
 
@@ -618,6 +656,27 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
             return self._json(405, "Method not allowed", allow="POST")
         if parsed.path == "/":
             return self._html(200, self.server.app.selection_html)
+        if parsed.path == "/application":
+            return self._html(200, self.server.app.application_html)
+        if parsed.path == "/assets/aiti-mock.js":
+            return self._asset(
+                AITI_MOCK_SCRIPT,
+                "text/javascript; charset=utf-8",
+                "inline",
+            )
+        if parsed.path == "/assets/poster.png":
+            return self._asset(
+                self.server.app.config.assets_dir / "poster.png",
+                "image/png",
+                "attachment; filename=\"AITI-poster.png\"; "
+                "filename*=UTF-8''AITI-%E4%B8%93%E5%B1%9E%E6%B5%B7%E6%8A%A5.png",
+            )
+        if parsed.path == "/assets/aiti-qr.svg":
+            return self._asset(
+                self.server.app.config.assets_dir / "aiti-qr.svg",
+                "image/svg+xml; charset=utf-8",
+                "inline",
+            )
         if parsed.path == "/api/health":
             return self._json_payload(200, {"status": "ok"})
         report = self.server.app.report_html
@@ -669,7 +728,13 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
         self._method_not_allowed()
 
     def do_HEAD(self):
-        self._method_not_allowed()
+        parsed = urlsplit(self.path)
+        if parsed.path in (
+            "/application", "/assets/aiti-mock.js",
+            "/assets/poster.png", "/assets/aiti-qr.svg",
+        ):
+            return self.do_GET()
+        return self._method_not_allowed()
 
     def do_OPTIONS(self):
         self._method_not_allowed()
@@ -687,8 +752,12 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Avscore-Token")
         if (
             supplied is None
-            and self.command == "GET"
-            and parsed.path in ("/", "/report")
+            and self.command in ("GET", "HEAD")
+            and (
+                parsed.path in self._GET_PATHS
+                or parsed.path.startswith("/assets/")
+            )
+            and parsed.path != "/api/health"
         ):
             values = parse_qs(parsed.query, keep_blank_values=True).get("token", [])
             supplied = values[0] if len(values) == 1 else None
@@ -724,6 +793,15 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
     def _json(self, status, message, allow=None):
         return self._json_payload(status, {"message": message}, allow=allow)
 
+    def _asset(self, path, content_type, disposition):
+        body = Path(path).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", disposition)
+        self._finish_headers(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def _json_payload(self, status, payload, allow=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -754,6 +832,8 @@ def build_argument_parser():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--selection-template", required=True)
     parser.add_argument("--profile-template", required=True)
+    parser.add_argument("--application-template", required=True)
+    parser.add_argument("--assets-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--port", type=int, default=0)
     return parser
@@ -765,6 +845,8 @@ def main(argv=None):
         binary=args.binary,
         selection_template=Path(args.selection_template),
         profile_template=Path(args.profile_template),
+        application_template=Path(args.application_template),
+        assets_dir=Path(args.assets_dir),
         output_dir=Path(args.output_dir),
         port=args.port,
     )

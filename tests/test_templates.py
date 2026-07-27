@@ -8,6 +8,9 @@ TEMPLATE = Path(__file__).parents[1] / "session-selection.html.tmpl"
 REPORT_TEMPLATE = Path(__file__).parents[1] / "avscore.html.tmpl"
 REPORT_INTERACTION_TEST = Path(__file__).parent / "report_interactions.js"
 REPORT_REFERENCE = Path(__file__).parent / "fixtures" / "user-profile-reference.html"
+APPLICATION_TEMPLATE = Path(__file__).parents[1] / "job-application.html.tmpl"
+APPLICATION_REFERENCE = Path(__file__).parent / "fixtures" / "job-application-reference.html"
+APPLICATION_INTERACTION_TEST = Path(__file__).parent / "application_interactions.js"
 REFERENCE = Path(__file__).parent / "fixtures" / "session-selection-reference.html"
 INTERACTION_TEST = Path(__file__).parent / "session_selection_interactions.js"
 
@@ -373,6 +376,41 @@ class ReportTemplateTests(unittest.TestCase):
         result = subprocess.run(
             ["node", "--test", str(REPORT_INTERACTION_TEST)],
             cwd=REPORT_TEMPLATE.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class ApplicationTemplateTests(unittest.TestCase):
+    def test_preserves_reference_core_css_and_dom(self):
+        template = APPLICATION_TEMPLATE.read_text(encoding="utf-8")
+        reference = APPLICATION_REFERENCE.read_text(encoding="utf-8")
+        reference_rules = css_rules(reference)
+        template_rules = css_rules(template)
+        for selector, declarations in reference_rules.items():
+            branded = selector.replace("kwaiti", "aiti")
+            self.assertIn(branded, template_rules)
+            self.assertEqual(template_rules[branded], declarations)
+        for identifier in (
+            "recommend", "location", "resume", "basic", "education",
+            "experience", "project", "skills", "submitApplication",
+        ):
+            self.assertIn(f'id="{identifier}"', template)
+
+    def test_safe_local_application_contract_executes(self):
+        template = APPLICATION_TEMPLATE.read_text(encoding="utf-8")
+        self.assertEqual(
+            set(re.findall(r"{{([A-Z0-9_]+)}}", template)),
+            {"AITI_MOCK_JS", "RETURN_URL"},
+        )
+        self.assertNotIn("innerHTML", template)
+        self.assertNotIn("fetch(", template)
+        self.assertNotIn("KwAITI", template)
+        result = subprocess.run(
+            ["node", str(APPLICATION_INTERACTION_TEST)],
+            cwd=APPLICATION_TEMPLATE.parent,
             capture_output=True,
             text=True,
             check=False,

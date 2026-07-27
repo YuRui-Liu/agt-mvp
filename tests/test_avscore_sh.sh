@@ -32,6 +32,10 @@ new_fixture() {
   : > "$FIXTURE/app/avscore_server.py"
   : > "$FIXTURE/app/session-selection.html.tmpl"
   : > "$FIXTURE/app/avscore.html.tmpl"
+  : > "$FIXTURE/app/job-application.html.tmpl"
+  mkdir -p "$FIXTURE/app/assets"
+  : > "$FIXTURE/app/assets/poster.png"
+  : > "$FIXTURE/app/assets/aiti-qr.svg"
   cat > "$FIXTURE/bin/uname" <<'EOF'
 #!/bin/sh
 if [ "$1" = "-s" ]; then printf '%s\n' "${STUB_OS:-Linux}"; else printf '%s\n' "${STUB_ARCH:-x86_64}"; fi
@@ -196,6 +200,9 @@ EOF
      assert_contains "$args" "/app/avscore_server.py" &&
      assert_contains "$args" "$FIXTURE/agentsview custom" &&
      assert_contains "$args" "$FIXTURE/output dir" &&
+     assert_contains "$args" "--application-template" &&
+     assert_contains "$args" "/app/job-application.html.tmpl" &&
+     assert_contains "$args" "--assets-dir" &&
      [ "$browser_url" = "http://127.0.0.1:43123/?token=a%20b" ] &&
      assert_contains "$output" "无法自动打开浏览器，请手动访问" &&
      assert_contains "$output" "http://127.0.0.1:43123/?token=a%20b"; then
