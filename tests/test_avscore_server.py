@@ -96,6 +96,39 @@ class SessionNormalizationTests(unittest.TestCase):
 
         self.assertEqual(normalize_sessions(payload), [])
 
+    def test_deduplicates_session_ids_globally_and_keeps_first_record(self):
+        payload = {
+            "sessions": [
+                {
+                    "id": "duplicate",
+                    "agent": "codex",
+                    "project": "first-project",
+                    "display_name": "保留我",
+                },
+                {
+                    "id": "duplicate",
+                    "agent": "claude",
+                    "project": "second-project",
+                    "display_name": "丢弃我",
+                },
+                {
+                    "id": "unique",
+                    "agent": "claude",
+                    "project": "second-project",
+                },
+            ]
+        }
+
+        groups = normalize_sessions(payload)
+        sessions = [
+            session for group in groups for session in group["sessions"]
+        ]
+
+        self.assertEqual([session["id"] for session in sessions], ["duplicate", "unique"])
+        self.assertEqual(sessions[0]["title"], "保留我")
+        self.assertEqual(sessions[0]["projectSessionCount"], 1)
+        self.assertEqual(sessions[1]["projectSessionCount"], 1)
+
     def test_load_sessions_rejects_invalid_json(self):
         runner = FakeRunner(
             subprocess.CompletedProcess(args=[], returncode=0, stdout="{", stderr="")

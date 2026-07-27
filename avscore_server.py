@@ -283,15 +283,19 @@ def normalize_sessions(payload):
     if not isinstance(records, list):
         raise AvscoreError("agentsview 返回了无效的 session JSON")
 
-    valid = [
-        dict(record)
-        for record in records
-        if (
+    valid = []
+    seen_ids = set()
+    for record in records:
+        if not (
             isinstance(record, dict)
             and _nonempty_string(record.get("id"))
             and _nonempty_string(record.get("project"))
-        )
-    ]
+        ):
+            continue
+        if record["id"] in seen_ids:
+            continue
+        seen_ids.add(record["id"])
+        valid.append(dict(record))
     project_counts = Counter(record["project"] for record in valid)
     groups = {}
 

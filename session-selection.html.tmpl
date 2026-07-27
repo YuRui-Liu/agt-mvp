@@ -132,9 +132,11 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     return {...state, ...changes};
   }
   function setConsent(state, consent) {
+    if (state.analyzing) return state;
     return copy(state, {consent: Boolean(consent)});
   }
   function toggleAgent(state, groupIndex) {
+    if (state.analyzing) return state;
     const expandedAgents = new Set(state.expandedAgents);
     expandedAgents.has(groupIndex)
       ? expandedAgents.delete(groupIndex)
@@ -145,6 +147,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     });
   }
   function selectSession(state, groupIndex, sessionIndex, session) {
+    if (state.analyzing) return state;
     const expandedAgents = new Set(state.expandedAgents);
     expandedAgents.add(groupIndex);
     return copy(state, {
@@ -176,9 +179,14 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       reportUrl: null
     };
   }
+  function restoreFocus(documentNode, targetId) {
+    if (!targetId) return;
+    const target = documentNode.getElementById(targetId);
+    if (target) target.focus();
+  }
   globalThis.SelectionLogic = {
     createState, setConsent, toggleAgent, selectSession, buttonDisabled,
-    beginAnalysis, completeAnalysis
+    beginAnalysis, completeAnalysis, restoreFocus
   };
 })();
 </script>
@@ -221,6 +229,8 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
 
   function updateButton() {
     button.disabled = logic.buttonDisabled(state);
+    consent.disabled = state.analyzing;
+    consent.checked = state.consent;
     selectedName.textContent = state.selectedSession
       ? `${text(state.selectedSession.agent)} · ${text(state.selectedSession.title)}`
       : "未选择";
@@ -241,9 +251,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   }
 
   function restoreFocus() {
-    if (!state.focusTarget) return;
-    const target = document.getElementById(state.focusTarget);
-    if (target) target.focus();
+    logic.restoreFocus(document, state.focusTarget);
   }
 
   function render() {
@@ -260,6 +268,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       header.className = "agent-header";
       header.type = "button";
       header.id = `agent-header-${groupIndex}`;
+      header.disabled = state.analyzing;
       header.setAttribute("aria-expanded", String(expanded));
       const panelId = `agent-sessions-${groupIndex}`;
       header.setAttribute("aria-controls", panelId);
@@ -302,6 +311,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
         radio.type = "radio";
         radio.name = "selectedSession";
         radio.id = `session-radio-${groupIndex}-${sessionIndex}`;
+        radio.disabled = state.analyzing;
         radio.value = text(session.id);
         radio.checked = Boolean(isSelected);
         radio.addEventListener("change", () => chooseSession(groupIndex, sessionIndex));
@@ -335,6 +345,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     if (!started.accepted) return;
     state = started.state;
     button.textContent = "分析中…";
+    render();
     updateButton();
     try {
       const response = await fetch("/api/analyze", {
@@ -356,6 +367,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
         }).state;
       }
       button.textContent = "重新分析 →";
+      render();
       updateButton();
     }
   }

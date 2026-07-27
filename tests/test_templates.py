@@ -140,7 +140,10 @@ class SessionSelectionTemplateTests(unittest.TestCase):
     def test_focus_targets_are_index_based_and_restored_after_render(self):
         for token in (
             'header.id = `agent-header-${groupIndex}`',
+            "header.disabled = state.analyzing",
             'radio.id = `session-radio-${groupIndex}-${sessionIndex}`',
+            "radio.disabled = state.analyzing",
+            "consent.disabled = state.analyzing",
             "restoreFocus()",
         ):
             with self.subTest(token=token):
