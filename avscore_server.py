@@ -471,7 +471,10 @@ class AvscoreApp:
         self.selection_html = render_selection(
             groups, token, config.selection_template
         )
-        report_path = Path(config.output_dir) / "report.html"
+        output_dir = Path(config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(output_dir, 0o700)
+        report_path = output_dir / "report.html"
         self.report_html = (
             report_path.read_text(encoding="utf-8")
             if report_path.is_file()
@@ -501,6 +504,7 @@ class AvscoreApp:
         """Stage complete files and roll back the set if publication fails."""
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(output_dir, 0o700)
         staging = Path(
             tempfile.mkdtemp(prefix=".avscore-recovery-", dir=output_dir)
         )

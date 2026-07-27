@@ -1022,6 +1022,21 @@ class HttpServerTests(unittest.TestCase):
                 with self.subTest(name=name):
                     self.assertEqual((output / name).stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits required")
+    def test_server_initialization_tightens_existing_output_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "existing-output"
+            output.mkdir(mode=0o755)
+            config = ServerConfig(
+                binary="agentsview",
+                selection_template=Path(__file__).parents[1]
+                / "session-selection.html.tmpl",
+                profile_template=Path(__file__).parents[1] / "avscore.html.tmpl",
+                output_dir=output,
+            )
+            AvscoreApp(config, ServerRunner([]), "token", [])
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+
     def test_report_absent_busy_and_safe_failure_preserves_old_report(self):
         with tempfile.TemporaryDirectory() as directory:
             coordinator = AnalysisCoordinator()

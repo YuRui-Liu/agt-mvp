@@ -283,7 +283,10 @@ main() {
     fi
   fi
 
-  mkdir -p "$OUTPUT_DIR"
+  if ! mkdir -p "$OUTPUT_DIR" || ! chmod 700 "$OUTPUT_DIR"; then
+    error "无法创建私有报告目录：$OUTPUT_DIR"
+    return 1
+  fi
   TMPDIR_AVSCORE=$(mktemp -d "${TMPDIR:-/tmp}/avscore-server.XXXXXX")
   startup_log="$TMPDIR_AVSCORE/server.log"
   server_args=(

@@ -206,6 +206,25 @@ EOF
   rm -rf "$FIXTURE"
 }
 
+test_launcher_creates_private_output_directory() {
+  new_fixture
+  write_agentsview
+  write_python
+  output=$(umask 022; AVSCORE_NO_BROWSER=1 run_launcher env)
+  status=$?
+  permissions=$(
+    stat -f '%Lp' "$FIXTURE/output dir" 2>/dev/null ||
+      stat -c '%a' "$FIXTURE/output dir"
+  )
+  if [ "$status" -eq 0 ] && [ "$permissions" = "700" ]; then
+    pass "creates report output directory with private permissions"
+  else
+    printf 'launcher output: %s\npermissions: %s\n' "$output" "$permissions" >&2
+    fail "creates report output directory with private permissions"
+  fi
+  rm -rf "$FIXTURE"
+}
+
 test_signal_forwarding() {
   new_fixture
   write_agentsview
@@ -325,6 +344,7 @@ test_invalid_explicit_binary_never_downloads
 test_sync_failure_and_skip
 test_python_and_template_errors
 test_server_args_and_browser_failure
+test_launcher_creates_private_output_directory
 test_signal_forwarding
 test_download_checksum_safety_and_atomic_install
 test_resolve_version_rejects_malformed_semver_redirect
