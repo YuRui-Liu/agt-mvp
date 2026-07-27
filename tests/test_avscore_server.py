@@ -1,19 +1,26 @@
 import json
+import http.client
+import io
 import re
 import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
 from avscore_server import (
     AnalysisBusyError,
     AnalysisCoordinator,
     AvscoreError,
     CommandRunner,
+    ServerConfig,
     atomic_write,
+    build_argument_parser,
     build_report_model,
+    create_server,
     load_sessions,
     normalize_sessions,
     parse_profile,
@@ -62,6 +69,61 @@ class RecordingRunner:
     def run(self, args):
         self.calls.append(args)
         return next(self.results)
+
+
+class ServerRunner:
+    def __init__(self, sessions):
+        self.sessions = sessions
+        self.calls = []
+
+    def run(self, args):
+        self.calls.append(args)
+        if args[:2] == ["session", "list"]:
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"sessions": self.sessions}), ""
+            )
+        return subprocess.CompletedProcess(args, 0, json.dumps(profile_payload()), "")
+
+
+@contextmanager
+def running_server(tmp_path, *, token="fixed secret", sessions=None, coordinator=None):
+    sessions = sessions or [
+        {
+            "id": "s-1",
+            "agent": "codex",
+            "project": "server-project",
+            "display_name": "Server session",
+        }
+    ]
+    runner = ServerRunner(sessions)
+    config = ServerConfig(
+        binary="agentsview",
+        selection_template=Path(__file__).parents[1] / "session-selection.html.tmpl",
+        profile_template=Path(__file__).parents[1] / "avscore.html.tmpl",
+        output_dir=Path(tmp_path),
+        port=0,
+    )
+    server = create_server(
+        config, runner=runner, token=token, coordinator=coordinator
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server, runner
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+def request(server, method, path, *, body=None, headers=None):
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+    connection.request(method, path, body=body, headers=headers or {})
+    response = connection.getresponse()
+    payload = response.read()
+    result = response.status, dict(response.getheaders()), payload
+    connection.close()
+    return result
 
 
 class SessionNormalizationTests(unittest.TestCase):
@@ -732,6 +794,305 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("系统 &#123;&#123;设计者}}", rendered)
         self.assertIn("变化 &#123;&#123;alpha}}", rendered)
         self.assertIn("/?token=token%20%7B%7Bliteral%7D%7D", rendered)
+
+
+class HttpServerTests(unittest.TestCase):
+    def test_selection_health_authentication_and_security_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                for path in ("/", "/api/health"):
+                    status, _headers, body = request(server, "GET", path)
+                    self.assertEqual(status, 403)
+                    self.assertEqual(json.loads(body), {"message": "Forbidden"})
+
+                status, headers, body = request(
+                    server, "GET", "/?token=" + quote("fixed secret")
+                )
+                self.assertEqual(status, 200)
+                self.assertIn(b"Server session", body)
+                self.assertIn("text/html; charset=utf-8", headers["Content-Type"])
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+                self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+
+                status, _, body = request(
+                    server,
+                    "GET",
+                    "/api/health",
+                    headers={"X-Avscore-Token": "fixed secret"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), {"status": "ok"})
+
+    def test_unknown_route_and_disallowed_method_are_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                auth = {"X-Avscore-Token": "fixed secret"}
+                status, _, body = request(server, "GET", "/missing", headers=auth)
+                self.assertEqual(status, 404)
+                self.assertEqual(json.loads(body), {"message": "Not found"})
+                status, headers, body = request(server, "PUT", "/", headers=auth)
+                self.assertEqual(status, 405)
+                self.assertEqual(headers["Allow"], "GET")
+                self.assertEqual(json.loads(body), {"message": "Method not allowed"})
+                status, _, body = request(
+                    server, "POST", "/missing", body="{}", headers=auth
+                )
+                self.assertEqual(status, 404)
+                self.assertEqual(json.loads(body), {"message": "Not found"})
+                status, headers, _ = request(
+                    server, "GET", "/api/analyze", headers=auth
+                )
+                self.assertEqual(status, 405)
+                self.assertEqual(headers["Allow"], "POST")
+                status, headers, body = request(
+                    server, "TRACE", "/", headers=auth
+                )
+                self.assertEqual(status, 405)
+                self.assertIn("application/json", headers["Content-Type"])
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(json.loads(body), {"message": "Method not allowed"})
+
+    def test_analyze_rejects_bad_body_schema_and_unknown_session(self):
+        cases = (
+            ({}, None),
+            ({"Content-Type": "text/plain", "Content-Length": "2"}, "{}"),
+            ({"Content-Type": "application/json", "Content-Length": "wat"}, "{}"),
+            ({"Content-Type": "application/json"}, "{"),
+            (
+                {"Content-Type": "application/json"},
+                json.dumps({"session_id": "s-1", "project": "forged"}),
+            ),
+            (
+                {"Content-Type": "application/json"},
+                json.dumps({"session_id": "missing"}),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                for headers, body in cases:
+                    with self.subTest(headers=headers, body=body):
+                        headers = {
+                            **headers,
+                            "X-Avscore-Token": "fixed secret",
+                        }
+                        status, _, response = request(
+                            server, "POST", "/api/analyze", body=body, headers=headers
+                        )
+                        self.assertEqual(status, 400)
+                        self.assertEqual(set(json.loads(response)), {"message"})
+
+                status, _, _ = request(
+                    server,
+                    "POST",
+                    "/api/analyze",
+                    body=b"x" * (16 * 1024 + 1),
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Avscore-Token": "fixed secret",
+                    },
+                )
+                self.assertEqual(status, 400)
+
+    @mock.patch("avscore_server.run_profile")
+    def test_valid_session_uses_server_project_and_publishes_three_files(self, profile):
+        profile.return_value = (profile_payload(61), False)
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory, token="a token&") as (server, _runner):
+                body = json.dumps({"session_id": "s-1"})
+                status, _, response = request(
+                    server,
+                    "POST",
+                    "/api/analyze",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Avscore-Token": "a token&",
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    json.loads(response),
+                    {"report_url": "/report?token=a%20token%26"},
+                )
+                profile.assert_called_once()
+                self.assertEqual(profile.call_args.args[1], "server-project")
+                output = Path(directory)
+                self.assertEqual(
+                    json.loads((output / "profile.json").read_text()),
+                    profile_payload(61),
+                )
+                model = json.loads((output / "report.json").read_text())
+                self.assertEqual(model["project"], "server-project")
+                self.assertEqual(model["project_session_count"], 1)
+                self.assertIn("report-data", (output / "report.html").read_text())
+
+                status, headers, report = request(
+                    server, "GET", "/report?token=" + quote("a token&")
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(report, (output / "report.html").read_bytes())
+                self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_report_absent_busy_and_safe_failure_preserves_old_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = AnalysisCoordinator()
+            with running_server(directory, coordinator=coordinator) as (server, _runner):
+                status, _, _ = request(
+                    server, "GET", "/report?token=" + quote("fixed secret")
+                )
+                self.assertEqual(status, 404)
+
+                coordinator._lock.acquire()
+                try:
+                    status, _, body = request(
+                        server,
+                        "POST",
+                        "/api/analyze",
+                        body=json.dumps({"session_id": "s-1"}),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Avscore-Token": "fixed secret",
+                        },
+                    )
+                finally:
+                    coordinator._lock.release()
+                self.assertEqual(status, 409)
+                self.assertEqual(set(json.loads(body)), {"message"})
+
+                output = Path(directory)
+                for name in ("profile.json", "report.json", "report.html"):
+                    (output / name).write_text("old-success", encoding="utf-8")
+                server.app.report_html = "old-success"
+                with mock.patch(
+                    "avscore_server.run_profile",
+                    side_effect=AvscoreError("safe summary"),
+                ):
+                    status, _, body = request(
+                        server,
+                        "POST",
+                        "/api/analyze",
+                        body=json.dumps({"session_id": "s-1"}),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Avscore-Token": "fixed secret",
+                        },
+                    )
+                self.assertEqual(status, 500)
+                self.assertEqual(json.loads(body), {"message": "safe summary"})
+                for name in ("profile.json", "report.json", "report.html"):
+                    self.assertEqual((output / name).read_text(), "old-success")
+
+    @mock.patch("avscore_server.run_profile")
+    def test_publish_replace_failure_rolls_back_all_three_old_files(self, profile):
+        profile.return_value = (profile_payload(70), False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            old = {
+                "profile.json": '{"old":"profile"}',
+                "report.json": '{"old":"report"}',
+                "report.html": "old report html",
+            }
+            for name, content in old.items():
+                (output / name).write_text(content, encoding="utf-8")
+            real_replace = __import__("os").replace
+            failed = False
+
+            def fail_second_install(source, destination):
+                nonlocal failed
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not failed
+                    and source_path.name == "report.json"
+                    and destination_path == output / "report.json"
+                ):
+                    failed = True
+                    raise OSError("injected publish failure")
+                return real_replace(source, destination)
+
+            with running_server(directory) as (server, _runner):
+                with mock.patch(
+                    "avscore_server.os.replace", side_effect=fail_second_install
+                ):
+                    status, _, _ = request(
+                        server,
+                        "POST",
+                        "/api/analyze",
+                        body=json.dumps({"session_id": "s-1"}),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Avscore-Token": "fixed secret",
+                        },
+                    )
+                self.assertEqual(status, 500)
+                for name, content in old.items():
+                    self.assertEqual((output / name).read_text(), content)
+
+    def test_wrong_token_and_request_log_do_not_expose_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory, token="highly-sensitive") as (server, _):
+                with mock.patch("sys.stderr") as stderr:
+                    status, _, _ = request(
+                        server,
+                        "GET",
+                        "/?token=highly-sensitive-wrong",
+                    )
+                self.assertEqual(status, 403)
+                logged = "".join(str(call) for call in stderr.method_calls)
+                self.assertNotIn("highly-sensitive", logged)
+
+
+class ServerCliTests(unittest.TestCase):
+    def test_parser_supports_server_configuration(self):
+        args = build_argument_parser().parse_args(
+            [
+                "--binary", "bin",
+                "--selection-template", "selection",
+                "--profile-template", "profile",
+                "--output-dir", "out",
+                "--port", "1234",
+            ]
+        )
+        self.assertEqual(args.binary, "bin")
+        self.assertEqual(args.selection_template, "selection")
+        self.assertEqual(args.profile_template, "profile")
+        self.assertEqual(args.output_dir, "out")
+        self.assertEqual(args.port, 1234)
+
+    @mock.patch("avscore_server.signal.signal")
+    @mock.patch("avscore_server.signal.getsignal", return_value=object())
+    @mock.patch("avscore_server.create_server")
+    def test_main_prints_parseable_start_event_before_serving(
+        self, create_server_mock, _getsignal, _signal
+    ):
+        fake_server = mock.Mock()
+        fake_server.server_port = 43210
+        fake_server.app.token = "secret value&"
+        create_server_mock.return_value = fake_server
+        stdout = io.StringIO()
+
+        with mock.patch("sys.stdout", stdout):
+            from avscore_server import main
+            result = main(
+                [
+                    "--binary", "bin",
+                    "--selection-template", "selection",
+                    "--profile-template", "profile",
+                    "--output-dir", "out",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        event = json.loads(stdout.getvalue())
+        self.assertEqual(event["type"], "server-started")
+        self.assertEqual(event["port"], 43210)
+        self.assertEqual(
+            event["url"], "http://127.0.0.1:43210/?token=secret%20value%26"
+        )
+        self.assertNotIn("token", event)
+        fake_server.serve_forever.assert_called_once_with()
+        fake_server.server_close.assert_called_once_with()
 
 
 if __name__ == "__main__":
