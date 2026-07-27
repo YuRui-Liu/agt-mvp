@@ -46,7 +46,7 @@ class CommandRunner:
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
-            raise AvscoreError("无法执行 agentsview session 命令") from None
+            raise AvscoreError("无法执行 agentsview 命令") from None
 
 
 def safe_error(summary, stderr=""):
@@ -155,11 +155,15 @@ def build_report_model(profile, project, project_session_count, degraded):
         isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not math.isfinite(confidence)
+        or not 0 <= confidence <= 1
     ):
         confidence = 0
     shifts = evolution.get("key_shifts")
     if not isinstance(shifts, list):
         shifts = []
+    shifts = [
+        shift for shift in shifts if isinstance(shift, str) and shift.strip()
+    ][:5]
     return {
         "project": project,
         "project_session_count": project_session_count,

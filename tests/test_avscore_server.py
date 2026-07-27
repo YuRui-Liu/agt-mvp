@@ -256,6 +256,7 @@ class CommandRunnerTests(unittest.TestCase):
                 with self.assertRaises(AvscoreError) as raised:
                     CommandRunner("agentsview", timeout=12).run(["session", "list"])
 
+                self.assertEqual(str(raised.exception), "无法执行 agentsview 命令")
                 self.assertNotIn("secret", str(raised.exception))
 
 
@@ -417,6 +418,38 @@ class ProfileParsingTests(unittest.TestCase):
         self.assertEqual(model["archetype"]["primary"], "系统设计者")
         self.assertEqual(model["trend"]["prediction"], "保持稳健")
         self.assertEqual(model["dimensions"][0]["score"], 50)
+
+    def test_build_report_model_sanitizes_malformed_optional_fields(self):
+        invalid_confidences = (-0.1, 1.1, float("nan"), float("inf"), "0.8", True)
+        for confidence in invalid_confidences:
+            with self.subTest(confidence=confidence):
+                payload = profile_payload()
+                payload["archetype"]["confidence"] = confidence
+
+                model = build_report_model(payload, "atr", 3, False)
+
+                self.assertEqual(model["archetype"]["confidence"], 0)
+
+        payload = profile_payload()
+        payload["evolution"]["key_shifts"] = [
+            "",
+            "  ",
+            {"dimension": "steering"},
+            42,
+            "shift 1",
+            " shift 2 ",
+            "shift 3",
+            "shift 4",
+            "shift 5",
+            "shift 6",
+        ]
+
+        model = build_report_model(payload, "atr", 3, False)
+
+        self.assertEqual(
+            model["trend"]["key_shifts"],
+            ["shift 1", " shift 2 ", "shift 3", "shift 4", "shift 5"],
+        )
 
 
 class AnalysisCoordinatorTests(unittest.TestCase):
