@@ -1353,6 +1353,7 @@
         dot.setAttribute("data-index", index);
         dot.setAttribute("tabindex", "0");
         dot.setAttribute("role", "button");
+        dot.setAttribute("aria-pressed", "false");
         dot.setAttribute("aria-label", `${dimension.english} ${dimension.score}分`);
         dot.addEventListener("click", () => selectDimension(index));
         dot.addEventListener("keydown", (event) => {
@@ -1386,6 +1387,7 @@
         tab.type = "button";
         tab.className = "dimension-tab";
         tab.dataset.index = index;
+        tab.setAttribute("aria-pressed", "false");
         tab.textContent = dimension.label;
         tab.addEventListener("click", () => selectDimension(index));
         tabs.appendChild(tab);
@@ -1394,6 +1396,7 @@
         mini.type = "button";
         mini.className = "metric-mini";
         mini.dataset.index = index;
+        mini.setAttribute("aria-pressed", "false");
         mini.setAttribute("aria-label", `查看${dimension.english}指标`);
         mini.innerHTML = `<strong>${dimension.score}</strong><span>${dimension.english}</span>`;
         mini.addEventListener("click", () => {
@@ -1422,7 +1425,14 @@
 
         const flags = AVScoreReportLogic.selectionFlags(dimensions.length, activeIndex);
         document.querySelectorAll("[data-index]").forEach((element) => {
-          element.classList.toggle("is-active", flags[Number(element.dataset.index)]);
+          const selected = flags[Number(element.dataset.index)];
+          element.classList.toggle("is-active", selected);
+          if (
+            element.tagName === "BUTTON"
+            || element.getAttribute("role") === "button"
+          ) {
+            element.setAttribute("aria-pressed", String(selected));
+          }
         });
       }
 

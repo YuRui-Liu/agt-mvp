@@ -4,22 +4,149 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const template = fs.readFileSync("avscore.html.tmpl", "utf8");
-const source = template.match(
-  /\/\* report-logic:start \*\/([\s\S]*?)\/\* report-logic:end \*\//
-)[1];
-const context = {};
-vm.createContext(context);
-vm.runInContext(source, context);
-const logic = context.AVScoreReportLogic;
 
-test("real scores change radar polygon geometry", () => {
-  const low = logic.shapePoints([10, 20, 30, 40, 50, 60, 70], 260, 172);
-  const high = logic.shapePoints([90, 20, 30, 40, 50, 60, 70], 260, 172);
-  assert.notEqual(low, high);
-  assert.equal(low.split(" ").length, 7);
-});
+class Element {
+  constructor(tagName = "div") {
+    this.tagName = tagName.toUpperCase();
+    this.attributes = new Map();
+    this.children = [];
+    this.dataset = {};
+    this.listeners = {};
+    this.textContent = "";
+    this.className = "";
+    this.innerHTML = "";
+    this.classList = {
+      values: new Set(),
+      toggle: (name, force) => {
+        if (force) this.classList.values.add(name);
+        else this.classList.values.delete(name);
+      },
+      contains: name => this.classList.values.has(name),
+    };
+  }
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    if (name === "data-index") this.dataset.index = String(value);
+  }
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+  append(...children) {
+    this.children.push(...children);
+  }
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  }
+  dispatch(type, init = {}) {
+    const event = {
+      key: init.key,
+      preventDefault() {},
+    };
+    for (const handler of this.listeners[type] || []) handler(event);
+  }
+  scrollIntoView() {}
+}
 
-test("tab and metric selection share one active index", () => {
-  const flags = logic.selectionFlags(7, 4);
-  assert.deepEqual(Array.from(flags), [false, false, false, false, true, false, false]);
+function executeReport(report) {
+  const rendered = template
+    .replace("{{REPORT_JSON}}", JSON.stringify(report))
+    .replaceAll("{{RETURN_URL}}", "/?token=real")
+    .replace("{{ARCHETYPE_PRIMARY}}", report.archetype.primary)
+    .replace("{{ARCHETYPE_CONFIDENCE}}", String(report.archetype.confidence * 100))
+    .replace("{{TREND_SHIFTS}}", report.trend.key_shifts.join(" · "));
+  const scripts = [...rendered.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)]
+    .filter(match => !match[1].includes("application/json"))
+    .map(match => match[2]);
+  const embeddedReport = rendered.match(
+    /<script type="application\/json" id="report-data">([\s\S]*?)<\/script>/
+  )[1];
+  const all = [];
+  const ids = new Map();
+  const register = (element) => {
+    all.push(element);
+    return element;
+  };
+  const requiredIds = [
+    "headerNote", "typeCode", "archetypePrimary", "archetypeConfidence",
+    "profile-title", "heroLead", "portraitCaption", "closingMonogram",
+    "footerProfile", "traitRow", "metaProject", "metaSessions", "metaEngine",
+    "metaGenerated", "trendSummary", "trendShifts", "radarChart",
+    "radarRings", "radarAxes", "radarDots", "radarLabels", "radarShape",
+    "dimensionTabs", "metricGrid", "insightEnglish", "insightTitle",
+    "insightScore", "insightSummary", "insightEvidence",
+  ];
+  for (const id of requiredIds) ids.set(id, register(new Element()));
+  ids.set("report-data", register(new Element("script")));
+  ids.get("report-data").textContent = embeddedReport;
+  const insightPanel = register(new Element("aside"));
+  const document = {
+    title: "",
+    getElementById: id => ids.get(id),
+    createElement: tag => register(new Element(tag)),
+    createElementNS: (_namespace, tag) => register(new Element(tag)),
+    querySelectorAll: selector => selector === "[data-index]"
+      ? all.filter(element => element.dataset.index !== undefined)
+      : [],
+    querySelector: selector => selector === ".insight-panel" ? insightPanel : null,
+  };
+  const context = {document, console, Math};
+  context.globalThis = context;
+  vm.createContext(context);
+  for (const source of scripts) vm.runInContext(source, context);
+  return {ids, context};
+}
+
+const dimensions = [
+  ["steering", "引导", 12],
+  ["execution", "执行", 24],
+  ["engineering", "工程", 36],
+  ["planning", "规划", 48],
+  ["product", "产品", 60],
+  ["autonomy", "自主", 72],
+  ["adaptation", "适应", 84],
+].map(([key, label, score]) => ({
+  key, label, score, title: `${label}标题`,
+  summary: `${label}摘要`, evidence: `${label}证据`,
+}));
+const report = {
+  project: "真实项目",
+  project_session_count: 9,
+  generated_at: "2026-07-27T09:00:00Z",
+  engine: "statistical",
+  degraded: false,
+  archetype: {
+    primary: "系统设计者", code: "REAL", title: "真实画像",
+    summary: "真实摘要", traits: ["可靠"], confidence: 0.73,
+  },
+  trend: {prediction: "继续变化", key_shifts: ["变化一", "变化二"]},
+  dimensions,
+};
+
+test("rendered report executes full DOM and SVG wiring", () => {
+  const {ids} = executeReport(report);
+  assert.equal(ids.get("headerNote").textContent, "真实项目 · 9 个会话");
+  assert.equal(ids.get("profile-title").textContent, "真实画像");
+  assert.equal(ids.get("radarShape").getAttribute("points").split(" ").length, 7);
+  assert.match(ids.get("radarShape").getAttribute("points"), /^260,239\.36 /);
+  assert.equal(ids.get("radarDots").children.length, 7);
+
+  ids.get("radarDots").children[0].dispatch("click");
+  assert.equal(ids.get("insightTitle").textContent, "引导标题");
+  assert.equal(ids.get("dimensionTabs").children[0].getAttribute("aria-pressed"), "true");
+
+  ids.get("dimensionTabs").children[4].dispatch("click");
+  assert.equal(ids.get("insightSummary").textContent, "产品摘要");
+  assert.equal(ids.get("metricGrid").children[4].getAttribute("aria-pressed"), "true");
+
+  ids.get("metricGrid").children[6].dispatch("click");
+  assert.equal(ids.get("insightEvidence").textContent, "适应证据");
+
+  ids.get("radarDots").children[1].dispatch("keydown", {key: "Enter"});
+  assert.equal(ids.get("insightScore").textContent, 24);
+  assert.equal(ids.get("radarDots").children[1].getAttribute("aria-pressed"), "true");
+  assert.equal(ids.get("radarDots").children[0].getAttribute("aria-pressed"), "false");
 });

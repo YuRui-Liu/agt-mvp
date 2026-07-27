@@ -102,7 +102,7 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
     )
     archetype = report_model["archetype"]
     rendered = rendered.replace(
-        "{{ARCHETYPE_PRIMARY}}", html.escape(str(archetype["primary"]))
+        "{{ARCHETYPE_PRIMARY}}", _escape_template_text(archetype["primary"])
     )
     rendered = rendered.replace(
         "{{ARCHETYPE_CONFIDENCE}}",
@@ -110,10 +110,18 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
     )
     shifts = report_model["trend"]["key_shifts"]
     shift_copy = " · ".join(shifts) if shifts else "暂无可用的阶段变化信号。"
-    rendered = rendered.replace("{{TREND_SHIFTS}}", html.escape(shift_copy))
+    rendered = rendered.replace(
+        "{{TREND_SHIFTS}}", _escape_template_text(shift_copy)
+    )
     if "{{" in rendered:
         raise AvscoreError("template marker remains after rendering")
     return rendered
+
+
+def _escape_template_text(value):
+    """Escape HTML and literal template openers while preserving browser text."""
+
+    return html.escape(str(value)).replace("{", "&#123;")
 
 
 class CommandRunner:

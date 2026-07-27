@@ -708,6 +708,31 @@ class ReportRenderingTests(unittest.TestCase):
             with self.assertRaisesRegex(AvscoreError, "missing template placeholder"):
                 render_report(model, "token", template)
 
+    def test_render_report_round_trips_literal_template_markers_in_real_data(self):
+        payload = profile_payload()
+        payload["archetype"].update(
+            {
+                "primary": "系统 {{设计者}}",
+                "summary": "摘要 {{不是占位符}}",
+                "traits": ["特征 {{一}}"],
+            }
+        )
+        payload["evolution"]["key_shifts"] = ["变化 {{alpha}}"]
+        model = build_report_model(payload, "项目 {{真实}}", 3, False)
+
+        rendered = render_report(model, "token {{literal}}")
+
+        self.assertNotIn("{{", rendered)
+        report_json = re.search(
+            r'<script type="application/json" id="report-data">(.*?)</script>',
+            rendered,
+            re.DOTALL,
+        ).group(1)
+        self.assertEqual(json.loads(report_json), model)
+        self.assertIn("系统 &#123;&#123;设计者}}", rendered)
+        self.assertIn("变化 &#123;&#123;alpha}}", rendered)
+        self.assertIn("/?token=token%20%7B%7Bliteral%7D%7D", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
