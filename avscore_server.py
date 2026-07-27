@@ -632,7 +632,11 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
 
     def _authorized(self, parsed):
         supplied = self.headers.get("X-Avscore-Token")
-        if supplied is None and self.command == "GET":
+        if (
+            supplied is None
+            and self.command == "GET"
+            and parsed.path in ("/", "/report")
+        ):
             values = parse_qs(parsed.query, keep_blank_values=True).get("token", [])
             supplied = values[0] if len(values) == 1 else None
         return self.server.app.authenticated(supplied)

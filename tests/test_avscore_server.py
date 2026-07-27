@@ -824,6 +824,22 @@ class HttpServerTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body), {"status": "ok"})
 
+                status, _, body = request(
+                    server,
+                    "GET",
+                    "/api/health?token=" + quote("fixed secret"),
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body), {"message": "Forbidden"})
+
+                status, _, body = request(
+                    server,
+                    "GET",
+                    "/api/missing?token=" + quote("fixed secret"),
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body), {"message": "Forbidden"})
+
     def test_unknown_route_and_disallowed_method_are_json(self):
         with tempfile.TemporaryDirectory() as directory:
             with running_server(directory) as (server, _runner):
