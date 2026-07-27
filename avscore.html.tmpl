@@ -245,6 +245,7 @@
         margin-top: 34px;
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 18px;
       }
 
@@ -1048,11 +1049,13 @@
       <main>
         <section class="hero" aria-labelledby="profile-title">
           <div class="hero-copy">
-            <div class="eyebrow">Your AI collaboration identity</div>
+            <div class="eyebrow" id="archetypePrimary">{{ARCHETYPE_PRIMARY}}</div>
             <p class="type-code" id="typeCode">7D</p>
             <h1 id="profile-title">AI 协作画像</h1>
             <p class="hero-lead" id="heroLead">正在读取本地画像数据。</p>
-            <div class="trait-row" id="traitRow" aria-label="画像特征"></div>
+            <div class="trait-row" id="traitRow" aria-label="画像特征">
+              <span class="trait" id="archetypeConfidence">置信度：{{ARCHETYPE_CONFIDENCE}}%</span>
+            </div>
             <div class="hero-actions">
               <a class="primary-link" href="#seven-d">查看我的 7D 画像 <span aria-hidden="true">↓</span></a>
               <a class="text-link" href="{{RETURN_URL}}">重新选择会话</a>
@@ -1200,9 +1203,7 @@
               <article class="need-card">
                 <div class="need-number">03 / EVOLUTION</div>
                 <h3>把经验变成团队方法</h3>
-                <p>
-                  Adaptation 与 Planning 的分布可以帮助团队观察协作方式是否发生变化。
-                </p>
+                <p id="trendShifts">{{TREND_SHIFTS}}</p>
                 <span class="match">Adaptation × Planning</span>
               </article>
             </div>
@@ -1264,6 +1265,10 @@
       document.getElementById("headerNote").textContent =
         `${report.project} · ${report.project_session_count} 个会话`;
       document.getElementById("typeCode").textContent = report.archetype.code;
+      document.getElementById("archetypePrimary").textContent =
+        report.archetype.primary;
+      document.getElementById("archetypeConfidence").textContent =
+        `置信度：${Math.round(report.archetype.confidence * 100)}%`;
       document.getElementById("profile-title").textContent = report.archetype.title;
       document.getElementById("heroLead").textContent = report.archetype.summary;
       document.getElementById("portraitCaption").textContent =
@@ -1286,6 +1291,10 @@
       document.getElementById("metaGenerated").textContent =
         `生成：${report.generated_at}`;
       document.getElementById("trendSummary").textContent = report.trend.prediction;
+      document.getElementById("trendShifts").textContent =
+        report.trend.key_shifts.length
+          ? report.trend.key_shifts.join(" · ")
+          : "暂无可用的阶段变化信号。";
 
       const svg = document.getElementById("radarChart");
       const ringsGroup = document.getElementById("radarRings");

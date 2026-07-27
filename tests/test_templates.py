@@ -14,16 +14,41 @@ INTERACTION_TEST = Path(__file__).parent / "session_selection_interactions.js"
 
 def css_rules(document):
     css = re.search(r"<style>(.*?)</style>", document, re.DOTALL).group(1)
-    css = css.split("@media", 1)[0]
-    return {
-        selector.strip(): {
+    while "@media" in css:
+        start = css.index("@media")
+        opening = css.index("{", start)
+        depth = 1
+        cursor = opening + 1
+        while depth:
+            depth += (css[cursor] == "{") - (css[cursor] == "}")
+            cursor += 1
+        css = css[:start] + css[cursor:]
+    rules = {}
+    for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        declaration_map = {
             name.strip(): value.strip()
             for declaration in declarations.split(";")
             if ":" in declaration
             for name, value in [declaration.split(":", 1)]
         }
-        for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
-    }
+        normalized_selector = ",".join(part.strip() for part in selector.split(","))
+        rules[normalized_selector] = declaration_map
+        for part in selector.split(","):
+            rules[part.strip()] = declaration_map
+    return rules
+
+
+def media_css_rules(document, query):
+    css = re.search(r"<style>(.*?)</style>", document, re.DOTALL).group(1)
+    marker = f"@media {query}"
+    start = css.index(marker)
+    opening = css.index("{", start)
+    depth = 1
+    cursor = opening + 1
+    while depth:
+        depth += (css[cursor] == "{") - (css[cursor] == "}")
+        cursor += 1
+    return css_rules("<style>" + css[opening + 1 : cursor - 1] + "</style>")
 
 
 class SessionSelectionTemplateTests(unittest.TestCase):
@@ -179,18 +204,51 @@ class ReportTemplateTests(unittest.TestCase):
     def test_matches_reference_core_css_declarations(self):
         reference_rules = css_rules(self.reference)
         template_rules = css_rules(self.template)
-        for selector in (
-            ".site-header",
-            ".hero",
-            ".radar-layout",
-            ".radar-panel",
-            ".dimension-tabs",
-            ".need-section",
-            ".closing",
-        ):
+        excluded = ("kwaiti-", ".poster-link", ".hero-actions button")
+        selectors = [
+            selector
+            for selector in reference_rules
+            if not any(token in selector for token in excluded)
+        ]
+        self.assertGreater(len(selectors), 75)
+        for selector in selectors:
             with self.subTest(selector=selector):
+                self.assertIn(selector, template_rules)
                 for name, value in reference_rules[selector].items():
+                    if selector == ".portrait-frame::before" and name == "content":
+                        continue
                     self.assertEqual(template_rules[selector].get(name), value)
+
+    def test_matches_reference_responsive_and_reduced_motion_rules(self):
+        excluded = ("kwaiti-", ".poster-link", ".hero-actions button")
+        for query in (
+            "(max-width: 980px)",
+            "(max-width: 680px)",
+            "(prefers-reduced-motion: reduce)",
+        ):
+            reference_rules = media_css_rules(self.reference, query)
+            template_rules = media_css_rules(self.template, query)
+            for selector, declarations in reference_rules.items():
+                if any(token in selector for token in excluded):
+                    continue
+                with self.subTest(query=query, selector=selector):
+                    self.assertIn(selector, template_rules)
+                    for name, value in declarations.items():
+                        self.assertEqual(template_rules[selector].get(name), value)
+
+    def test_preserves_reference_core_dom_hierarchy(self):
+        for pattern in (
+            r'<header class="site-header">[\s\S]*?<a class="brand"',
+            r'<main>[\s\S]*?<section class="hero"',
+            r'<section class="section" id="seven-d"[\s\S]*?<div class="radar-layout">',
+            r'<div class="panel radar-panel">[\s\S]*?id="radarChart"',
+            r'<aside class="panel insight-panel"[\s\S]*?id="dimensionTabs"',
+            r'id="metricGrid"[\s\S]*?<div class="type-breakdown"',
+            r'<section class="need-section"[\s\S]*?<div class="need-grid">',
+            r'<section class="closing"[\s\S]*?<div class="closing-card">',
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertRegex(self.template, pattern)
 
     def test_preserves_full_visual_and_responsive_contract(self):
         for token in (
@@ -214,13 +272,25 @@ class ReportTemplateTests(unittest.TestCase):
     def test_uses_only_safe_report_placeholders_and_no_demo_dependencies(self):
         self.assertEqual(
             set(re.findall(r"{{([A-Z0-9_]+)}}", self.template)),
-            {"REPORT_JSON", "RETURN_URL"},
+            {
+                "REPORT_JSON",
+                "RETURN_URL",
+                "ARCHETYPE_PRIMARY",
+                "ARCHETYPE_CONFIDENCE",
+                "TREND_SHIFTS",
+            },
         )
         for forbidden in ("KwAITI", "_kwaiti-mock.js", "MOCK", "fetch("):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.template)
         self.assertIn('id="report-data"', self.template)
         self.assertIn("JSON.parse", self.template)
+        for identifier in (
+            'id="archetypePrimary"',
+            'id="archetypeConfidence"',
+            'id="trendShifts"',
+        ):
+            self.assertIn(identifier, self.template)
 
     def test_report_radar_and_selection_logic_execute_in_node(self):
         result = subprocess.run(

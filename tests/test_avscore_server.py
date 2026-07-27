@@ -655,8 +655,10 @@ class ReportRenderingTests(unittest.TestCase):
                 "title": "真实画像",
                 "summary": "项目 <b>摘要</b>",
                 "traits": ["系统化", "<script>alert(1)</script>"],
+                "confidence": 0.73,
             }
         )
+        payload["evolution"]["key_shifts"] = ["转变一", "转变二"]
         payload["profile"]["steering"].update(
             {"title": "引导 <强>", "summary": "不形成 <img>", "evidence": "证据"}
         )
@@ -676,6 +678,21 @@ class ReportRenderingTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         self.assertEqual(json.loads(match.group(1)), model)
+        self.assertIn('id="archetypePrimary"', rendered)
+        self.assertIn("report.archetype.primary", rendered)
+        self.assertIn('id="archetypeConfidence"', rendered)
+        self.assertIn("report.archetype.confidence", rendered)
+        self.assertIn('id="trendShifts"', rendered)
+        self.assertIn("report.trend.key_shifts", rendered)
+        self.assertRegex(
+            rendered, r'id="archetypePrimary">系统设计者</div>'
+        )
+        self.assertRegex(
+            rendered, r'id="archetypeConfidence">置信度：73%</span>'
+        )
+        self.assertRegex(
+            rendered, r'id="trendShifts">\s*转变一 · 转变二\s*</p>'
+        )
 
     def test_render_report_rejects_unknown_or_missing_placeholders(self):
         model = build_report_model(profile_payload(), "atr", 3, False)

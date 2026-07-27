@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import datetime, timezone
+import html
 import json
 import math
 import os
@@ -68,7 +69,13 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
     """Render a self-contained report with script-safe JSON data."""
 
     template = Path(template_path).read_text(encoding="utf-8")
-    required = {"REPORT_JSON", "RETURN_URL"}
+    required = {
+        "REPORT_JSON",
+        "RETURN_URL",
+        "ARCHETYPE_PRIMARY",
+        "ARCHETYPE_CONFIDENCE",
+        "TREND_SHIFTS",
+    }
     placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
     unknown = placeholders - required
     if unknown:
@@ -93,6 +100,17 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
     rendered = rendered.replace(
         "{{RETURN_URL}}", "/?token=" + quote(str(token), safe="")
     )
+    archetype = report_model["archetype"]
+    rendered = rendered.replace(
+        "{{ARCHETYPE_PRIMARY}}", html.escape(str(archetype["primary"]))
+    )
+    rendered = rendered.replace(
+        "{{ARCHETYPE_CONFIDENCE}}",
+        str(round(archetype["confidence"] * 100)),
+    )
+    shifts = report_model["trend"]["key_shifts"]
+    shift_copy = " · ".join(shifts) if shifts else "暂无可用的阶段变化信号。"
+    rendered = rendered.replace("{{TREND_SHIFTS}}", html.escape(shift_copy))
     if "{{" in rendered:
         raise AvscoreError("template marker remains after rendering")
     return rendered
