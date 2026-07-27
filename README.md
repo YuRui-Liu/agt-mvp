@@ -37,6 +37,8 @@ AVSCORE_NO_BROWSER=1 bash avscore.sh
 | `avscore_server.py` | 标准库本地 HTTP 服务、项目画像执行与报告写入 |
 | `session-selection.html.tmpl` | 会话选择页模板 |
 | `avscore.html.tmpl` | 七维画像结果页模板 |
+| `job-application.html.tmpl` | 本地 Mock 职位投递页模板 |
+| `aiti-mock.js` | 浏览器端验证码、AITI ID 与投递状态机 |
 | `avscore.md` | 可安装到代理环境的正式 skill |
 | `tests/test_avscore_server.py` | 服务端单元与 HTTP 测试 |
 | `tests/test_templates.py` | 页面结构与交互契约测试 |
@@ -64,6 +66,8 @@ AVSCORE_NO_BROWSER=1 bash avscore.sh
 ## 隐私与安全
 
 分析在本机完成，服务只监听 `127.0.0.1`，不会上传会话或画像数据。页面和 API 使用每次启动随机生成的 token；服务端只接受当前列表中真实存在的 session ID，并从服务端记录确定项目，浏览器不能注入任意项目或命令参数。
+
+画像页中的验证码、AITI ID 生成和职位投递均为演示用的本地 Mock。状态只保存在当前浏览器的 `localStorage`；投递表单不会发起网络请求，姓名、邮箱和手机号不会离开浏览器，也不会写入 Python 服务或报告文件。
 
 下载二进制时默认读取 `SHA256SUMS` 并校验 SHA-256。若校验值不匹配会停止；`AVSCORE_SKIP_CHECKSUM=1` 会降低安全性。只应通过 `AVSCORE_RELEASE_URL` 配置可信的内部 release 或镜像地址。
 

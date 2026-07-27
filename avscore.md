@@ -19,6 +19,8 @@ version: "1.0.0"
    - `avscore_server.py`
    - `session-selection.html.tmpl`
    - `avscore.html.tmpl`
+   - `job-application.html.tmpl`
+   - `aiti-mock.js`
 2. 告知用户进度：“正在准备本地 avscore 并同步会话。”
 3. 在仓库根目录直接运行：
 
@@ -55,5 +57,7 @@ AVSCORE_NO_BROWSER=1 AVSCORE_OUTPUT_DIR=/absolute/report/path bash avscore.sh
 ## 隐私与安全
 
 分析只在本机运行，HTTP 服务仅绑定 `127.0.0.1`，会话和画像不会上传。不要在聊天、日志或公开渠道转发包含随机 token 的完整 URL。浏览器只能选择服务端已知的 session；项目名由服务端记录决定。
+
+画像页中的验证码、AITI ID 生成和职位投递均为演示用的本地 Mock。状态只保存在当前浏览器的 `localStorage`；投递表单不会发起网络请求，姓名、邮箱和手机号不会离开浏览器，也不会写入 Python 服务或报告文件。
 
 下载默认校验 release 提供的 `SHA256SUMS`。校验不匹配时必须停止；除非用户理解供应链风险并明确要求，否则不要设置 `AVSCORE_SKIP_CHECKSUM=1`。使用 `AVSCORE_RELEASE_URL` 时只接受用户认可的可信来源，不臆造 GitHub、公司或第三方下载地址。

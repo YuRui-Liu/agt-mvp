@@ -42,6 +42,18 @@ class DocumentationTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.readme)
 
+    def test_local_mock_application_privacy_is_explicit(self):
+        for document in (self.readme, self.skill):
+            for phrase in (
+                "本地 Mock",
+                "验证码",
+                "投递",
+                "localStorage",
+                "手机号不会离开浏览器",
+            ):
+                with self.subTest(phrase=phrase):
+                    self.assertIn(phrase, document)
+
     def test_environment_variables_match_launcher(self):
         variables = (
             "AVSCORE_BINARY_PATH",
