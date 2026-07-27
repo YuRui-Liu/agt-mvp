@@ -309,6 +309,10 @@ class ReportTemplateTests(unittest.TestCase):
         self.assertEqual(
             set(re.findall(r"{{([A-Z0-9_]+)}}", self.template)),
             {
+                "AITI_MOCK_JS",
+                "APPLICATION_URL",
+                "POSTER_URL",
+                "QR_URL",
                 "REPORT_JSON",
                 "RETURN_URL",
                 "ARCHETYPE_PRIMARY",
@@ -316,7 +320,7 @@ class ReportTemplateTests(unittest.TestCase):
                 "TREND_SHIFTS",
             },
         )
-        for forbidden in ("KwAITI", "_kwaiti-mock.js", "MOCK", "fetch("):
+        for forbidden in ("KwAITI", "_kwaiti-mock.js", "fetch("):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.template)
         self.assertIn('id="report-data"', self.template)
@@ -327,6 +331,43 @@ class ReportTemplateTests(unittest.TestCase):
             'id="trendShifts"',
         ):
             self.assertIn(identifier, self.template)
+
+    def test_restores_aiti_identity_dom_and_reference_css_contract(self):
+        reference_rules = css_rules(self.reference)
+        template_rules = css_rules(self.template)
+        identity_selectors = [
+            selector for selector in reference_rules
+            if "kwaiti-" in selector or selector == ".poster-link"
+            or selector == ".poster-link:hover"
+        ]
+        self.assertGreater(len(identity_selectors), 25)
+        for selector in identity_selectors:
+            aiti_selector = selector.replace("kwaiti-", "aiti-")
+            with self.subTest(selector=aiti_selector):
+                self.assertIn(aiti_selector, template_rules)
+                self.assertEqual(template_rules[aiti_selector], reference_rules[selector])
+        for identifier in (
+            'id="aitiInlinePanel"', 'id="aitiInlineForm"',
+            'id="aitiIdentityResult"', 'id="aitiPhone"', 'id="aitiCode"',
+            'id="sendAitiCodeButton"', 'id="verifyAitiButton"',
+            'id="aitiStatus"',
+        ):
+            self.assertIn(identifier, self.template)
+
+    def test_poster_is_unintercepted_native_download(self):
+        match = re.search(r'<a class="poster-link"([^>]*)>', self.template)
+        self.assertIsNotNone(match)
+        attributes = match.group(1)
+        self.assertIn('href="{{POSTER_URL}}"', attributes)
+        self.assertIn('download="AITI-专属海报.png"', attributes)
+        for forbidden in ("onclick", "target=", "data-download", "preview", "lightbox"):
+            self.assertNotIn(forbidden, attributes.lower())
+        self.assertNotRegex(
+            self.template,
+            r'(poster|download)[\s\S]{0,100}\.addEventListener\(\s*["\']click',
+        )
+        for forbidden in ("createObjectURL", "window.open", "fetch("):
+            self.assertNotIn(forbidden, self.template)
 
     def test_report_radar_and_selection_logic_execute_in_node(self):
         result = subprocess.run(

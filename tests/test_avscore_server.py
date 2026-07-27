@@ -750,6 +750,11 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertNotIn("<b>摘要</b>", rendered)
         self.assertNotIn("<img>", rendered)
         self.assertIn("/?token=a%20token%26next%3D%2Fx", rendered)
+        self.assertIn("/application?token=a%20token%26next%3D%2Fx", rendered)
+        self.assertIn("/assets/poster.png?token=a%20token%26next%3D%2Fx", rendered)
+        self.assertIn("/assets/aiti-qr.svg?token=a%20token%26next%3D%2Fx", rendered)
+        self.assertIn("root.AITIMock = factory", rendered)
+        self.assertNotIn("{{AITI_MOCK_JS}}", rendered)
         match = re.search(
             r'<script type="application/json" id="report-data">(.*?)</script>',
             rendered,
@@ -812,6 +817,16 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("变化 &#123;&#123;alpha}}", rendered)
         self.assertIn("/?token=token%20%7B%7Bliteral%7D%7D", rendered)
 
+    def test_render_report_script_and_url_injection_stays_inert(self):
+        model = build_report_model(profile_payload(), "atr", 3, False)
+        rendered = render_report(model, 'x"><script>alert(1)</script>{{bad}}')
+        self.assertNotIn('x"><script>alert(1)</script>', rendered)
+        self.assertNotIn("{{", rendered)
+        self.assertIn(
+            "/application?token=x%22%3E%3Cscript%3Ealert%281%29%3C%2Fscript%3E%7B%7Bbad%7D%7D",
+            rendered,
+        )
+
 
 class HttpServerTests(unittest.TestCase):
     def test_selection_health_authentication_and_security_headers(self):
@@ -831,6 +846,8 @@ class HttpServerTests(unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
                 self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
                 self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+                self.assertIn("script-src 'unsafe-inline'", headers["Content-Security-Policy"])
+                self.assertIn("img-src 'self' data:", headers["Content-Security-Policy"])
 
                 status, _, body = request(
                     server,

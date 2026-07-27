@@ -51,6 +51,7 @@ DIMENSIONS = (
 
 SELECTION_TEMPLATE = Path(__file__).with_name("session-selection.html.tmpl")
 REPORT_TEMPLATE = Path(__file__).with_name("avscore.html.tmpl")
+AITI_MOCK_SCRIPT = Path(__file__).with_name("aiti-mock.js")
 _TEMPLATE_PLACEHOLDER = re.compile(r"{{(.*?)}}", re.DOTALL)
 
 
@@ -92,6 +93,10 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
         "ARCHETYPE_PRIMARY",
         "ARCHETYPE_CONFIDENCE",
         "TREND_SHIFTS",
+        "AITI_MOCK_JS",
+        "APPLICATION_URL",
+        "POSTER_URL",
+        "QR_URL",
     }
     placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
     unknown = placeholders - required
@@ -114,8 +119,22 @@ def render_report(report_model, token, template_path=REPORT_TEMPLATE):
         .replace("{{", "\\u007b\\u007b")
     )
     rendered = template.replace("{{REPORT_JSON}}", report_json)
+    mock_script = AITI_MOCK_SCRIPT.read_text(encoding="utf-8")
+    if "</script" in mock_script.lower() or "{{" in mock_script:
+        raise AvscoreError("unsafe AITI mock script")
+    rendered = rendered.replace("{{AITI_MOCK_JS}}", mock_script)
+    encoded_token = quote(str(token), safe="")
     rendered = rendered.replace(
-        "{{RETURN_URL}}", "/?token=" + quote(str(token), safe="")
+        "{{APPLICATION_URL}}", "/application?token=" + encoded_token
+    )
+    rendered = rendered.replace(
+        "{{POSTER_URL}}", "/assets/poster.png?token=" + encoded_token
+    )
+    rendered = rendered.replace(
+        "{{QR_URL}}", "/assets/aiti-qr.svg?token=" + encoded_token
+    )
+    rendered = rendered.replace(
+        "{{RETURN_URL}}", "/?token=" + encoded_token
     )
     archetype = report_model["archetype"]
     rendered = rendered.replace(
@@ -440,7 +459,7 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": (
         "default-src 'none'; style-src 'unsafe-inline'; "
-        "script-src 'unsafe-inline'; img-src data:; "
+        "script-src 'unsafe-inline'; img-src 'self' data:; "
         "connect-src 'self'; base-uri 'none'; form-action 'none'; "
         "frame-ancestors 'none'"
     ),

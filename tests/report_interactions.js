@@ -21,6 +21,8 @@ class Element {
         if (force) this.classList.values.add(name);
         else this.classList.values.delete(name);
       },
+      add: name => this.classList.values.add(name),
+      remove: name => this.classList.values.delete(name),
       contains: name => this.classList.values.has(name),
     };
   }
@@ -51,9 +53,13 @@ class Element {
   scrollIntoView() {}
 }
 
-function executeReport(report) {
+function executeReport(report, options = {}) {
   const rendered = template
     .replace("{{REPORT_JSON}}", JSON.stringify(report))
+    .replace("{{AITI_MOCK_JS}}", fs.readFileSync("aiti-mock.js", "utf8"))
+    .replaceAll("{{APPLICATION_URL}}", "/application?token=real")
+    .replaceAll("{{POSTER_URL}}", "/assets/poster.png?token=real")
+    .replaceAll("{{QR_URL}}", "/assets/aiti-qr.svg?token=real")
     .replaceAll("{{RETURN_URL}}", "/?token=real")
     .replace("{{ARCHETYPE_PRIMARY}}", report.archetype.primary)
     .replace("{{ARCHETYPE_CONFIDENCE}}", String(report.archetype.confidence * 100))
@@ -78,6 +84,8 @@ function executeReport(report) {
     "radarRings", "radarAxes", "radarDots", "radarLabels", "radarShape",
     "dimensionTabs", "metricGrid", "insightEnglish", "insightTitle",
     "insightScore", "insightSummary", "insightEvidence",
+    "aitiInlinePanel", "aitiInlineForm", "aitiIdentityResult", "aitiPhone",
+    "aitiCode", "sendAitiCodeButton", "verifyAitiButton", "aitiStatus",
   ];
   for (const id of requiredIds) ids.set(id, register(new Element()));
   ids.set("report-data", register(new Element("script")));
@@ -91,13 +99,40 @@ function executeReport(report) {
     querySelectorAll: selector => selector === "[data-index]"
       ? all.filter(element => element.dataset.index !== undefined)
       : [],
-    querySelector: selector => selector === ".insight-panel" ? insightPanel : null,
+    querySelector: selector => {
+      if (selector === ".insight-panel") return insightPanel;
+      if (selector === "[data-toggle-aiti-inline]") {
+        if (!ids.has("aitiToggle")) ids.set("aitiToggle", register(new Element("button")));
+        return ids.get("aitiToggle");
+      }
+      return null;
+    },
   };
-  const context = {document, console, Math};
+  ids.get("aitiInlinePanel").hidden = true;
+  ids.get("aitiIdentityResult").hidden = true;
+  ids.get("aitiPhone").value = "";
+  ids.get("aitiCode").value = "";
+  ids.get("aitiPhone").focus = () => {};
+  const storage = new Map(Object.entries(options.storage || {}));
+  const localStorage = {
+    getItem: key => {
+      if (options.storageThrows) throw new Error("storage unavailable");
+      return storage.get(key) ?? null;
+    },
+    setItem: (key, value) => {
+      if (options.storageThrows) throw new Error("storage unavailable");
+      storage.set(key, String(value));
+    },
+  };
+  const crypto = {getRandomValues: values => {
+    for (let index = 0; index < values.length; index += 1) values[index] = index + 20;
+    return values;
+  }};
+  const context = {document, console, Math, localStorage, crypto, Date, Uint8Array};
   context.globalThis = context;
   vm.createContext(context);
   for (const source of scripts) vm.runInContext(source, context);
-  return {ids, context};
+  return {ids, context, storage};
 }
 
 const dimensions = [
@@ -149,4 +184,46 @@ test("rendered report executes full DOM and SVG wiring", () => {
   assert.equal(ids.get("insightScore").textContent, 24);
   assert.equal(ids.get("radarDots").children[1].getAttribute("aria-pressed"), "true");
   assert.equal(ids.get("radarDots").children[0].getAttribute("aria-pressed"), "false");
+});
+
+test("AITI identity flow expands, validates, generates, restores, and links with token", () => {
+  const {ids, storage} = executeReport(report);
+  ids.get("aitiToggle").dispatch("click");
+  assert.equal(ids.get("aitiInlinePanel").hidden, false);
+
+  ids.get("aitiPhone").value = "13800138000";
+  ids.get("sendAitiCodeButton").dispatch("click");
+  assert.match(ids.get("aitiStatus").textContent, /本地验证码/);
+
+  ids.get("aitiCode").value = "wrong";
+  ids.get("verifyAitiButton").dispatch("click");
+  assert.match(ids.get("aitiStatus").textContent, /验证码错误/);
+
+  ids.get("aitiCode").value = "123456";
+  ids.get("verifyAitiButton").dispatch("click");
+  assert.equal(ids.get("aitiIdentityResult").hidden, false);
+  assert.match(ids.get("aitiIdentityResult").innerHTML, /138\*\*\*\*8000/);
+  assert.match(ids.get("aitiIdentityResult").innerHTML, /\/assets\/aiti-qr\.svg\?token=real/);
+  assert.match(ids.get("aitiIdentityResult").innerHTML, /\/application\?token=real&amp;aitiId=|\/application\?token=real&aitiId=/);
+  assert.ok(storage.get("aiti-demo-last-generated-id"));
+});
+
+test("AITI restores the latest unassociated ID", () => {
+  const state = {
+    profile: {typeCode: "REAL", title: "真实画像", score: 88},
+    ids: [{value: "A7TI8P", aitiId: "A7TI8P", phone: "138****0000", associated: false}],
+    applications: [],
+  };
+  const {ids} = executeReport(report, {storage: {
+    "aiti-demo-state-v1": JSON.stringify(state),
+    "aiti-demo-last-generated-id": "A7TI8P",
+  }});
+  assert.equal(ids.get("aitiInlinePanel").hidden, false);
+  assert.match(ids.get("aitiIdentityResult").innerHTML, /A7TI8P/);
+});
+
+test("unavailable localStorage does not stop report rendering", () => {
+  const {ids} = executeReport(report, {storageThrows: true});
+  assert.equal(ids.get("profile-title").textContent, "真实画像");
+  assert.equal(ids.get("radarDots").children.length, 7);
 });

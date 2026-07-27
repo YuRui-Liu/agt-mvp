@@ -249,6 +249,73 @@
         gap: 18px;
       }
 
+      .hero-actions button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      .poster-link {
+        min-height: 48px;
+        padding: 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid #f1b487;
+        border-radius: 14px;
+        color: var(--orange-deep);
+        background: rgba(255, 250, 245, 0.9);
+        font-size: 14px;
+        font-weight: 760;
+        text-decoration: none;
+        transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+      }
+
+      .poster-link:hover {
+        background: var(--orange-soft);
+        box-shadow: 0 12px 26px rgba(232, 79, 0, 0.12);
+        transform: translateY(-2px);
+      }
+
+      .aiti-inline-panel[hidden],
+      .aiti-identity-result[hidden] { display: none; }
+      .aiti-inline-panel {
+        width: min(1180px, calc(100% - 40px)); margin-top: 26px;
+        margin-right: auto; margin-left: auto; padding: 26px;
+        border: 1px solid #f1d2b6; border-radius: 24px;
+        background: linear-gradient(135deg, rgba(255, 251, 246, 0.98), rgba(255, 244, 232, 0.86));
+        box-shadow: 0 18px 44px rgba(108, 62, 25, 0.1);
+      }
+      .aiti-inline-panel.is-result { padding: 0; border: 0; background: transparent; box-shadow: none; }
+      .aiti-inline-form h2 { margin: 6px 0 18px; font-size: 22px; letter-spacing: -0.04em; }
+      .aiti-inline-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+      .aiti-code-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+      .aiti-send-code { min-height: 44px; padding: 0 14px; border: 1px solid #f1b487; border-radius: 11px; color: var(--orange-deep); background: #fff8f1; cursor: pointer; font-size: 12px; font-weight: 760; white-space: nowrap; }
+      .aiti-send-code:hover { background: var(--orange-soft); }
+      .aiti-field { display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 780; }
+      .aiti-field input { width: 100%; min-height: 44px; padding: 0 13px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: white; outline: none; }
+      .aiti-field input:focus { border-color: var(--orange); box-shadow: 0 0 0 4px var(--orange-soft); }
+      .aiti-status { min-height: 0; margin: 0; color: var(--orange-deep) !important; font-size: 12px !important; }
+      .aiti-status:empty { display: none; }
+      .aiti-status.success { color: #267b58 !important; }
+      .aiti-identity-result { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(260px, 0.92fr); gap: 16px; }
+      .aiti-id-card, .aiti-qr-card { min-height: 300px; padding: 28px; border: 2px solid var(--orange); border-radius: 20px; background: linear-gradient(145deg, #fffdf9, #fff5ea); }
+      .aiti-id-eyebrow { margin: 0 0 20px; color: var(--orange); font-size: 12px; font-weight: 850; letter-spacing: 0.16em; }
+      .aiti-id-card h2, .aiti-qr-card h2 { margin: 0; font-size: 25px; letter-spacing: -0.04em; }
+      .aiti-id-card strong { display: block; margin: 26px 0 12px; color: var(--orange); font-size: clamp(48px, 8vw, 78px); line-height: 0.95; letter-spacing: 0.06em; }
+      .aiti-id-card > p:not(.aiti-id-eyebrow), .aiti-qr-card > p { color: var(--ink-soft); font-size: 13px; }
+      .aiti-id-meta { display: grid; grid-template-columns: auto 1fr; gap: 8px 22px; margin: 24px 0 0; font-size: 13px; }
+      .aiti-id-meta dt { color: var(--ink-soft); }
+      .aiti-id-meta dd { margin: 0; font-weight: 750; }
+      .aiti-qr-card { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      .aiti-qr-image { display: block; width: 148px; height: 148px; margin-bottom: 22px; padding: 12px; border: 1px solid #eadfd3; border-radius: 14px; background: white; image-rendering: pixelated; box-shadow: 0 8px 22px rgba(36, 27, 19, 0.1); }
+      .aiti-qr-card .primary-link { margin-top: 20px; }
+
+      @media (max-width: 720px) {
+        .aiti-inline-fields, .aiti-identity-result { grid-template-columns: 1fr; }
+        .aiti-inline-fields .primary-link { width: 100%; }
+      }
+
       .primary-link {
         display: inline-flex;
         min-height: 48px;
@@ -1057,7 +1124,9 @@
               <span class="trait" id="archetypeConfidence">置信度：{{ARCHETYPE_CONFIDENCE}}%</span>
             </div>
             <div class="hero-actions">
-              <a class="primary-link" href="#seven-d">查看我的 7D 画像 <span aria-hidden="true">↓</span></a>
+              <button class="primary-link" type="button" data-toggle-aiti-inline>生成专属ID并投递简历 <span aria-hidden="true">→</span></button>
+              <a class="poster-link" href="{{POSTER_URL}}" download="AITI-专属海报.png">下载专属海报 <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="#seven-d">深度解析我的 AITI</a>
               <a class="text-link" href="{{RETURN_URL}}">重新选择会话</a>
             </div>
           </div>
@@ -1074,6 +1143,26 @@
               <figcaption class="portrait-caption" id="portraitCaption">AITI · 7D Collaboration Profile</figcaption>
             </div>
           </figure>
+        </section>
+
+        <section class="aiti-inline-panel" id="aitiInlinePanel" hidden aria-labelledby="aiti-inline-title">
+          <div class="aiti-inline-form" id="aitiInlineForm">
+            <h2 id="aiti-inline-title">生成你的专属 AITI ID</h2>
+            <div class="aiti-inline-fields">
+              <label class="aiti-field">手机号
+                <input id="aitiPhone" name="phone" inputmode="numeric" autocomplete="tel" placeholder="请输入手机号" required />
+              </label>
+              <label class="aiti-field">验证码
+                <span class="aiti-code-input">
+                  <input id="aitiCode" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入验证码" required />
+                  <button class="aiti-send-code" id="sendAitiCodeButton" type="button">发送验证码</button>
+                </span>
+              </label>
+              <button class="primary-link" id="verifyAitiButton" type="button">验证并生成ID</button>
+            </div>
+            <p class="aiti-status" id="aitiStatus" role="status" aria-live="polite"></p>
+          </div>
+          <div class="aiti-identity-result" id="aitiIdentityResult" hidden></div>
         </section>
 
         <section class="section" id="seven-d" aria-labelledby="seven-d-title">
@@ -1235,6 +1324,7 @@
     </div>
 
     <script type="application/json" id="report-data">{{REPORT_JSON}}</script>
+    <script>{{AITI_MOCK_JS}}</script>
     <script>
       /* report-logic:start */
       globalThis.AVScoreReportLogic = Object.freeze({
@@ -1253,6 +1343,96 @@
     </script>
     <script>
       const report = JSON.parse(document.getElementById("report-data").textContent);
+      const aitiInlinePanel = document.getElementById("aitiInlinePanel");
+      const aitiInlineForm = document.getElementById("aitiInlineForm");
+      const aitiIdentityResult = document.getElementById("aitiIdentityResult");
+      const aitiPhone = document.getElementById("aitiPhone");
+      const aitiCode = document.getElementById("aitiCode");
+      const sendAitiCodeButton = document.getElementById("sendAitiCodeButton");
+      const verifyAitiButton = document.getElementById("verifyAitiButton");
+      const aitiStatus = document.getElementById("aitiStatus");
+      const applicationUrl = "{{APPLICATION_URL}}";
+      const qrUrl = "{{QR_URL}}";
+
+      function toggleAitiInline() {
+        aitiInlinePanel.hidden = !aitiInlinePanel.hidden;
+        if (!aitiInlinePanel.hidden && !aitiIdentityResult.hidden) {
+          aitiIdentityResult.scrollIntoView({behavior: "smooth", block: "nearest"});
+        } else if (!aitiInlinePanel.hidden) {
+          aitiPhone.focus();
+        }
+      }
+
+      function renderAitiIdentity(item) {
+        const generatedDate = new Date().toISOString().slice(0, 10).replaceAll("-", ".");
+        const applyUrl = `${applicationUrl}&aitiId=${encodeURIComponent(item.value)}&source=aiti`;
+        aitiInlinePanel.classList.add("is-result");
+        aitiInlineForm.hidden = true;
+        aitiIdentityResult.hidden = false;
+        aitiIdentityResult.innerHTML = `
+          <div class="aiti-id-card">
+            <p class="aiti-id-eyebrow">YOUR AITI ID</p>
+            <h2>专属 AITI 身份码</h2>
+            <strong>${item.value}</strong>
+            <p>绑定手机：${item.phone}</p>
+            <dl class="aiti-id-meta"><dt>生成日期</dt><dd>${generatedDate}</dd>
+              <dt>AI 协作类型</dt><dd>${report.archetype.title}</dd></dl>
+          </div>
+          <div class="aiti-qr-card">
+            <img class="aiti-qr-image" src="${qrUrl}" alt="扫码投递你的简历" />
+            <h2>扫码投递你的简历</h2>
+            <p>让招聘方快速认识你的 AI 协作优势</p>
+            <a class="primary-link" href="${applyUrl}" data-aiti-apply>投递简历 <span aria-hidden="true">→</span></a>
+          </div>`;
+      }
+
+      function restoreLatestAitiId() {
+        try {
+          const value = globalThis.localStorage.getItem("aiti-demo-last-generated-id");
+          if (!value) return;
+          const result = globalThis.AITIMock.lookupId(value);
+          if (result.item && !result.item.associated) {
+            aitiInlinePanel.hidden = false;
+            renderAitiIdentity(result.item);
+          }
+        } catch (_error) {}
+      }
+
+      document.querySelector("[data-toggle-aiti-inline]").addEventListener("click", toggleAitiInline);
+      sendAitiCodeButton.addEventListener("click", () => {
+        const phone = aitiPhone.value.trim();
+        aitiStatus.classList.remove("success");
+        if (!/^1[3-9]\d{9}$/.test(phone)) {
+          aitiStatus.textContent = "请先输入正确的 11 位手机号";
+          return;
+        }
+        aitiStatus.classList.add("success");
+        aitiStatus.textContent = "本地验证码已生成，请输入任意数字完成验证";
+        sendAitiCodeButton.textContent = "重新发送";
+      });
+      verifyAitiButton.addEventListener("click", () => {
+        const phone = aitiPhone.value.trim();
+        const code = aitiCode.value.trim();
+        aitiStatus.classList.remove("success");
+        if (!/^1[3-9]\d{9}$/.test(phone)) {
+          aitiStatus.textContent = "请输入正确的 11 位手机号";
+          return;
+        }
+        if (!globalThis.AITIMock.verifyCode(code)) {
+          aitiStatus.textContent = "验证码错误，请输入数字";
+          return;
+        }
+        try {
+          const item = globalThis.AITIMock.generateId(phone);
+          try { globalThis.localStorage.setItem("aiti-demo-last-generated-id", item.value); }
+          catch (_error) {}
+          renderAitiIdentity(item);
+        } catch (_error) {
+          aitiStatus.textContent = "暂时无法安全生成 AITI ID，请稍后重试";
+        }
+      });
+      restoreLatestAitiId();
+
       const englishNames = {
         steering: "Steering", execution: "Execution", engineering: "Engineering",
         planning: "Planning", product: "Product", autonomy: "Autonomy",
