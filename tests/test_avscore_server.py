@@ -116,6 +116,73 @@ class SessionNormalizationTests(unittest.TestCase):
         self.assertNotIn("secret", message)
         self.assertLessEqual(len(message), 240)
 
+    def test_rejects_non_list_sessions_schema(self):
+        for sessions in (None, {}, "private"):
+            with self.subTest(sessions=sessions):
+                with self.assertRaisesRegex(
+                    AvscoreError, "agentsview 返回了无效的 session JSON"
+                ):
+                    normalize_sessions({"sessions": sessions})
+
+    def test_drops_non_mapping_and_non_string_identity_fields(self):
+        payload = {
+            "sessions": [
+                "not a record",
+                {"id": ["unhashable"], "project": "atr", "agent": "codex"},
+                {"id": "s-1", "project": ["unhashable"], "agent": "codex"},
+                {"id": "s-2", "project": "atr", "agent": {"not": "a string"}},
+                {"id": "s-3", "project": "atr", "agent": "codex"},
+            ]
+        }
+
+        groups = normalize_sessions(payload)
+
+        by_agent = {group["agent"]: group["sessions"] for group in groups}
+        self.assertEqual(set(by_agent), {"codex", "unknown"})
+        self.assertEqual([item["id"] for item in by_agent["codex"]], ["s-3"])
+        self.assertEqual([item["id"] for item in by_agent["unknown"]], ["s-2"])
+
+    def test_mixed_ended_at_types_are_normalized_before_sorting(self):
+        payload = {
+            "sessions": [
+                {
+                    "id": "invalid-date",
+                    "project": "atr",
+                    "agent": "codex",
+                    "ended_at": 123,
+                },
+                {
+                    "id": "dated",
+                    "project": "atr",
+                    "agent": "codex",
+                    "ended_at": "2026-07-27T08:20:00Z",
+                },
+            ]
+        }
+
+        sessions = normalize_sessions(payload)[0]["sessions"]
+
+        self.assertEqual([item["id"] for item in sessions], ["dated", "invalid-date"])
+        self.assertEqual(sessions[1]["ended_at"], "")
+
+    def test_load_sessions_converts_runner_failures_to_safe_error(self):
+        sensitive = "Authorization: Bearer secret"
+        failures = (
+            subprocess.TimeoutExpired(["agentsview", sensitive], 180),
+            OSError(sensitive),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, sensitive),
+        )
+
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                runner = mock.Mock()
+                runner.run.side_effect = failure
+
+                with self.assertRaises(AvscoreError) as raised:
+                    load_sessions(runner)
+
+                self.assertNotIn("secret", str(raised.exception))
+
 
 class CommandRunnerTests(unittest.TestCase):
     @mock.patch("avscore_server.subprocess.run")
@@ -133,6 +200,24 @@ class CommandRunnerTests(unittest.TestCase):
             timeout=12,
             check=False,
         )
+
+    @mock.patch("avscore_server.subprocess.run")
+    def test_run_converts_process_failures_to_safe_error(self, run):
+        sensitive = "token=secret"
+        failures = (
+            subprocess.TimeoutExpired(["agentsview", sensitive], 12),
+            OSError(sensitive),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, sensitive),
+        )
+
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                run.side_effect = failure
+
+                with self.assertRaises(AvscoreError) as raised:
+                    CommandRunner("agentsview", timeout=12).run(["session", "list"])
+
+                self.assertNotIn("secret", str(raised.exception))
 
 
 class SafeErrorTests(unittest.TestCase):
