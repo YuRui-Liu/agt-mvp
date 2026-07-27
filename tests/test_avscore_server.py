@@ -1150,6 +1150,51 @@ class HttpServerTests(unittest.TestCase):
                 backup = recoveries[0] / ".previous-report.json"
                 self.assertEqual(backup.read_text(), old["report.json"])
 
+    @mock.patch("avscore_server.run_profile")
+    def test_failed_cleanup_of_new_file_preserves_recovery_evidence(self, profile):
+        profile.return_value = (profile_payload(70), False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            real_replace = __import__("os").replace
+
+            def fail_install_and_cleanup(source, destination):
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    source_path.name == "report.json"
+                    and destination_path == output / "report.json"
+                ):
+                    raise OSError("install failed")
+                if (
+                    source_path == output / "profile.json"
+                    and destination_path.name == ".failed-profile.json"
+                ):
+                    raise OSError("cleanup failed")
+                return real_replace(source, destination)
+
+            with running_server(directory) as (server, _runner):
+                with mock.patch(
+                    "avscore_server.os.replace",
+                    side_effect=fail_install_and_cleanup,
+                ):
+                    status, _, body = request(
+                        server,
+                        "POST",
+                        "/api/analyze",
+                        body=json.dumps({"session_id": "s-1"}),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Avscore-Token": "fixed secret",
+                        },
+                    )
+
+                self.assertEqual(status, 500)
+                self.assertIn("备份已保留", json.loads(body)["message"])
+                self.assertTrue((output / "profile.json").is_file())
+                recoveries = list(output.glob(".avscore-recovery-*"))
+                self.assertEqual(len(recoveries), 1)
+                self.assertTrue((recoveries[0] / "report.json").is_file())
+
     def test_wrong_token_and_request_log_do_not_expose_token(self):
         with tempfile.TemporaryDirectory() as directory:
             with running_server(directory, token="highly-sensitive") as (server, _):

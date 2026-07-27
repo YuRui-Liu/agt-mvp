@@ -527,11 +527,12 @@ class AvscoreApp:
                     os.replace(staging / name, target)
                     installed.append(target)
             except Exception:
+                cleanup_failures = []
                 for target in reversed(installed):
                     try:
                         os.replace(target, staging / (".failed-" + target.name))
                     except OSError:
-                        pass
+                        cleanup_failures.append(target)
                 restore_failures = []
                 for target, backup in reversed(backups):
                     if backup.exists():
@@ -539,7 +540,7 @@ class AvscoreApp:
                             os.replace(backup, target)
                         except OSError:
                             restore_failures.append(backup)
-                if restore_failures:
+                if cleanup_failures or restore_failures:
                     preserve_staging = True
                     raise AvscoreError(
                         "发布失败，旧报告备份已保留，请手动恢复"
