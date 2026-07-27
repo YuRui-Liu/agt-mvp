@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>选择 Agent 会话 · AITI</title>
 <style>
-:root{--ink:#25221f;--ink-soft:#645e58;--paper:#fffdf9;--line:#eadfd3;--orange:#ff6b12;--orange-deep:#e84f00;--orange-soft:#fff0df}
+:root{--ink:#25221f;--ink-soft:#645e58;--paper:#fffdf9;--line:#eadfd3;--orange:#ff6b12;--orange-deep:#e84f00;--orange-soft:#fff0df;--action-bar-height:116px}
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
@@ -19,7 +19,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   box-shadow:0 8px 22px rgba(255,107,18,.28)}
 .brand-text strong{font-size:14px;display:block;letter-spacing:.04em}
 .brand-text span{font-size:11px;color:var(--ink-soft);letter-spacing:.1em;text-transform:uppercase}
-.main{padding:40px 40px 100px;max-width:900px;margin:0 auto}
+.main{padding:40px 40px 100px;max-width:900px;margin:0 auto;padding-bottom:calc(var(--action-bar-height) + 24px)}
 .hero-text h1{font-size:34px;font-weight:850;letter-spacing:-.05em;line-height:1.15;margin-bottom:10px}
 .hero-text h1 span{color:var(--orange)}
 .hero-text p{color:var(--ink-soft);font-size:15px;line-height:1.7}
@@ -70,7 +70,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
 :focus-visible{outline:3px solid rgba(255,107,18,.35);outline-offset:3px}
 @keyframes pulse{to{opacity:.25}}
 @media(max-width:600px){
-  .header{padding:16px 18px 0}.main{padding:32px 18px 238px}.hero-text h1{font-size:29px}
+  .header{padding:16px 18px 0}.main{padding:32px 18px 238px;padding-bottom:calc(var(--action-bar-height) + 24px)}.hero-text h1{font-size:29px}
   .agent-header{gap:10px;padding:14px}.s-icon{width:36px;height:36px}.s-info span{max-width:150px}
   .session-option{gap:9px;padding:11px 10px}.session-meta{font-size:10px}.action-bar{padding:12px 18px;align-items:stretch;flex-direction:column;gap:10px}
   .selection-summary strong{max-width:100%}.right-bar{align-items:stretch}.privacy{align-items:flex-start}.analyze-btn{width:100%}.error-message{text-align:left}
@@ -115,19 +115,86 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
 </div>
 
 <script type="application/json" id="bootstrap-data">{{BOOTSTRAP_JSON}}</script>
+<script id="selection-logic">
+(() => {
+  "use strict";
+  function createState(groupCount) {
+    return {
+      selectedSession: null,
+      consent: true,
+      analyzing: false,
+      error: "",
+      expandedAgents: new Set(groupCount ? [0] : []),
+      focusTarget: null
+    };
+  }
+  function copy(state, changes) {
+    return {...state, ...changes};
+  }
+  function setConsent(state, consent) {
+    return copy(state, {consent: Boolean(consent)});
+  }
+  function toggleAgent(state, groupIndex) {
+    const expandedAgents = new Set(state.expandedAgents);
+    expandedAgents.has(groupIndex)
+      ? expandedAgents.delete(groupIndex)
+      : expandedAgents.add(groupIndex);
+    return copy(state, {
+      expandedAgents,
+      focusTarget: `agent-header-${groupIndex}`
+    });
+  }
+  function selectSession(state, groupIndex, sessionIndex, session) {
+    const expandedAgents = new Set(state.expandedAgents);
+    expandedAgents.add(groupIndex);
+    return copy(state, {
+      selectedSession: session,
+      expandedAgents,
+      error: "",
+      focusTarget: `session-radio-${groupIndex}-${sessionIndex}`
+    });
+  }
+  function buttonDisabled(state) {
+    return state.analyzing || !state.consent || !state.selectedSession;
+  }
+  function beginAnalysis(state) {
+    if (buttonDisabled(state)) return {accepted: false, state};
+    return {
+      accepted: true,
+      state: copy(state, {analyzing: true, error: "", focusTarget: null})
+    };
+  }
+  function completeAnalysis(state, responseOk, result) {
+    if (responseOk && result && result.report_url) {
+      return {ok: true, state, reportUrl: String(result.report_url)};
+    }
+    const error = result && result.error
+      ? String(result.error) : "分析失败，请稍后重试";
+    return {
+      ok: false,
+      state: copy(state, {analyzing: false, error}),
+      reportUrl: null
+    };
+  }
+  globalThis.SelectionLogic = {
+    createState, setConsent, toggleAgent, selectSession, buttonDisabled,
+    beginAnalysis, completeAnalysis
+  };
+})();
+</script>
 <script>
 (() => {
   "use strict";
+  const logic = globalThis.SelectionLogic;
   const list = document.getElementById("sessionList");
   const button = document.getElementById("analyzeBtn");
   const consent = document.getElementById("consent");
   const selectedName = document.getElementById("selectedSessionName");
   const details = document.getElementById("selectionDetails");
   const errorNode = document.getElementById("analysisError");
+  const actionBar = document.querySelector(".action-bar");
   let data;
-  let selectedSession = null;
-  let analyzing = false;
-  const expandedAgents = new Set();
+  let state = logic.createState(0);
 
   function text(value) {
     return value == null ? "" : String(value);
@@ -153,22 +220,30 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   }
 
   function updateButton() {
-    button.disabled = analyzing || !consent.checked || !selectedSession;
-    selectedName.textContent = selectedSession
-      ? `${text(selectedSession.agent)} · ${text(selectedSession.title)}`
+    button.disabled = logic.buttonDisabled(state);
+    selectedName.textContent = state.selectedSession
+      ? `${text(state.selectedSession.agent)} · ${text(state.selectedSession.title)}`
       : "未选择";
-    details.textContent = selectedSession
-      ? `将分析项目 ${text(selectedSession.project)} · 共 ${text(selectedSession.projectSessionCount)} 个 session`
+    details.textContent = state.selectedSession
+      ? `将分析项目 ${text(state.selectedSession.project)} · 共 ${text(state.selectedSession.projectSessionCount)} 个 session`
       : "";
+    errorNode.textContent = state.error;
   }
 
   function chooseSession(groupIndex, sessionIndex) {
     const group = data.groups[groupIndex];
-    selectedSession = {...group.sessions[sessionIndex], agent: group.agent};
-    expandedAgents.add(groupIndex);
-    errorNode.textContent = "";
+    state = logic.selectSession(
+      state, groupIndex, sessionIndex,
+      {...group.sessions[sessionIndex], agent: group.agent}
+    );
     render();
     updateButton();
+  }
+
+  function restoreFocus() {
+    if (!state.focusTarget) return;
+    const target = document.getElementById(state.focusTarget);
+    if (target) target.focus();
   }
 
   function render() {
@@ -178,12 +253,13 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       return;
     }
     data.groups.forEach((group, groupIndex) => {
-      const expanded = expandedAgents.has(groupIndex);
+      const expanded = state.expandedAgents.has(groupIndex);
       const section = document.createElement("section");
       section.className = `agent-card${expanded ? " expanded" : ""}`;
       const header = document.createElement("button");
       header.className = "agent-header";
       header.type = "button";
+      header.id = `agent-header-${groupIndex}`;
       header.setAttribute("aria-expanded", String(expanded));
       const panelId = `agent-sessions-${groupIndex}`;
       header.setAttribute("aria-controls", panelId);
@@ -211,7 +287,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       chevron.textContent = "⌄";
       header.append(icon, info, meta, chevron);
       header.addEventListener("click", () => {
-        expanded ? expandedAgents.delete(groupIndex) : expandedAgents.add(groupIndex);
+        state = logic.toggleAgent(state, groupIndex);
         render();
       });
 
@@ -220,11 +296,12 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       panel.id = panelId;
       group.sessions.forEach((session, sessionIndex) => {
         const option = document.createElement("label");
-        const isSelected = selectedSession && selectedSession.id === session.id;
+        const isSelected = state.selectedSession && state.selectedSession.id === session.id;
         option.className = `session-option${isSelected ? " selected" : ""}`;
         const radio = document.createElement("input");
         radio.type = "radio";
         radio.name = "selectedSession";
+        radio.id = `session-radio-${groupIndex}-${sessionIndex}`;
         radio.value = text(session.id);
         radio.checked = Boolean(isSelected);
         radio.addEventListener("change", () => chooseSession(groupIndex, sessionIndex));
@@ -250,41 +327,57 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
       section.append(header, panel);
       list.append(section);
     });
+    restoreFocus();
   }
 
   async function analyze() {
-    if (analyzing || !selectedSession || !consent.checked) return;
-    analyzing = true;
-    errorNode.textContent = "";
+    const started = logic.beginAnalysis(state);
+    if (!started.accepted) return;
+    state = started.state;
     button.textContent = "分析中…";
     updateButton();
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {"Content-Type": "application/json", "X-Avscore-Token": text(data.token)},
-        body: JSON.stringify({session_id: selectedSession.id})
+        body: JSON.stringify({session_id: state.selectedSession.id})
       });
       let result = {};
       try { result = await response.json(); } catch (_) {}
-      if (!response.ok || !result.report_url) {
-        throw new Error(text(result.error) || "分析失败，请稍后重试");
-      }
-      window.location.assign(result.report_url);
+      const completed = logic.completeAnalysis(state, response.ok, result);
+      state = completed.state;
+      if (!completed.ok) throw new Error(state.error);
+      window.location.assign(completed.reportUrl);
     } catch (error) {
-      errorNode.textContent = error instanceof Error && error.message
-        ? error.message : "分析失败，请稍后重试";
-      analyzing = false;
+      if (state.analyzing) {
+        state = logic.completeAnalysis(state, false, {
+          error: error instanceof Error && error.message
+            ? error.message : "分析失败，请稍后重试"
+        }).state;
+      }
       button.textContent = "重新分析 →";
       updateButton();
     }
   }
 
-  consent.addEventListener("change", updateButton);
+  function updateActionBarHeight() {
+    document.documentElement.style.setProperty(
+      "--action-bar-height", `${Math.ceil(actionBar.getBoundingClientRect().height)}px`
+    );
+  }
+  updateActionBarHeight();
+  if ("ResizeObserver" in globalThis) {
+    new ResizeObserver(updateActionBarHeight).observe(actionBar);
+  }
+  consent.addEventListener("change", () => {
+    state = logic.setConsent(state, consent.checked);
+    updateButton();
+  });
   button.addEventListener("click", analyze);
   try {
     data = JSON.parse(document.getElementById("bootstrap-data").textContent);
     if (!data || !Array.isArray(data.groups)) throw new Error("invalid bootstrap");
-    if (data.groups.length) expandedAgents.add(0);
+    state = logic.createState(data.groups.length);
     render();
     updateButton();
   } catch (_) {

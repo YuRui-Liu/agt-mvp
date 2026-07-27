@@ -1,13 +1,12 @@
 import unittest
 from pathlib import Path
 import re
+import subprocess
 
 
 TEMPLATE = Path(__file__).parents[1] / "session-selection.html.tmpl"
-REFERENCE = Path(
-    "/Users/liuyuxiang05/Projects/agentsview/experimental/demo/"
-    "session-selection.html"
-)
+REFERENCE = Path(__file__).parent / "fixtures" / "session-selection-reference.html"
+INTERACTION_TEST = Path(__file__).parent / "session_selection_interactions.js"
 
 
 def css_rules(document):
@@ -118,6 +117,31 @@ class SessionSelectionTemplateTests(unittest.TestCase):
             "error-state",
             "prefers-reduced-motion",
             "@media(max-width:600px)",
+            "ResizeObserver",
+            "--action-bar-height",
+            "padding-bottom:calc(",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.template)
+
+    def test_interaction_state_flows_execute_in_node(self):
+        try:
+            result = subprocess.run(
+                ["node", "--test", str(INTERACTION_TEST)],
+                cwd=TEMPLATE.parent,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.fail("Node.js is required for session selection visual acceptance")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_focus_targets_are_index_based_and_restored_after_render(self):
+        for token in (
+            'header.id = `agent-header-${groupIndex}`',
+            'radio.id = `session-radio-${groupIndex}-${sessionIndex}`',
+            "restoreFocus()",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.template)
