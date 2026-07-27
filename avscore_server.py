@@ -30,6 +30,15 @@ class AnalysisBusyError(AvscoreError):
     """Raised when an analysis is already running."""
 
 
+class RequestInputError(ValueError):
+    """A request-body error with a safe HTTP response."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
 DIMENSIONS = (
     ("steering", "引导"),
     ("execution", "执行"),
@@ -490,9 +499,12 @@ class AvscoreApp:
         """Stage complete files and roll back the set if publication fails."""
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=".avscore-", dir=output_dir))
+        staging = Path(
+            tempfile.mkdtemp(prefix=".avscore-recovery-", dir=output_dir)
+        )
         backups = []
         installed = []
+        preserve_staging = False
         try:
             payloads = {
                 "profile.json": json.dumps(
@@ -520,12 +532,22 @@ class AvscoreApp:
                         os.replace(target, staging / (".failed-" + target.name))
                     except OSError:
                         pass
+                restore_failures = []
                 for target, backup in reversed(backups):
                     if backup.exists():
-                        os.replace(backup, target)
+                        try:
+                            os.replace(backup, target)
+                        except OSError:
+                            restore_failures.append(backup)
+                if restore_failures:
+                    preserve_staging = True
+                    raise AvscoreError(
+                        "发布失败，旧报告备份已保留，请手动恢复"
+                    ) from None
                 raise
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            if not preserve_staging:
+                shutil.rmtree(staging, ignore_errors=True)
 
 
 class AvscoreHTTPServer(ThreadingHTTPServer):
@@ -593,6 +615,8 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
                 or payload["session_id"] not in self.server.app.sessions
             ):
                 raise ValueError
+        except RequestInputError as error:
+            return self._json(error.status, error.message)
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
             return self._json(400, "Invalid request")
         try:
@@ -642,17 +666,22 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
         return self.server.app.authenticated(supplied)
 
     def _read_json(self):
-        if self.headers.get_content_type() != "application/json":
-            raise ValueError
-        raw_length = self.headers.get("Content-Length")
-        if raw_length is None:
-            raise ValueError
+        if self.headers.get("Transfer-Encoding") is not None:
+            raise RequestInputError(400, "Invalid request")
+        length_values = self.headers.get_all("Content-Length", [])
+        if len(length_values) != 1:
+            raise RequestInputError(400, "Invalid request")
+        raw_length = length_values[0]
         try:
             length = int(raw_length, 10)
         except (TypeError, ValueError):
-            raise ValueError from None
-        if not 0 < length <= MAX_REQUEST_BODY:
-            raise ValueError
+            raise RequestInputError(400, "Invalid request") from None
+        if length > MAX_REQUEST_BODY:
+            raise RequestInputError(413, "Request body too large")
+        if length <= 0:
+            raise RequestInputError(400, "Invalid request")
+        if self.headers.get_content_type() != "application/json":
+            raise RequestInputError(415, "Unsupported media type")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _html(self, status, content):
@@ -660,7 +689,8 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self._finish_headers(body)
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _json(self, status, message, allow=None):
         return self._json_payload(status, {"message": message}, allow=allow)
@@ -672,7 +702,8 @@ class AvscoreRequestHandler(BaseHTTPRequestHandler):
         if allow:
             self.send_header("Allow", allow)
         self._finish_headers(body)
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _finish_headers(self, body):
         for name, value in SECURITY_HEADERS.items():

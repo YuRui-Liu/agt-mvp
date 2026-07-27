@@ -2,6 +2,7 @@ import json
 import http.client
 import io
 import re
+import socket
 import subprocess
 import tempfile
 import threading
@@ -124,6 +125,20 @@ def request(server, method, path, *, body=None, headers=None):
     result = response.status, dict(response.getheaders()), payload
     connection.close()
     return result
+
+
+def raw_request(server, request_bytes):
+    connection = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
+    connection.sendall(request_bytes)
+    connection.shutdown(socket.SHUT_WR)
+    chunks = []
+    while True:
+        chunk = connection.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    connection.close()
+    return b"".join(chunks)
 
 
 class SessionNormalizationTests(unittest.TestCase):
@@ -895,7 +910,8 @@ class HttpServerTests(unittest.TestCase):
                         status, _, response = request(
                             server, "POST", "/api/analyze", body=body, headers=headers
                         )
-                        self.assertEqual(status, 400)
+                        expected = 415 if headers.get("Content-Type") == "text/plain" else 400
+                        self.assertEqual(status, expected)
                         self.assertEqual(set(json.loads(response)), {"message"})
 
                 status, _, _ = request(
@@ -908,7 +924,43 @@ class HttpServerTests(unittest.TestCase):
                         "X-Avscore-Token": "fixed secret",
                     },
                 )
-                self.assertEqual(status, 400)
+                self.assertEqual(status, 413)
+
+    def test_rejects_transfer_encoding_and_duplicate_content_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                for framing in (
+                    b"Transfer-Encoding: chunked\r\n",
+                    b"Content-Length: 20\r\nContent-Length: 20\r\n",
+                ):
+                    raw = raw_request(
+                        server,
+                        b"POST /api/analyze HTTP/1.1\r\n"
+                        b"Host: localhost\r\n"
+                        b"X-Avscore-Token: fixed secret\r\n"
+                        b"Content-Type: application/json\r\n"
+                        + framing
+                        + b"Connection: close\r\n\r\n"
+                        + b'{"session_id":"s-1"}',
+                    )
+                    self.assertTrue(raw.startswith(b"HTTP/1.0 400"))
+                    self.assertIn(b"application/json; charset=utf-8", raw)
+
+    def test_head_returns_headers_without_a_response_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with running_server(directory) as (server, _runner):
+                raw = raw_request(
+                    server,
+                    b"HEAD / HTTP/1.1\r\n"
+                    b"Host: localhost\r\n"
+                    b"X-Avscore-Token: fixed secret\r\n"
+                    b"Connection: close\r\n\r\n",
+                )
+                headers, separator, body = raw.partition(b"\r\n\r\n")
+                self.assertEqual(separator, b"\r\n\r\n")
+                self.assertTrue(headers.startswith(b"HTTP/1.0 405"))
+                self.assertEqual(body, b"")
+                self.assertIn(b"Cache-Control: no-store", headers)
 
     @mock.patch("avscore_server.run_profile")
     def test_valid_session_uses_server_project_and_publishes_three_files(self, profile):
@@ -1044,6 +1096,59 @@ class HttpServerTests(unittest.TestCase):
                 self.assertEqual(status, 500)
                 for name, content in old.items():
                     self.assertEqual((output / name).read_text(), content)
+
+    @mock.patch("avscore_server.run_profile")
+    def test_rollback_continues_and_preserves_unrestored_backup(self, profile):
+        profile.return_value = (profile_payload(70), False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            old = {
+                "profile.json": '{"old":"profile"}',
+                "report.json": '{"old":"report"}',
+                "report.html": "old report html",
+            }
+            for name, content in old.items():
+                (output / name).write_text(content, encoding="utf-8")
+            real_replace = __import__("os").replace
+
+            def fail_install_and_first_restore(source, destination):
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    source_path.name == "report.json"
+                    and destination_path == output / "report.json"
+                ):
+                    raise OSError("install failed")
+                if (
+                    source_path.name == ".previous-report.json"
+                    and destination_path == output / "report.json"
+                ):
+                    raise OSError("restore failed")
+                return real_replace(source, destination)
+
+            with running_server(directory) as (server, _runner):
+                with mock.patch(
+                    "avscore_server.os.replace",
+                    side_effect=fail_install_and_first_restore,
+                ):
+                    status, _, body = request(
+                        server,
+                        "POST",
+                        "/api/analyze",
+                        body=json.dumps({"session_id": "s-1"}),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Avscore-Token": "fixed secret",
+                        },
+                    )
+                self.assertEqual(status, 500)
+                self.assertIn("备份已保留", json.loads(body)["message"])
+                self.assertEqual((output / "profile.json").read_text(), old["profile.json"])
+                self.assertEqual((output / "report.html").read_text(), old["report.html"])
+                recoveries = list(output.glob(".avscore-recovery-*"))
+                self.assertEqual(len(recoveries), 1)
+                backup = recoveries[0] / ".previous-report.json"
+                self.assertEqual(backup.read_text(), old["report.json"])
 
     def test_wrong_token_and_request_log_do_not_expose_token(self):
         with tempfile.TemporaryDirectory() as directory:
