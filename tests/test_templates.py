@@ -152,6 +152,42 @@ class SessionSelectionTemplateTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, self.template)
 
+    def test_explains_project_scope_local_privacy_and_progress(self):
+        for copy in (
+            "选择一个真实会话",
+            "所属项目",
+            "全部可分析会话",
+            "本地",
+            "数据不上传",
+            "正在分析项目",
+            "计算 7D 画像",
+        ):
+            with self.subTest(copy=copy):
+                self.assertIn(copy, self.template)
+
+    def test_empty_state_lists_supported_agents_and_custom_directories(self):
+        for token in (
+            "Claude Code",
+            "Codex",
+            "Cursor",
+            "Gemini",
+            "Copilot",
+            "OpenCode",
+            "Kimi",
+            "CLAUDE_PROJECTS_DIR",
+            "CODEX_SESSIONS_DIR",
+            "CURSOR_PROJECTS_DIR",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.template)
+
+    def test_frontend_prefers_server_message_contract(self):
+        self.assertIn("result.message", self.template)
+        self.assertRegex(
+            self.template,
+            r"result\s*&&\s*result\.message[\s\S]*result\.error",
+        )
+
     def test_interaction_state_flows_execute_in_node(self):
         try:
             result = subprocess.run(

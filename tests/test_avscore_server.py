@@ -1,6 +1,7 @@
 import json
 import http.client
 import io
+import os
 import re
 import socket
 import subprocess
@@ -15,6 +16,7 @@ from urllib.parse import quote
 from avscore_server import (
     AnalysisBusyError,
     AnalysisCoordinator,
+    AvscoreApp,
     AvscoreError,
     CommandRunner,
     ServerConfig,
@@ -1001,6 +1003,24 @@ class HttpServerTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(report, (output / "report.html").read_bytes())
                 self.assertEqual(headers["Cache-Control"], "no-store")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits required")
+    def test_new_output_directory_and_published_files_are_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "private-output"
+            config = ServerConfig(
+                binary="agentsview",
+                selection_template=Path(__file__).parents[1]
+                / "session-selection.html.tmpl",
+                profile_template=Path(__file__).parents[1] / "avscore.html.tmpl",
+                output_dir=output,
+            )
+            app = AvscoreApp(config, ServerRunner([]), "token", [])
+            app._publish(profile_payload(), {"safe": True}, "<html></html>")
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+            for name in ("profile.json", "report.json", "report.html"):
+                with self.subTest(name=name):
+                    self.assertEqual((output / name).stat().st_mode & 0o777, 0o600)
 
     def test_report_absent_busy_and_safe_failure_preserves_old_report(self):
         with tempfile.TemporaryDirectory() as directory:

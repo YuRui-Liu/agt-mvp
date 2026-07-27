@@ -62,7 +62,7 @@ test("analysis freezes session, consent, and accordion until failure", () => {
   assert.equal(state.consent, true);
   assert.deepEqual([...state.expandedAgents], [...frozen.expandedAgents]);
 
-  const failed = logic.completeAnalysis(state, false, {error: "retry"}).state;
+  const failed = logic.completeAnalysis(state, false, {message: "retry"}).state;
   const changed = logic.selectSession(failed, 1, 0, {id: "B"});
   assert.equal(changed.selectedSession.id, "B");
   assert.equal(logic.setConsent(failed, false).consent, false);
@@ -93,10 +93,12 @@ test("successful and failed fetch results produce testable states", () => {
   const success = logic.completeAnalysis(running, true, {report_url: "/report"});
   assert.equal(success.ok, true);
   assert.equal(success.reportUrl, "/report");
-  const failure = logic.completeAnalysis(running, false, {error: "<unsafe>"});
+  const failure = logic.completeAnalysis(
+    running, false, {message: "画像分析失败", error: "legacy error"}
+  );
   assert.equal(failure.ok, false);
   assert.equal(failure.state.analyzing, false);
-  assert.equal(failure.state.error, "<unsafe>");
+  assert.equal(failure.state.error, "画像分析失败");
   assert.equal(failure.state.selectedSession.id, "s-1");
 });
 

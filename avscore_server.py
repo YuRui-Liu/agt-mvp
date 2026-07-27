@@ -325,7 +325,9 @@ def atomic_write(path, content):
             temp_name = handle.name
             handle.write(content)
             handle.flush()
+        os.chmod(temp_name, 0o600)
         os.replace(temp_name, path)
+        os.chmod(path, 0o600)
         temp_name = None
     finally:
         if temp_name is not None:
@@ -498,7 +500,7 @@ class AvscoreApp:
     def _publish(self, profile, model, report):
         """Stage complete files and roll back the set if publication fails."""
         output_dir = Path(self.config.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         staging = Path(
             tempfile.mkdtemp(prefix=".avscore-recovery-", dir=output_dir)
         )
@@ -516,7 +518,9 @@ class AvscoreApp:
                 "report.html": report,
             }
             for name, content in payloads.items():
-                (staging / name).write_text(content, encoding="utf-8")
+                staged_path = staging / name
+                staged_path.write_text(content, encoding="utf-8")
+                os.chmod(staged_path, 0o600)
             try:
                 for name in payloads:
                     target = output_dir / name
@@ -526,6 +530,7 @@ class AvscoreApp:
                         backups.append((target, backup))
                     os.replace(staging / name, target)
                     installed.append(target)
+                    os.chmod(target, 0o600)
             except Exception:
                 cleanup_failures = []
                 for target in reversed(installed):

@@ -90,7 +90,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
 <main class="main">
   <div class="hero-text">
     <h1>分析你的 <span>AI 协作画像</span></h1>
-    <p>选择你想纳入分析的 Agent 会话，我们会基于真实使用数据生成你的专属 AITI 画像。</p>
+    <p>选择一个真实会话，我们会实际分析该会话所属项目的全部可分析会话，在本地生成你的专属 AITI 画像；数据不上传。</p>
   </div>
   <div class="section-label">检测到的 Agent 会话</div>
   <div id="sessionList" aria-live="polite">
@@ -171,8 +171,10 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     if (responseOk && result && result.report_url) {
       return {ok: true, state, reportUrl: String(result.report_url)};
     }
-    const error = result && result.error
-      ? String(result.error) : "分析失败，请稍后重试";
+    const error = result && result.message
+      ? String(result.message)
+      : result && result.error
+        ? String(result.error) : "分析失败，请稍后重试";
     return {
       ok: false,
       state: copy(state, {analyzing: false, error}),
@@ -257,7 +259,11 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
   function render() {
     list.replaceChildren();
     if (!data.groups.length) {
-      list.append(stateNode("empty", "没有检测到可分析的会话", "请先使用支持的 Agent 完成一次会话后重试。"));
+      list.append(stateNode(
+        "empty",
+        "没有检测到可分析的会话",
+        " 支持 Claude Code、Codex、Cursor、Gemini、Copilot、OpenCode、Kimi 等 Agent。请先完成一次会话；自定义目录可设置 CLAUDE_PROJECTS_DIR、CODEX_SESSIONS_DIR、CURSOR_PROJECTS_DIR 等环境变量后重试。"
+      ));
       return;
     }
     data.groups.forEach((group, groupIndex) => {
@@ -344,7 +350,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     const started = logic.beginAnalysis(state);
     if (!started.accepted) return;
     state = started.state;
-    button.textContent = "分析中…";
+    button.textContent = `正在分析项目 ${text(state.selectedSession.project)} · 计算 7D 画像…`;
     render();
     updateButton();
     try {
@@ -362,7 +368,7 @@ body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
     } catch (error) {
       if (state.analyzing) {
         state = logic.completeAnalysis(state, false, {
-          error: error instanceof Error && error.message
+          message: error instanceof Error && error.message
             ? error.message : "分析失败，请稍后重试"
         }).state;
       }
