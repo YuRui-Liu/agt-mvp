@@ -1,3 +1,5 @@
+import json
+import re
 import subprocess
 import tempfile
 import threading
@@ -15,6 +17,7 @@ from avscore_server import (
     load_sessions,
     normalize_sessions,
     parse_profile,
+    render_selection,
     run_profile,
     safe_error,
 )
@@ -80,6 +83,7 @@ class SessionNormalizationTests(unittest.TestCase):
         self.assertEqual(groups[0]["agent"], "codex")
         self.assertEqual(groups[0]["sessions"][0]["project"], "atr")
         self.assertEqual(groups[0]["sessions"][0]["title"], "更新用户页面")
+        self.assertEqual(groups[0]["sessions"][0]["messageCount"], 42)
         self.assertEqual(groups[0]["sessions"][0]["projectSessionCount"], 1)
 
     def test_drops_records_without_id_or_project(self):
@@ -508,6 +512,75 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "old report")
             self.assertEqual(list(path.parent.iterdir()), [path])
             replace.assert_called_once()
+
+
+class SelectionRenderingTests(unittest.TestCase):
+    def test_render_selection_embeds_parseable_bootstrap_data(self):
+        groups = [
+            {
+                "agent": "codex",
+                "sessions": [
+                    {
+                        "id": "s-1",
+                        "project": "atr",
+                        "title": "真实会话",
+                        "ended_at": "2026-07-27T08:20:00Z",
+                        "message_count": 42,
+                        "projectSessionCount": 3,
+                    }
+                ],
+            }
+        ]
+
+        rendered = render_selection(groups, "token-123")
+        match = re.search(
+            r'<script type="application/json" id="bootstrap-data">(.*?)</script>',
+            rendered,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(
+            json.loads(match.group(1)),
+            {"groups": groups, "token": "token-123"},
+        )
+
+    def test_render_selection_prevents_script_breakout(self):
+        attack = '</script><img src=x onerror="alert(1)">'
+        groups = [
+            {
+                "agent": attack,
+                "sessions": [
+                    {
+                        "id": attack,
+                        "project": attack,
+                        "title": attack,
+                        "projectSessionCount": 1,
+                    }
+                ],
+            }
+        ]
+
+        rendered = render_selection(groups, attack)
+        payload = re.search(
+            r'<script type="application/json" id="bootstrap-data">(.*?)</script>',
+            rendered,
+            re.DOTALL,
+        ).group(1)
+
+        self.assertNotIn(attack, rendered)
+        self.assertNotIn("<", payload)
+        self.assertEqual(json.loads(payload), {"groups": groups, "token": attack})
+
+    def test_render_selection_rejects_unknown_template_placeholders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "selection.html.tmpl"
+            template.write_text(
+                "{{BOOTSTRAP_JSON}} {{UNKNOWN_PLACEHOLDER}}", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "unknown template placeholder"):
+                render_selection([], "token", template_path=template)
 
 
 if __name__ == "__main__":

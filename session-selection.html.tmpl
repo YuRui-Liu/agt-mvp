@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>选择 Agent 会话 · AITI</title>
+<style>
+:root{--ink:#25221f;--ink-soft:#645e58;--paper:#fffdf9;--line:#eadfd3;--orange:#ff6b12;--orange-deep:#e84f00;--orange-soft:#fff0df}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;
+  background:radial-gradient(circle at 82% 8%,rgba(255,169,76,.12),transparent 28rem),
+             radial-gradient(circle at 5% 42%,rgba(255,107,18,.07),transparent 32rem),var(--paper);
+  color:var(--ink);min-height:100vh}
+.header{display:flex;align-items:center;padding:20px 40px 0}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-mark{width:36px;height:36px;border-radius:12px;background:linear-gradient(145deg,var(--orange),#ff8c2e);
+  display:grid;place-items:center;color:white;font-weight:900;font-size:14px;
+  box-shadow:0 8px 22px rgba(255,107,18,.28)}
+.brand-text strong{font-size:14px;display:block;letter-spacing:.04em}
+.brand-text span{font-size:11px;color:var(--ink-soft);letter-spacing:.1em;text-transform:uppercase}
+.main{padding:40px 40px 140px;max-width:900px;margin:0 auto}
+.hero-text h1{font-size:34px;font-weight:850;letter-spacing:-.05em;line-height:1.15;margin-bottom:10px}
+.hero-text h1 span{color:var(--orange)}
+.hero-text p{color:var(--ink-soft);font-size:15px;line-height:1.7}
+.section-label{margin-top:32px;margin-bottom:12px;font-size:11px;font-weight:820;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--orange-deep);display:flex;align-items:center;gap:8px}
+.section-label::after{content:"";flex:1;height:1px;background:var(--line)}
+#sessionList{display:flex;flex-direction:column;gap:12px}
+.agent-card{overflow:hidden;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.82);transition:border-color 160ms,box-shadow 160ms,background 160ms}
+.agent-card:hover,.agent-card.expanded{border-color:#f2ad71;box-shadow:0 8px 24px rgba(100,58,22,.08)}
+.agent-header{display:flex;width:100%;align-items:center;gap:16px;padding:16px 20px;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+.agent-header:hover{background:rgba(255,240,223,.45)}
+.agent-chevron{margin-left:4px;color:var(--orange-deep);font-size:20px;line-height:1;transition:transform 160ms}
+.agent-card.expanded .agent-chevron{transform:rotate(180deg)}
+.s-icon{width:40px;height:40px;border-radius:12px;background:#fff8ee;border:1px solid var(--line);display:grid;place-items:center;font-size:18px;flex-shrink:0}
+.s-info{flex:1;min-width:0}.s-info strong{font-size:14px;display:block}.s-info span{font-size:12px;color:var(--ink-soft);overflow-wrap:anywhere}
+.s-meta{text-align:right;flex-shrink:0;font-size:11px;color:var(--ink-soft);line-height:1.5}.s-meta strong{display:block;font-size:18px;color:var(--orange);font-weight:800}
+.agent-sessions{display:none;padding:0 14px 14px;border-top:1px solid #f3e4d9;background:rgba(255,250,245,.65)}
+.agent-card.expanded .agent-sessions{display:grid;gap:8px}
+.session-option{display:flex;min-width:0;align-items:center;gap:12px;padding:12px 14px;border:1px solid transparent;border-radius:12px;background:rgba(255,255,255,.7);cursor:pointer;transition:border-color 160ms,background 160ms,box-shadow 160ms}
+.session-option:hover{border-color:#f2c49c;background:#fff}
+.session-option.selected{border-color:var(--orange);background:var(--orange-soft);box-shadow:0 5px 15px rgba(255,107,18,.1)}
+.session-option input{position:absolute;opacity:0;pointer-events:none}
+.session-option input:focus-visible + .radio-mark{outline:3px solid rgba(255,107,18,.35);outline-offset:3px}
+.radio-mark{width:18px;height:18px;border:2px solid #d9cbbf;border-radius:50%;background:#fff;flex:0 0 auto;position:relative}
+.session-option.selected .radio-mark{border-color:var(--orange)}
+.session-option.selected .radio-mark::after{position:absolute;inset:4px;border-radius:50%;background:var(--orange);content:""}
+.session-copy{flex:1;min-width:0}.session-copy strong{display:block;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.session-copy span{display:block;margin-top:3px;color:var(--ink-soft);font-size:11px}
+.session-meta{flex-shrink:0;color:#9a8e86;font-size:11px;text-align:right;line-height:1.5}.session-meta strong{display:block;color:var(--orange-deep);font-size:12px}
+.action-bar{position:fixed;z-index:10;bottom:0;left:0;right:0;padding:14px 40px;
+  background:rgba(255,253,249,.93);backdrop-filter:blur(16px);
+  border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:24px}
+.selection-summary{display:flex;flex-direction:column;gap:3px;min-width:0;color:var(--ink-soft);font-size:12px}.selection-summary strong{overflow:hidden;max-width:440px;color:var(--orange-deep);font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+.selection-details{font-size:11px}
+.right-bar{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0}
+.privacy{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-soft);cursor:pointer}
+.privacy input{width:15px;height:15px;accent-color:var(--orange)}
+.analyze-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:46px;padding:0 28px;
+  border-radius:14px;border:none;cursor:pointer;
+  background:linear-gradient(135deg,var(--orange),var(--orange-deep));
+  color:white;font-size:15px;font-weight:760;
+  box-shadow:0 12px 28px rgba(232,79,0,.25);transition:transform 180ms,opacity 180ms}
+.analyze-btn:hover:not(:disabled){transform:translateY(-2px)}
+.analyze-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.state{padding:28px 20px;border:1px dashed var(--line);border-radius:16px;text-align:center;color:var(--ink-soft);background:rgba(255,255,255,.65)}
+.state strong{display:block;margin-bottom:6px;color:var(--ink)}
+.empty-state{border-color:var(--line)}.error-state{border-color:#f2ad71}.error-message{min-height:18px;color:#b13d00;font-size:12px;text-align:right}
+.loading-state .state-dot{display:inline-block;width:8px;height:8px;margin-right:7px;border-radius:50%;background:var(--orange);animation:pulse 900ms ease-in-out infinite alternate}
+:focus-visible{outline:3px solid rgba(255,107,18,.35);outline-offset:3px}
+@keyframes pulse{to{opacity:.25}}
+@media(max-width:600px){
+  .header{padding:16px 18px 0}.main{padding:32px 18px 238px}.hero-text h1{font-size:29px}
+  .agent-header{gap:10px;padding:14px}.s-icon{width:36px;height:36px}.s-info span{max-width:150px}
+  .session-option{gap:9px;padding:11px 10px}.session-meta{font-size:10px}.action-bar{padding:12px 18px;align-items:stretch;flex-direction:column;gap:10px}
+  .selection-summary strong{max-width:100%}.right-bar{align-items:stretch}.privacy{align-items:flex-start}.analyze-btn{width:100%}.error-message{text-align:left}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="brand">
+    <div class="brand-mark">A</div>
+    <div class="brand-text"><strong>AITI</strong><span>AI Builder Card</span></div>
+  </div>
+</div>
+<main class="main">
+  <div class="hero-text">
+    <h1>分析你的 <span>AI 协作画像</span></h1>
+    <p>选择你想纳入分析的 Agent 会话，我们会基于真实使用数据生成你的专属 AITI 画像。</p>
+  </div>
+  <div class="section-label">检测到的 Agent 会话</div>
+  <div id="sessionList" aria-live="polite">
+    <div class="state loading-state"><span class="state-dot"></span>正在加载会话…</div>
+  </div>
+</main>
+
+<div class="action-bar">
+  <div class="selection-summary">
+    <span>已选 session</span>
+    <strong id="selectedSessionName">未选择</strong>
+    <span class="selection-details" id="selectionDetails"></span>
+  </div>
+  <div class="right-bar">
+    <label class="privacy">
+      <input type="checkbox" id="consent" checked>
+      <span>允许应用在本地分析我的智能体会话数据，数据不上传</span>
+    </label>
+    <div class="error-message" id="analysisError" role="alert"></div>
+    <button class="analyze-btn" id="analyzeBtn" type="button" disabled>开始分析 →</button>
+  </div>
+</div>
+
+<script type="application/json" id="bootstrap-data">{{BOOTSTRAP_JSON}}</script>
+<script>
+(() => {
+  "use strict";
+  const list = document.getElementById("sessionList");
+  const button = document.getElementById("analyzeBtn");
+  const consent = document.getElementById("consent");
+  const selectedName = document.getElementById("selectedSessionName");
+  const details = document.getElementById("selectionDetails");
+  const errorNode = document.getElementById("analysisError");
+  let data;
+  let selectedSession = null;
+  let analyzing = false;
+  const expandedAgents = new Set();
+
+  function text(value) {
+    return value == null ? "" : String(value);
+  }
+
+  function displayTime(value) {
+    if (!value) return "时间未知";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return text(value);
+    return new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit"
+    }).format(date);
+  }
+
+  function stateNode(kind, title, message) {
+    const node = document.createElement("div");
+    node.className = `state ${kind}-state`;
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    node.append(strong, document.createTextNode(message));
+    return node;
+  }
+
+  function updateButton() {
+    button.disabled = analyzing || !consent.checked || !selectedSession;
+    selectedName.textContent = selectedSession
+      ? `${text(selectedSession.agent)} · ${text(selectedSession.title)}`
+      : "未选择";
+    details.textContent = selectedSession
+      ? `将分析项目 ${text(selectedSession.project)} · 共 ${text(selectedSession.projectSessionCount)} 个 session`
+      : "";
+  }
+
+  function chooseSession(groupIndex, sessionIndex) {
+    const group = data.groups[groupIndex];
+    selectedSession = {...group.sessions[sessionIndex], agent: group.agent};
+    expandedAgents.add(groupIndex);
+    errorNode.textContent = "";
+    render();
+    updateButton();
+  }
+
+  function render() {
+    list.replaceChildren();
+    if (!data.groups.length) {
+      list.append(stateNode("empty", "没有检测到可分析的会话", "请先使用支持的 Agent 完成一次会话后重试。"));
+      return;
+    }
+    data.groups.forEach((group, groupIndex) => {
+      const expanded = expandedAgents.has(groupIndex);
+      const section = document.createElement("section");
+      section.className = `agent-card${expanded ? " expanded" : ""}`;
+      const header = document.createElement("button");
+      header.className = "agent-header";
+      header.type = "button";
+      header.setAttribute("aria-expanded", String(expanded));
+      const panelId = `agent-sessions-${groupIndex}`;
+      header.setAttribute("aria-controls", panelId);
+
+      const icon = document.createElement("span");
+      icon.className = "s-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "🤖";
+      const info = document.createElement("span");
+      info.className = "s-info";
+      const agentName = document.createElement("strong");
+      agentName.textContent = text(group.agent);
+      const projectNames = [...new Set(group.sessions.map(session => text(session.project)).filter(Boolean))];
+      const projects = document.createElement("span");
+      projects.textContent = projectNames.join(" · ") || "项目未知";
+      info.append(agentName, projects);
+      const meta = document.createElement("span");
+      meta.className = "s-meta";
+      const count = document.createElement("strong");
+      count.textContent = text(group.sessions.length);
+      meta.append(count, document.createTextNode("个 session"));
+      const chevron = document.createElement("span");
+      chevron.className = "agent-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "⌄";
+      header.append(icon, info, meta, chevron);
+      header.addEventListener("click", () => {
+        expanded ? expandedAgents.delete(groupIndex) : expandedAgents.add(groupIndex);
+        render();
+      });
+
+      const panel = document.createElement("div");
+      panel.className = "agent-sessions";
+      panel.id = panelId;
+      group.sessions.forEach((session, sessionIndex) => {
+        const option = document.createElement("label");
+        const isSelected = selectedSession && selectedSession.id === session.id;
+        option.className = `session-option${isSelected ? " selected" : ""}`;
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "selectedSession";
+        radio.value = text(session.id);
+        radio.checked = Boolean(isSelected);
+        radio.addEventListener("change", () => chooseSession(groupIndex, sessionIndex));
+        const mark = document.createElement("span");
+        mark.className = "radio-mark";
+        mark.setAttribute("aria-hidden", "true");
+        const copy = document.createElement("span");
+        copy.className = "session-copy";
+        const title = document.createElement("strong");
+        title.textContent = text(session.title) || "未命名会话";
+        const time = document.createElement("span");
+        time.textContent = displayTime(session.ended_at);
+        copy.append(title, time);
+        const sessionMeta = document.createElement("span");
+        sessionMeta.className = "session-meta";
+        const messages = document.createElement("strong");
+        const messageCount = session.messageCount ?? session.message_count ?? 0;
+        messages.textContent = `${text(messageCount)} 条`;
+        sessionMeta.append(messages, document.createTextNode("消息记录"));
+        option.append(radio, mark, copy, sessionMeta);
+        panel.append(option);
+      });
+      section.append(header, panel);
+      list.append(section);
+    });
+  }
+
+  async function analyze() {
+    if (analyzing || !selectedSession || !consent.checked) return;
+    analyzing = true;
+    errorNode.textContent = "";
+    button.textContent = "分析中…";
+    updateButton();
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-Avscore-Token": text(data.token)},
+        body: JSON.stringify({session_id: selectedSession.id})
+      });
+      let result = {};
+      try { result = await response.json(); } catch (_) {}
+      if (!response.ok || !result.report_url) {
+        throw new Error(text(result.error) || "分析失败，请稍后重试");
+      }
+      window.location.assign(result.report_url);
+    } catch (error) {
+      errorNode.textContent = error instanceof Error && error.message
+        ? error.message : "分析失败，请稍后重试";
+      analyzing = false;
+      button.textContent = "重新分析 →";
+      updateButton();
+    }
+  }
+
+  consent.addEventListener("change", updateButton);
+  button.addEventListener("click", analyze);
+  try {
+    data = JSON.parse(document.getElementById("bootstrap-data").textContent);
+    if (!data || !Array.isArray(data.groups)) throw new Error("invalid bootstrap");
+    if (data.groups.length) expandedAgents.add(0);
+    render();
+    updateButton();
+  } catch (_) {
+    data = {groups: [], token: ""};
+    list.replaceChildren(stateNode("error", "无法加载会话", "页面数据异常，请刷新后重试。"));
+    consent.disabled = true;
+    updateButton();
+  }
+})();
+</script>
+</body>
+</html>

@@ -30,6 +30,33 @@ DIMENSIONS = (
     ("adaptation", "适应"),
 )
 
+SELECTION_TEMPLATE = Path(__file__).with_name("session-selection.html.tmpl")
+_TEMPLATE_PLACEHOLDER = re.compile(r"{{([A-Z0-9_]+)}}")
+
+
+def render_selection(groups, token, template_path=SELECTION_TEMPLATE):
+    """Render session selection with JSON that cannot terminate its script node."""
+
+    template = Path(template_path).read_text(encoding="utf-8")
+    placeholders = set(_TEMPLATE_PLACEHOLDER.findall(template))
+    unknown = placeholders - {"BOOTSTRAP_JSON"}
+    if unknown:
+        raise ValueError(
+            "unknown template placeholder: " + ", ".join(sorted(unknown))
+        )
+    if "BOOTSTRAP_JSON" not in placeholders:
+        raise ValueError("missing template placeholder: BOOTSTRAP_JSON")
+
+    bootstrap = json.dumps(
+        {"groups": groups, "token": token},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    bootstrap = bootstrap.replace("<", "\\u003c").replace(
+        "\u2028", "\\u2028"
+    ).replace("\u2029", "\\u2029")
+    return template.replace("{{BOOTSTRAP_JSON}}", bootstrap)
+
 
 class CommandRunner:
     def __init__(self, binary, timeout=180):
@@ -274,6 +301,12 @@ def normalize_sessions(payload):
         )
         if not isinstance(session.get("ended_at"), str):
             session["ended_at"] = ""
+        message_count = record.get("message_count", 0)
+        session["messageCount"] = (
+            message_count
+            if isinstance(message_count, int) and not isinstance(message_count, bool)
+            else 0
+        )
         session["projectSessionCount"] = project_counts[record["project"]]
         groups.setdefault(session["agent"], []).append(session)
 
