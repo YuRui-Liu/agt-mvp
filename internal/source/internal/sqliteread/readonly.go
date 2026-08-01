@@ -108,30 +108,33 @@ func validateReadQuery(query string) error {
 		return errors.New("sqliteread: invalid read query")
 	}
 	for _, token := range tokens {
-		if token == "LOAD_EXTENSION" {
+		if token.value == "LOAD_EXTENSION" && (!token.quotedIdentifier || token.call) {
 			return errors.New("sqliteread: prohibited function")
 		}
 	}
-	switch tokens[0] {
+	switch tokens[0].value {
 	case "SELECT", "VALUES":
 		return nil
 	case "WITH":
-		for _, token := range tokens[1:] {
-			switch token {
-			case "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "VACUUM", "ATTACH", "DETACH", "PRAGMA":
-				return errors.New("sqliteread: write query rejected")
-			}
+		if containsWriteToken(tokens[1:]) {
+			return errors.New("sqliteread: write query rejected")
 		}
 		return nil
 	case "EXPLAIN":
 		for index, token := range tokens[1:] {
-			if token == "SELECT" || token == "WITH" {
-				return validateReadQuery(strings.Join(tokens[index+1:], " "))
+			if token.value == "SELECT" {
+				return nil
+			}
+			if token.value == "WITH" {
+				if containsWriteToken(tokens[index+2:]) {
+					return errors.New("sqliteread: write query rejected")
+				}
+				return nil
 			}
 		}
 	case "PRAGMA":
 		if !hasAssignment && len(tokens) >= 2 {
-			name := tokens[1]
+			name := tokens[1].value
 			if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
 				name = name[dot+1:]
 			}
@@ -141,6 +144,16 @@ func validateReadQuery(query string) error {
 		}
 	}
 	return errors.New("sqliteread: non-read query rejected")
+}
+
+func containsWriteToken(tokens []queryToken) bool {
+	for _, token := range tokens {
+		switch token.value {
+		case "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "VACUUM", "ATTACH", "DETACH", "PRAGMA":
+			return true
+		}
+	}
+	return false
 }
 
 var readOnlyPragma = map[string]bool{
@@ -154,14 +167,20 @@ var readOnlyPragma = map[string]bool{
 	"TABLE_XINFO":      true,
 }
 
-func readQueryTokens(query string) ([]string, bool, error) {
-	var tokens []string
+type queryToken struct {
+	value            string
+	quotedIdentifier bool
+	call             bool
+}
+
+func readQueryTokens(query string) ([]queryToken, bool, error) {
+	var tokens []queryToken
 	var token strings.Builder
 	assignment := false
 	ended := false
 	flush := func() {
 		if token.Len() != 0 {
-			tokens = append(tokens, strings.ToUpper(token.String()))
+			tokens = append(tokens, queryToken{value: strings.ToUpper(token.String())})
 			token.Reset()
 		}
 	}
@@ -193,6 +212,8 @@ func readQueryTokens(query string) ([]string, bool, error) {
 			if character == '[' {
 				closing = ']'
 			}
+			quotedIdentifier := character != '\''
+			var quoted strings.Builder
 			index++
 			for {
 				if index >= len(query) {
@@ -200,13 +221,18 @@ func readQueryTokens(query string) ([]string, bool, error) {
 				}
 				if query[index] == closing {
 					if closing != ']' && index+1 < len(query) && query[index+1] == closing {
+						quoted.WriteByte(closing)
 						index += 2
 						continue
 					}
 					index++
 					break
 				}
+				quoted.WriteByte(query[index])
 				index++
+			}
+			if quotedIdentifier {
+				tokens = append(tokens, queryToken{value: strings.ToUpper(quoted.String()), quotedIdentifier: true})
 			}
 			continue
 		}
@@ -222,7 +248,15 @@ func readQueryTokens(query string) ([]string, bool, error) {
 		if character == '=' {
 			assignment = true
 		}
-		if character == ' ' || character == '\t' || character == '\r' || character == '\n' || strings.ContainsRune("(),=", rune(character)) {
+		if character == '(' {
+			flush()
+			if len(tokens) != 0 {
+				tokens[len(tokens)-1].call = true
+			}
+			index++
+			continue
+		}
+		if character == ' ' || character == '\t' || character == '\r' || character == '\n' || strings.ContainsRune("),=", rune(character)) {
 			flush()
 			index++
 			continue

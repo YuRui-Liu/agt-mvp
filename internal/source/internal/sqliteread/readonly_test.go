@@ -109,6 +109,9 @@ func TestValidateReadQueryRejectsWriteAndMultiStatementBypasses(t *testing.T) {
 		`SELECT LOAD_EXTENSION('synthetic')`,
 		`VALUES (LOAD_EXTENSION('synthetic'))`,
 		`WITH picked AS (SELECT 1) SELECT LOAD_EXTENSION('synthetic') FROM picked`,
+		`SELECT "load_extension"('synthetic')`,
+		"VALUES (`load_extension`('synthetic'))",
+		`WITH picked AS (SELECT 1) SELECT [load_extension]('synthetic') FROM picked`,
 	} {
 		if err := validateReadQuery(query); err == nil {
 			t.Fatal("unsafe SQL accepted")
@@ -120,8 +123,10 @@ func TestValidateReadQueryRejectsWriteAndMultiStatementBypasses(t *testing.T) {
 		`EXPLAIN QUERY PLAN SELECT value FROM items`,
 		`PRAGMA table_info(items)`,
 		`SELECT "LOAD_EXTENSION" FROM items`,
+		`EXPLAIN SELECT "LOAD_EXTENSION" FROM items`,
 		`VALUES ('LOAD_EXTENSION')`,
 		`WITH picked AS (SELECT 'LOAD_EXTENSION') SELECT * FROM picked`,
+		`SELECT 'load_extension'`,
 	} {
 		if err := validateReadQuery(query); err != nil {
 			t.Fatalf("read query rejected: %v", err)
