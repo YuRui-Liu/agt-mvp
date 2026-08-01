@@ -50,6 +50,38 @@ func TestRegistryClassifiesSourceStates(t *testing.T) {
 	}
 }
 
+func TestClassifyDiscoveryErrorVariants(t *testing.T) {
+	var typedNil *DiscoveryError
+	tests := []struct {
+		name string
+		err  error
+		want SourceStatus
+	}{
+		{
+			name: "wrapped declared state",
+			err:  fmt.Errorf("adapter wrapper: %w", NewDiscoveryError(SourceFormatUnsupported, errors.New("private path"))),
+			want: sourceErrorStatus(SourceFormatUnsupported, "format_unsupported"),
+		},
+		{
+			name: "typed nil declaration",
+			err:  typedNil,
+			want: sourceErrorStatus(SourceReadError, "read_failed"),
+		},
+		{
+			name: "invalid declared state",
+			err:  NewDiscoveryError(SourceReady, errors.New("private path")),
+			want: sourceErrorStatus(SourceReadError, "read_failed"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyDiscoveryError(tt.err); got != tt.want {
+				t.Fatalf("status = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 type testAdapter struct {
 	product  string
 	sessions []Session
@@ -103,7 +135,7 @@ func TestRegistryScanIsolatesAdapterFailures(t *testing.T) {
 		t.Fatalf("codex state = %q, want %q", got, SourceReady)
 	}
 	failed := statuses["claude"]
-	if failed.State != SourceReadError || failed.Code != "read_failed" {
+	if failed.State != SourceReadError || failed.Code != "read_failed" || failed.Error != failed.Code {
 		t.Fatalf("claude status = %#v, want safe failed status", failed)
 	}
 	if strings.Contains(failed.Code, "alice") || strings.Contains(failed.Code, "transcript") {
@@ -191,7 +223,7 @@ func TestRegistryScanIsolatesAdapterContextErrorWhenParentIsActive(t *testing.T)
 		if err != nil {
 			t.Fatalf("Scan returned adapter-local context error: %v", err)
 		}
-		if got := result.Sources["broken"]; got.State != SourceReadError || got.Code != "read_failed" {
+		if got := result.Sources["broken"]; got.State != SourceReadError || got.Code != "read_failed" || got.Error != got.Code {
 			t.Fatalf("status = %#v, want read_error/read_failed", got)
 		}
 		if len(result.Sessions) != 1 || result.Sessions[0].Product != "healthy" {
@@ -230,7 +262,7 @@ func TestRegistryScanRejectsEmptySessionID(t *testing.T) {
 	if len(result.Sessions) != 0 {
 		t.Fatalf("sessions = %#v, want none from invalid product", result.Sessions)
 	}
-	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" {
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" || got.Error != got.Code {
 		t.Fatalf("status = %#v, want read_error/invalid_session", got)
 	}
 }
@@ -249,7 +281,7 @@ func TestRegistryScanRejectsConflictingDuplicateSessionID(t *testing.T) {
 	if len(result.Sessions) != 0 {
 		t.Fatalf("sessions = %#v, want fail-closed product", result.Sessions)
 	}
-	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" {
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" || got.Error != got.Code {
 		t.Fatalf("status = %#v, want read_error/invalid_session", got)
 	}
 }
@@ -296,7 +328,7 @@ func TestRegistryRejectsDuplicateProductWithoutScanningIt(t *testing.T) {
 	if firstCalls != 0 || secondCalls != 0 {
 		t.Fatalf("duplicate product adapters were scanned: %d, %d", firstCalls, secondCalls)
 	}
-	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "duplicate_product" {
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "duplicate_product" || got.Error != got.Code {
 		t.Fatalf("status = %#v, want read_error/duplicate_product", got)
 	}
 	if len(result.Sessions) != 1 || result.Sessions[0].Product != "claude" {
@@ -356,7 +388,7 @@ func TestRegistryScanRejectsEmptyAndInvalidProducts(t *testing.T) {
 			if calls != 0 {
 				t.Fatalf("Discover calls = %d, want 0", calls)
 			}
-			if got := result.Sources[tt.key]; got.State != SourceReadError || got.Code != "invalid_product" {
+			if got := result.Sources[tt.key]; got.State != SourceReadError || got.Code != "invalid_product" || got.Error != got.Code {
 				t.Fatalf("status = %#v, want read_error/invalid_product", got)
 			}
 		})

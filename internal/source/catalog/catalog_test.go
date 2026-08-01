@@ -48,6 +48,36 @@ func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 	}
 }
 
+func TestCatalogResultsDoNotShareMutableMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		load func() []Definition
+	}{
+		{name: "Definitions", load: Definitions},
+		{name: "Detect", load: func() []Definition { return Detect(nil) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := tt.load()
+			codex := find(first, "codex")
+			openclaw := find(first, "openclaw")
+			if codex == nil || len(codex.Capabilities) == 0 || openclaw == nil || len(openclaw.DefaultDirs) == 0 {
+				t.Fatalf("missing mutable metadata: codex=%#v openclaw=%#v", codex, openclaw)
+			}
+			codex.Capabilities[0] = "mutated"
+			openclaw.DefaultDirs[0] = "mutated"
+
+			second := tt.load()
+			if got := find(second, "codex").Capabilities[0]; got != source.CapabilityMessages {
+				t.Fatalf("capabilities polluted across calls: %q", got)
+			}
+			if got := find(second, "openclaw").DefaultDirs[0]; got != ".openclaw/agents" {
+				t.Fatalf("default dirs polluted across calls: %q", got)
+			}
+		})
+	}
+}
+
 func TestUnknownProductsNeverGuessDirectories(t *testing.T) {
 	for _, d := range Definitions() {
 		if d.Supported {

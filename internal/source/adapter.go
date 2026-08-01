@@ -213,7 +213,7 @@ func (r *Registry) Scan(ctx context.Context) (ScanResult, error) {
 
 func classifyDiscoveryError(err error) SourceStatus {
 	var discoveryError *DiscoveryError
-	if errors.As(err, &discoveryError) {
+	if errors.As(err, &discoveryError) && discoveryError != nil {
 		switch discoveryError.state {
 		case SourceFormatUnsupported, SourceExportRequired:
 			return sourceErrorStatus(discoveryError.state, string(discoveryError.state))
