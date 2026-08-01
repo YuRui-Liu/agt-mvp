@@ -122,6 +122,9 @@ func validateReadQuery(query string) error {
 		return nil
 	case "EXPLAIN":
 		for index, token := range tokens[1:] {
+			if token.quotedIdentifier {
+				continue
+			}
 			if token.value == "SELECT" {
 				return nil
 			}
@@ -148,6 +151,9 @@ func validateReadQuery(query string) error {
 
 func containsWriteToken(tokens []queryToken) bool {
 	for _, token := range tokens {
+		if token.quotedIdentifier {
+			continue
+		}
 		switch token.value {
 		case "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "VACUUM", "ATTACH", "DETACH", "PRAGMA":
 			return true

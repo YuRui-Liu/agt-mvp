@@ -127,6 +127,8 @@ func TestValidateReadQueryRejectsWriteAndMultiStatementBypasses(t *testing.T) {
 		`VALUES ('LOAD_EXTENSION')`,
 		`WITH picked AS (SELECT 'LOAD_EXTENSION') SELECT * FROM picked`,
 		`SELECT 'load_extension'`,
+		"WITH picked AS (SELECT 1 AS \"DELETE\", 2 AS `PRAGMA`) SELECT \"DELETE\", `PRAGMA` FROM picked",
+		`EXPLAIN QUERY PLAN WITH picked AS (SELECT 1 AS [UPDATE]) SELECT [UPDATE] FROM picked`,
 	} {
 		if err := validateReadQuery(query); err != nil {
 			t.Fatalf("read query rejected: %v", err)
