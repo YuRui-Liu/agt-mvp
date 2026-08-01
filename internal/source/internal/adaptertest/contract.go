@@ -28,6 +28,19 @@ func AuthorizationContract(t *testing.T, adapter source.Adapter, mutate func(), 
 	if len(sessions) == 0 {
 		t.Fatal("authorization contract: discovery returned no sessions")
 	}
+	reader, err := adapter.Open(context.Background(), sessions[0])
+	if err != nil {
+		if reader != nil {
+			reader.Close()
+		}
+		t.Fatal("authorization contract: discovered session rejected")
+	}
+	if reader == nil {
+		t.Fatal("authorization contract: discovered session rejected")
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal("authorization contract: discovered session close failed")
+	}
 	if reader, err := adapter.Open(context.Background(), forged); err == nil {
 		if reader != nil {
 			reader.Close()

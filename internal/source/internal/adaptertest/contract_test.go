@@ -1,10 +1,15 @@
 package adaptertest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -25,6 +30,9 @@ func TestAuthorizationContractCoversForgedMutationAndCancellation(t *testing.T) 
 	}
 	if adapter.openedForged != 1 || adapter.openedAfterMutation != 1 {
 		t.Fatalf("authorization checks: forged=%d mutation=%d", adapter.openedForged, adapter.openedAfterMutation)
+	}
+	if adapter.openedValid != 1 {
+		t.Fatalf("valid opens=%d", adapter.openedValid)
 	}
 }
 
@@ -61,6 +69,41 @@ func TestInspectPrivateFieldsRejectsTopLevelPrivateFieldsAndNestedAbsolutePaths(
 	}
 }
 
+func TestPublicHelperFailureDoesNotLeakPrivateInput(t *testing.T) {
+	if mode := os.Getenv("ADAPTERTEST_FAILURE_HELPER"); mode != "" {
+		privatePath := os.Getenv("ADAPTERTEST_PRIVATE_PATH")
+		secret := os.Getenv("ADAPTERTEST_PRIVATE_SECRET")
+		value := map[string]any{"type": "message", "content": map[string]any{"path_value": privatePath, "text": secret}}
+		if mode == "canonical" {
+			encoded := `{"type":"message","content":{"path_value":` + strconv.Quote(privatePath) + `,"text":` + strconv.Quote(secret) + `}}` + "\n"
+			AssertCanonicalEvents(t, strings.NewReader(encoded), map[string]bool{"message": true})
+			return
+		}
+		AssertNoPrivateFields(t, value)
+		return
+	}
+
+	privatePath := filepath.Join(t.TempDir(), "private-session.jsonl")
+	secret := "unique-private-event-body-7fbb2f"
+	for _, mode := range []string{"canonical", "private"} {
+		t.Run(mode, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestPublicHelperFailureDoesNotLeakPrivateInput$", "-test.v")
+			command.Env = append(os.Environ(),
+				"ADAPTERTEST_FAILURE_HELPER="+mode,
+				"ADAPTERTEST_PRIVATE_PATH="+privatePath,
+				"ADAPTERTEST_PRIVATE_SECRET="+secret,
+			)
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatal("helper subprocess unexpectedly passed")
+			}
+			if bytes.Contains(output, []byte(privatePath)) || bytes.Contains(output, []byte(secret)) {
+				t.Fatal("helper subprocess leaked private input")
+			}
+		})
+	}
+}
+
 type contractAdapter struct {
 	session             source.Session
 	mutated             bool
@@ -68,6 +111,7 @@ type contractAdapter struct {
 	sawCanceledOpen     bool
 	openedForged        int
 	openedAfterMutation int
+	openedValid         int
 }
 
 func (*contractAdapter) Product() string                   { return "fake" }
@@ -94,5 +138,6 @@ func (a *contractAdapter) Open(ctx context.Context, session source.Session) (io.
 		a.openedAfterMutation++
 		return nil, errors.New("synthetic changed session")
 	}
+	a.openedValid++
 	return io.NopCloser(strings.NewReader("{\"type\":\"message\"}\n")), nil
 }
