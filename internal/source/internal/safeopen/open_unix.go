@@ -12,10 +12,11 @@ import (
 )
 
 func openRelative(root, relative string) (*os.File, error) {
-	current, err := os.Open(root)
+	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, err
 	}
+	current := os.NewFile(uintptr(rootFD), root)
 	info, err := current.Stat()
 	if err != nil || !info.IsDir() {
 		current.Close()

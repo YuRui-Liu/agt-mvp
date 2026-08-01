@@ -31,6 +31,24 @@ func TestOpenRejectsSymlinkedParentAndFinalComponent(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsSymlinkRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	realRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realRoot, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := t.TempDir()
+	linkedRoot := filepath.Join(linkParent, "root")
+	if err := os.Symlink(realRoot, linkedRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(linkedRoot, filepath.Join(linkedRoot, "session.jsonl"), 1024); err == nil {
+		t.Fatal("symlink root accepted")
+	}
+}
+
 func TestOpenRemainsBoundWhenParentPathIsSwapped(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix openat test")
