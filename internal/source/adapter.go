@@ -20,14 +20,50 @@ type Adapter interface {
 type SourceState string
 
 const (
-	SourceReady  SourceState = "ready"
-	SourceFailed SourceState = "failed"
+	SourceReady               SourceState = "ready"
+	SourceNotFound            SourceState = "not_found"
+	SourceExportRequired      SourceState = "export_required"
+	SourceFormatUnsupported   SourceState = "format_unsupported"
+	SourceReadError           SourceState = "read_error"
+	SourceDetectedUnsupported SourceState = "detected_unsupported"
+
+	// SourceFailed is retained for source compatibility. New callers should
+	// distinguish SourceReadError from the other source states.
+	SourceFailed = SourceReadError
 )
 
 // SourceStatus reports discovery health without exposing adapter error text.
 type SourceStatus struct {
 	State SourceState `json:"state"`
-	Error string      `json:"error,omitempty"`
+	Code  string      `json:"code,omitempty"`
+	// Error temporarily mirrors Code for callers migrating from the old status
+	// model. It is never serialized and never contains adapter error text.
+	Error string `json:"-"`
+}
+
+// DiscoveryError lets an adapter declare one of the two expected discovery
+// limitations without exposing its underlying error to callers.
+type DiscoveryError struct {
+	state SourceState
+	err   error
+}
+
+func NewDiscoveryError(state SourceState, err error) error {
+	return &DiscoveryError{state: state, err: err}
+}
+
+func (e *DiscoveryError) Error() string {
+	if e == nil || e.err == nil {
+		return "source discovery failed"
+	}
+	return e.err.Error()
+}
+
+func (e *DiscoveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 type ScanResult struct {
@@ -91,14 +127,14 @@ func (r *Registry) Scan(ctx context.Context) (ScanResult, error) {
 		valid := validProduct(product)
 		snapshots = append(snapshots, adapterSnapshot{adapter: adapter, product: product, valid: valid})
 		if !valid {
-			result.Sources[product] = SourceStatus{State: SourceFailed, Error: "invalid_product"}
+			result.Sources[product] = sourceErrorStatus(SourceReadError, "invalid_product")
 			continue
 		}
 		productCounts[product]++
 	}
 	for product, count := range productCounts {
 		if count > 1 {
-			result.Sources[product] = SourceStatus{State: SourceFailed, Error: "duplicate_product"}
+			result.Sources[product] = sourceErrorStatus(SourceReadError, "duplicate_product")
 		}
 	}
 
@@ -118,7 +154,7 @@ func (r *Registry) Scan(ctx context.Context) (ScanResult, error) {
 			return ScanResult{}, ctxErr
 		}
 		if err != nil {
-			result.Sources[product] = SourceStatus{State: SourceFailed, Error: "discovery_failed"}
+			result.Sources[product] = classifyDiscoveryError(err)
 			continue
 		}
 
@@ -152,10 +188,14 @@ func (r *Registry) Scan(ctx context.Context) (ScanResult, error) {
 			productSessions = append(productSessions, session)
 		}
 		if invalid {
-			result.Sources[product] = SourceStatus{State: SourceFailed, Error: "invalid_session"}
+			result.Sources[product] = sourceErrorStatus(SourceReadError, "invalid_session")
 			continue
 		}
-		result.Sources[product] = SourceStatus{State: SourceReady}
+		state := SourceReady
+		if len(productSessions) == 0 {
+			state = SourceNotFound
+		}
+		result.Sources[product] = SourceStatus{State: state}
 		result.Sessions = append(result.Sessions, productSessions...)
 	}
 
@@ -169,6 +209,21 @@ func (r *Registry) Scan(ctx context.Context) (ScanResult, error) {
 		return ScanResult{}, err
 	}
 	return result, nil
+}
+
+func classifyDiscoveryError(err error) SourceStatus {
+	var discoveryError *DiscoveryError
+	if errors.As(err, &discoveryError) {
+		switch discoveryError.state {
+		case SourceFormatUnsupported, SourceExportRequired:
+			return sourceErrorStatus(discoveryError.state, string(discoveryError.state))
+		}
+	}
+	return sourceErrorStatus(SourceReadError, "read_failed")
+}
+
+func sourceErrorStatus(state SourceState, code string) SourceStatus {
+	return SourceStatus{State: state, Code: code, Error: code}
 }
 
 // Open routes a previously discovered session to its exact product adapter.

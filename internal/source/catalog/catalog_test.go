@@ -3,8 +3,50 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/YuRui-Liu/agt-mvp/internal/source"
 )
+
+func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
+	supported := map[string]bool{
+		"claude-code": true, "codex": true, "cursor": true, "opencode": true,
+		"vscode-copilot": true, "codeflicker": true, "myflicker": true,
+		"openclaw": true, "hermes-agent": true, "workbuddy": true,
+		"kimi-cli": true, "qwen-code": true,
+	}
+	reasons := map[string]string{
+		"trae": "official_export_required", "trae-work": "no_distinct_local_format",
+		"kimi-work": "no_verified_session_schema", "kimi-code": "no_verified_session_schema",
+		"tongyi-lingma": "no_verified_session_schema", "qoder": "no_verified_session_schema",
+		"qoder-work": "no_distinct_local_format", "codebuddy": "no_verified_session_schema",
+	}
+
+	for _, definition := range Definitions() {
+		if supported[definition.Product] {
+			if definition.Status != source.SourceReady || definition.Verification != source.VerificationMachine || definition.Reason != "" {
+				t.Errorf("supported %s metadata = %#v", definition.Product, definition)
+			}
+			wantCapabilities := []source.Capability{source.CapabilityMessages, source.CapabilityTools}
+			if !reflect.DeepEqual(definition.Capabilities, wantCapabilities) {
+				t.Errorf("%s capabilities = %#v, want %#v", definition.Product, definition.Capabilities, wantCapabilities)
+			}
+			continue
+		}
+
+		wantVerification := source.VerificationUnsupported
+		if definition.Product == "trae" {
+			wantVerification = source.VerificationExport
+		}
+		if definition.Status != source.SourceDetectedUnsupported || definition.Verification != wantVerification || definition.Reason != reasons[definition.Product] {
+			t.Errorf("unsupported %s metadata = %#v", definition.Product, definition)
+		}
+		if definition.Capabilities == nil || len(definition.Capabilities) != 0 {
+			t.Errorf("unsupported %s capabilities = %#v, want an empty list", definition.Product, definition.Capabilities)
+		}
+	}
+}
 
 func TestUnknownProductsNeverGuessDirectories(t *testing.T) {
 	for _, d := range Definitions() {

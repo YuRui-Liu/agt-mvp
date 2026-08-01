@@ -2,12 +2,53 @@ package source
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 )
+
+func TestRegistryClassifiesSourceStates(t *testing.T) {
+	registry := NewRegistry(
+		testAdapter{product: "missing"},
+		testAdapter{product: "unsupported", err: NewDiscoveryError(SourceFormatUnsupported, errors.New("private transcript: /Users/alice/secret"))},
+		testAdapter{product: "export", err: NewDiscoveryError(SourceExportRequired, errors.New("private export: /Users/alice/archive"))},
+		testAdapter{product: "broken", err: errors.New("private read: /Users/alice/session.jsonl")},
+		testAdapter{product: "healthy", sessions: []Session{{ID: "ok"}}},
+	)
+
+	result, err := registry.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]SourceStatus{
+		"missing":     {State: SourceNotFound},
+		"unsupported": {State: SourceFormatUnsupported, Code: "format_unsupported", Error: "format_unsupported"},
+		"export":      {State: SourceExportRequired, Code: "export_required", Error: "export_required"},
+		"broken":      {State: SourceReadError, Code: "read_failed", Error: "read_failed"},
+		"healthy":     {State: SourceReady},
+	}
+	for product, expected := range want {
+		if got := result.Sources[product]; got != expected {
+			t.Errorf("%s status = %#v, want %#v", product, got, expected)
+		}
+	}
+
+	encoded, err := json.Marshal(result.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"error"`) || strings.Contains(string(encoded), `"Error"`) {
+		t.Fatalf("compatibility Error field was serialized: %s", encoded)
+	}
+	for _, private := range []string{"alice", "transcript", "session.jsonl", "/Users"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("source status leaked private error text %q: %s", private, encoded)
+		}
+	}
+}
 
 type testAdapter struct {
 	product  string
@@ -62,11 +103,11 @@ func TestRegistryScanIsolatesAdapterFailures(t *testing.T) {
 		t.Fatalf("codex state = %q, want %q", got, SourceReady)
 	}
 	failed := statuses["claude"]
-	if failed.State != SourceFailed || failed.Error != "discovery_failed" {
+	if failed.State != SourceReadError || failed.Code != "read_failed" {
 		t.Fatalf("claude status = %#v, want safe failed status", failed)
 	}
-	if strings.Contains(failed.Error, "alice") || strings.Contains(failed.Error, "transcript") {
-		t.Fatalf("failure leaked adapter error: %q", failed.Error)
+	if strings.Contains(failed.Code, "alice") || strings.Contains(failed.Code, "transcript") {
+		t.Fatalf("failure leaked adapter error: %q", failed.Code)
 	}
 }
 
@@ -150,8 +191,8 @@ func TestRegistryScanIsolatesAdapterContextErrorWhenParentIsActive(t *testing.T)
 		if err != nil {
 			t.Fatalf("Scan returned adapter-local context error: %v", err)
 		}
-		if got := result.Sources["broken"]; got.State != SourceFailed || got.Error != "discovery_failed" {
-			t.Fatalf("status = %#v, want failed/discovery_failed", got)
+		if got := result.Sources["broken"]; got.State != SourceReadError || got.Code != "read_failed" {
+			t.Fatalf("status = %#v, want read_error/read_failed", got)
 		}
 		if len(result.Sessions) != 1 || result.Sessions[0].Product != "healthy" {
 			t.Fatalf("sessions = %#v, want healthy adapter result", result.Sessions)
@@ -189,8 +230,8 @@ func TestRegistryScanRejectsEmptySessionID(t *testing.T) {
 	if len(result.Sessions) != 0 {
 		t.Fatalf("sessions = %#v, want none from invalid product", result.Sessions)
 	}
-	if got := result.Sources["codex"]; got.State != SourceFailed || got.Error != "invalid_session" {
-		t.Fatalf("status = %#v, want failed/invalid_session", got)
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" {
+		t.Fatalf("status = %#v, want read_error/invalid_session", got)
 	}
 }
 
@@ -208,8 +249,8 @@ func TestRegistryScanRejectsConflictingDuplicateSessionID(t *testing.T) {
 	if len(result.Sessions) != 0 {
 		t.Fatalf("sessions = %#v, want fail-closed product", result.Sessions)
 	}
-	if got := result.Sources["codex"]; got.State != SourceFailed || got.Error != "invalid_session" {
-		t.Fatalf("status = %#v, want failed/invalid_session", got)
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "invalid_session" {
+		t.Fatalf("status = %#v, want read_error/invalid_session", got)
 	}
 }
 
@@ -255,8 +296,8 @@ func TestRegistryRejectsDuplicateProductWithoutScanningIt(t *testing.T) {
 	if firstCalls != 0 || secondCalls != 0 {
 		t.Fatalf("duplicate product adapters were scanned: %d, %d", firstCalls, secondCalls)
 	}
-	if got := result.Sources["codex"]; got.State != SourceFailed || got.Error != "duplicate_product" {
-		t.Fatalf("status = %#v, want failed/duplicate_product", got)
+	if got := result.Sources["codex"]; got.State != SourceReadError || got.Code != "duplicate_product" {
+		t.Fatalf("status = %#v, want read_error/duplicate_product", got)
 	}
 	if len(result.Sessions) != 1 || result.Sessions[0].Product != "claude" {
 		t.Fatalf("sessions = %#v, want only non-duplicate product", result.Sessions)
@@ -315,8 +356,8 @@ func TestRegistryScanRejectsEmptyAndInvalidProducts(t *testing.T) {
 			if calls != 0 {
 				t.Fatalf("Discover calls = %d, want 0", calls)
 			}
-			if got := result.Sources[tt.key]; got.State != SourceFailed || got.Error != "invalid_product" {
-				t.Fatalf("status = %#v, want failed/invalid_product", got)
+			if got := result.Sources[tt.key]; got.State != SourceReadError || got.Code != "invalid_product" {
+				t.Fatalf("status = %#v, want read_error/invalid_product", got)
 			}
 		})
 	}

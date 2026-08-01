@@ -5,6 +5,27 @@ import "time"
 // Capability identifies an operation or data feature exposed by a source.
 type Capability string
 
+const (
+	CapabilityMessages    Capability = "messages"
+	CapabilityTools       Capability = "tools"
+	CapabilityReasoning   Capability = "reasoning"
+	CapabilityAttachments Capability = "attachments"
+)
+
+// Verification describes how support for a source format was established.
+type Verification string
+
+const (
+	VerificationMachine     Verification = "machine_verified"
+	VerificationFixture     Verification = "fixture_verified"
+	VerificationExport      Verification = "export_required"
+	VerificationUnsupported Verification = "unsupported"
+
+	VerificationMachineVerified = VerificationMachine
+	VerificationFixtureVerified = VerificationFixture
+	VerificationExportRequired  = VerificationExport
+)
+
 // ScopeType identifies the namespace used to group related sessions.
 type ScopeType string
 
