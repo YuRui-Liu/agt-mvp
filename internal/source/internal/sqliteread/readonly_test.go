@@ -106,6 +106,9 @@ func TestValidateReadQueryRejectsWriteAndMultiStatementBypasses(t *testing.T) {
 		`PRAGMA writable_schema=ON`,
 		`WITH picked AS (SELECT 1) DELETE FROM items`,
 		`SELECT 1; VACUUM`,
+		`SELECT LOAD_EXTENSION('synthetic')`,
+		`VALUES (LOAD_EXTENSION('synthetic'))`,
+		`WITH picked AS (SELECT 1) SELECT LOAD_EXTENSION('synthetic') FROM picked`,
 	} {
 		if err := validateReadQuery(query); err == nil {
 			t.Fatal("unsafe SQL accepted")
@@ -116,10 +119,52 @@ func TestValidateReadQueryRejectsWriteAndMultiStatementBypasses(t *testing.T) {
 		`/* synthetic */ WITH picked AS (SELECT 1) SELECT * FROM picked`,
 		`EXPLAIN QUERY PLAN SELECT value FROM items`,
 		`PRAGMA table_info(items)`,
+		`SELECT "LOAD_EXTENSION" FROM items`,
+		`VALUES ('LOAD_EXTENSION')`,
+		`WITH picked AS (SELECT 'LOAD_EXTENSION') SELECT * FROM picked`,
 	} {
 		if err := validateReadQuery(query); err != nil {
 			t.Fatalf("read query rejected: %v", err)
 		}
+	}
+}
+
+func TestWithReadOnlyTxPreservesUnixBackslashesInDatabaseName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix filename semantics")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "root", "nested")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside.sqlite")
+	outsideDB := openWALDatabase(t, outside)
+	if _, err := outsideDB.Exec(`UPDATE items SET value = 'outside' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	outsideDB.Close()
+
+	decoy := filepath.Join(root, `\..\..\outside.sqlite`)
+	decoyDB := openWALDatabase(t, decoy)
+	if _, err := decoyDB.Exec(`UPDATE items SET value = 'decoy' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	decoyDB.Close()
+
+	var got string
+	err := WithReadOnlyTx(context.Background(), root, decoy, 1<<20, func(tx *ReadTx) error {
+		row, err := tx.QueryRowContext(context.Background(), `SELECT value FROM items WHERE id = 1`)
+		if err != nil {
+			return err
+		}
+		return row.Scan(&got)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "decoy" {
+		t.Fatal("database path escaped root")
 	}
 }
 
@@ -212,6 +257,7 @@ func TestReadOnlyURIForOS(t *testing.T) {
 		want string
 	}{
 		{name: "Unix escaping", path: "/tmp/state #?%.sqlite", goos: "darwin", want: "file:///tmp/state%20%23%3F%25.sqlite?mode=ro&immutable=0"},
+		{name: "Unix backslash", path: `/tmp/state\..\secret.sqlite`, goos: "linux", want: "file:///tmp/state%5C..%5Csecret.sqlite?mode=ro&immutable=0"},
 		{name: "Windows drive", path: `C:\Users\A B\state#?.sqlite`, goos: "windows", want: "file:///C:/Users/A%20B/state%23%3F.sqlite?mode=ro&immutable=0"},
 		{name: "Windows UNC", path: `\\server\share\state %.sqlite`, goos: "windows", want: "file://server/share/state%20%25.sqlite?mode=ro&immutable=0"},
 	}

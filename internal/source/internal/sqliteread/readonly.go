@@ -107,6 +107,11 @@ func validateReadQuery(query string) error {
 	if err != nil || len(tokens) == 0 {
 		return errors.New("sqliteread: invalid read query")
 	}
+	for _, token := range tokens {
+		if token == "LOAD_EXTENSION" {
+			return errors.New("sqliteread: prohibited function")
+		}
+	}
 	switch tokens[0] {
 	case "SELECT", "VALUES":
 		return nil
@@ -244,24 +249,28 @@ func readOnlyURIForOS(databasePath, goos string) (string, error) {
 		return "", errors.New("sqliteread: invalid database path")
 	}
 	uri := url.URL{Scheme: "file"}
+	if goos != "windows" {
+		if !pathpkg.IsAbs(databasePath) || pathpkg.Clean(databasePath) != databasePath {
+			return "", errors.New("sqliteread: invalid Unix database path")
+		}
+		uri.Path = databasePath
+		uri.RawQuery = "mode=ro&immutable=0"
+		return uri.String(), nil
+	}
+
 	slashed := strings.ReplaceAll(databasePath, `\`, "/")
-	if goos == "windows" && strings.HasPrefix(slashed, "//") {
+	if strings.HasPrefix(slashed, "//") {
 		parts := strings.SplitN(strings.TrimPrefix(slashed, "//"), "/", 2)
 		if len(parts) != 2 || !validFileHost(parts[0]) || parts[1] == "" || pathpkg.Clean("/"+parts[1]) != "/"+parts[1] {
 			return "", errors.New("sqliteread: invalid UNC database path")
 		}
 		uri.Host = parts[0]
 		uri.Path = "/" + parts[1]
-	} else if goos == "windows" {
+	} else {
 		if len(slashed) < 4 || !isASCIIAlpha(slashed[0]) || slashed[1] != ':' || slashed[2] != '/' || pathpkg.Clean(slashed) != slashed {
 			return "", errors.New("sqliteread: invalid Windows database path")
 		}
 		uri.Path = "/" + slashed
-	} else {
-		if !pathpkg.IsAbs(databasePath) || pathpkg.Clean(databasePath) != databasePath {
-			return "", errors.New("sqliteread: invalid Unix database path")
-		}
-		uri.Path = slashed
 	}
 	uri.RawQuery = "mode=ro&immutable=0"
 	return uri.String(), nil

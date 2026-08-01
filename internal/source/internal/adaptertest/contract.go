@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -41,10 +42,12 @@ func AuthorizationContract(t *testing.T, adapter source.Adapter, mutate func(), 
 	if err := reader.Close(); err != nil {
 		t.Fatal("authorization contract: discovered session close failed")
 	}
-	if reader, err := adapter.Open(context.Background(), forged); err == nil {
-		if reader != nil {
-			reader.Close()
-		}
+	reader, err = adapter.Open(context.Background(), forged)
+	if reader != nil {
+		reader.Close()
+		t.Fatal("authorization contract: forged open returned reader")
+	}
+	if err == nil {
 		t.Fatal("authorization contract: forged session accepted")
 	}
 
@@ -53,10 +56,12 @@ func AuthorizationContract(t *testing.T, adapter source.Adapter, mutate func(), 
 	if _, err := adapter.Discover(canceled); !errors.Is(err, context.Canceled) {
 		t.Fatal("authorization contract: canceled discovery accepted")
 	}
-	if reader, err := adapter.Open(canceled, sessions[0]); !errors.Is(err, context.Canceled) {
-		if reader != nil {
-			reader.Close()
-		}
+	reader, err = adapter.Open(canceled, sessions[0])
+	if reader != nil {
+		reader.Close()
+		t.Fatal("authorization contract: canceled open returned reader")
+	}
+	if !errors.Is(err, context.Canceled) {
 		t.Fatal("authorization contract: canceled open accepted")
 	}
 
@@ -64,10 +69,12 @@ func AuthorizationContract(t *testing.T, adapter source.Adapter, mutate func(), 
 		t.Fatal("authorization contract: nil mutation")
 	}
 	mutate()
-	if reader, err := adapter.Open(context.Background(), sessions[0]); err == nil {
-		if reader != nil {
-			reader.Close()
-		}
+	reader, err = adapter.Open(context.Background(), sessions[0])
+	if reader != nil {
+		reader.Close()
+		t.Fatal("authorization contract: changed open returned reader")
+	}
+	if err == nil {
 		t.Fatal("authorization contract: changed session accepted")
 	}
 }
@@ -196,7 +203,28 @@ func ReadFixture(t *testing.T, path string) []byte {
 func containsAbsolute(v any) bool {
 	switch x := v.(type) {
 	case string:
-		return strings.HasPrefix(x, "/") || strings.HasPrefix(x, `\`) || len(x) > 2 && ((x[0] >= 'A' && x[0] <= 'Z') || (x[0] >= 'a' && x[0] <= 'z')) && x[1] == ':'
+		if strings.HasPrefix(x, "/") || strings.HasPrefix(x, `\`) || windowsDrivePath(x) {
+			return true
+		}
+		if len(x) < len("file:") || !strings.EqualFold(x[:len("file:")], "file:") {
+			return false
+		}
+		uri, err := url.Parse(x)
+		if err != nil || !strings.EqualFold(uri.Scheme, "file") {
+			return true
+		}
+		if uri.Host != "" {
+			return true
+		}
+		encodedPath := uri.Path
+		if encodedPath == "" {
+			encodedPath = uri.Opaque
+		}
+		decodedPath, err := url.PathUnescape(encodedPath)
+		if err != nil {
+			return true
+		}
+		return strings.HasPrefix(decodedPath, "/") || strings.HasPrefix(decodedPath, `\`) || windowsDrivePath(decodedPath)
 	case []any:
 		for _, e := range x {
 			if containsAbsolute(e) {
@@ -211,4 +239,8 @@ func containsAbsolute(v any) bool {
 		}
 	}
 	return false
+}
+
+func windowsDrivePath(value string) bool {
+	return len(value) > 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':'
 }
