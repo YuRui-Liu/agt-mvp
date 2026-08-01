@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="选择本地 Assessment Scope，脱敏后安全提交你的 AI 协作数据。">
+  <title>安全提交你的 AI 协作数据 · kuAI</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/flow_logic.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="kuAI 首页">
+      <span class="brand-mark">K</span>
+      <span class="brand-copy"><strong>kuAI</strong><small>AI Builder Card</small></span>
+    </a>
+    <span id="serviceMode" class="service-mode"></span>
+  </header>
+
+  <main class="main">
+    <section id="flowView" data-flow-view>
+      <div class="hero-text">
+        <p class="eyebrow">LOCAL · PRIVATE · EXPLICIT</p>
+        <h1>安全提交你的 <span>AI 协作数据</span></h1>
+        <p>选择一个你愿意贡献的数据范围。会话先在本机逐个导出和脱敏，只有在手机号认证并明确授权后才会上传。</p>
+      </div>
+      <div id="status" class="status" aria-live="polite">正在扫描本地 Agent 会话…</div>
+      <div id="error" class="error" role="alert" tabindex="-1" hidden></div>
+
+      <section id="scopePanel" aria-labelledby="scopeTitle">
+        <div id="topWorkflow" class="top-workflow" hidden>
+          <section id="authPanel" class="panel" hidden aria-labelledby="authTitle">
+            <p class="step">03 · VERIFY</p>
+            <h2 id="authTitle">手机号认证</h2>
+            <p class="muted">Mock 验证码为 246810。手机号和验证码不会写入页面 bootstrap 或任务草稿。</p>
+            <form id="authForm">
+              <label>手机号<input id="phone" type="tel" inputmode="tel" autocomplete="tel" required></label>
+              <label>验证码<input id="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+              <div class="actions">
+                <button id="sendOTP" class="secondary" type="button">发送验证码</button>
+                <button type="submit">完成认证</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="consentPanel" class="panel" hidden aria-labelledby="consentTitle">
+            <p class="step">04 · CONSENT</p>
+            <h2 id="consentTitle">明确用途授权</h2>
+            <label class="consent">
+              <input id="consent" type="checkbox">
+              <span>我明确同意将脱敏后的会话用于本次数据提交、扫码投递后的候选人评估，以及模型和算法改进。</span>
+            </label>
+            <button id="startAnalysis" type="button" disabled>确认并安全上传</button>
+          </section>
+        </div>
+        <div class="section-label" id="scopeTitle">检测到的 Assessment Scope</div>
+        <div id="scopeList" class="scope-list"></div>
+        <div id="emptyScopes" class="empty" hidden>没有发现可评估的会话范围。</div>
+        <div id="selectionWorkflow" class="selection-workflow" hidden>
+          <section id="progressPanel" class="panel" hidden aria-labelledby="progressTitle">
+            <p class="step">02 · LOCAL EXPORT</p>
+            <h2 id="progressTitle">逐 session 准备</h2>
+            <ol id="sessionProgress" class="progress-list"></ol>
+          </section>
+        </div>
+      </section>
+
+    </section>
+
+    <section id="uploadView" class="upload-view" data-flow-view hidden role="status" aria-live="polite" aria-labelledby="uploadTitle">
+      <div class="upload-card">
+        <div class="upload-brand" aria-hidden="true"><span>K</span><strong>kuAI</strong></div>
+        <div class="security-orbit" aria-hidden="true"><i></i><b>✓</b></div>
+        <p class="eyebrow">SECURE SUBMISSION</p>
+        <h1 id="uploadTitle">正在安全<span>上传数据</span></h1>
+        <p class="upload-lead">脱敏内容正在通过加密连接送达，请保持此页面打开。</p>
+        <div id="uploadProgress" class="upload-progress" role="progressbar" aria-label="提交进度" aria-valuemin="0" aria-valuemax="3" aria-valuenow="1" aria-valuetext="已加密所选会话数据">
+          <span></span>
+        </div>
+        <ol id="uploadStages" class="upload-stages">
+          <li class="completed"><b>✓</b><span>加密所选会话数据<small>本地安全处理完成</small></span></li>
+          <li><b>2</b><span>上传至远端存储<small>加密传输中</small></span></li>
+          <li><b>3</b><span>校验提交结果<small>等待服务确认</small></span></li>
+        </ol>
+        <p class="privacy-note"><span aria-hidden="true">⌁</span> 仅上传你主动勾选并已脱敏的数据，用于本次提交。</p>
+      </div>
+    </section>
+
+    <section id="successView" class="success-view" data-flow-view hidden aria-labelledby="successTitle">
+      <div class="success-shell">
+        <header class="success-topbar">
+          <div class="success-brand"><span class="brand-mark" aria-hidden="true">K</span><strong>kuAI</strong></div>
+          <span class="success-status-pill"><b aria-hidden="true">✓</b> 提交成功</span>
+        </header>
+        <div class="success-layout">
+          <div class="success-content">
+            <p class="eyebrow">APPLICATION RECEIVED</p>
+            <h1 id="successTitle" tabindex="-1">谢谢你，<span>提交成功！</span></h1>
+            <p class="success-lead">你的资料已安全送达。招聘团队会认真查看，并在后续流程中与你联系。</p>
+            <dl class="receipt-grid">
+              <div><dt>提交范围</dt><dd id="successScope">已选范围</dd></div>
+              <div><dt>状态</dt><dd><span class="safe-dot"></span>已安全送达</dd></div>
+              <div><dt>提交时间</dt><dd><time id="successTime"></time></dd></div>
+              <div><dt>安全短 ID</dt><dd><code id="successID"></code></dd></div>
+            </dl>
+            <div class="actions success-actions">
+              <button id="returnApplication" type="button">返回校招职位</button>
+              <button id="submitAgain" class="secondary" type="button">再次提交</button>
+            </div>
+            <p class="success-privacy">已按你的明确授权完成安全提交。</p>
+          </div>
+          <div class="success-art" aria-hidden="true">
+            <div class="art-ring"></div>
+            <div class="art-core"><span>K</span><b>✓</b><small>SECURE</small></div>
+            <i class="art-spark art-spark-a"></i>
+            <i class="art-spark art-spark-b"></i>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="actionBar" class="action-bar">
+    <div class="selection-summary"><span>已选范围</span><strong id="selectedScopeName">未选择</strong></div>
+    <button id="prepareScope" type="button" disabled>在本机准备 →</button>
+  </div>
+  <script id="bootstrapData" type="application/json">{{BOOTSTRAP_JSON}}</script>
+</body>
+</html>

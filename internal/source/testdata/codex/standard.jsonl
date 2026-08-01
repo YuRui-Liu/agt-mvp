@@ -1,0 +1,5 @@
+{"type":"session_meta","timestamp":"2026-01-01T00:00:00Z","payload":{"id":"session-1","cwd":"/workspace/campus-app"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:01Z","extra_secret":"do-not-export","payload":{"role":"user","content":[{"type":"input_text","text":"Run campus tests"}]}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:02Z","payload":{"type":"function_call","call_id":"call-1","name":"shell_command","arguments":"{\"cmd\":\"go test ./...\"}"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:03Z","payload":{"type":"function_call_output","call_id":"call-1","output":"ok"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:04Z","payload":{"role":"assistant","content":[{"type":"output_text","text":"Campus tests pass."}]}}

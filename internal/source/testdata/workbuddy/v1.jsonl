@@ -1,0 +1,4 @@
+{"type":"message","role":"user","content":"example request","cwd":"workspace-example","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"function_call","name":"read_file","callId":"call-1","arguments":{"path":"example.go"},"timestamp":"2026-01-01T00:00:01Z"}
+{"type":"function_call_result","callId":"call-1","output":"example result","timestamp":"2026-01-01T00:00:02Z"}
+{"type":"message","role":"assistant","content":"example response","timestamp":"2026-01-01T00:00:03Z"}

@@ -1,0 +1,5 @@
+{"type":"config","config":{}}
+{"type":"message","role":"user","timestamp":"2026-07-30T01:00:00Z","cwd":"/workspace/example-project","content":"Explain this project."}
+{"type":"message","role":"assistant","timestamp":"2026-07-30T01:00:01Z","cwd":"/workspace/example-project","model":"example-model","content":"I will inspect the project safely."}
+{"type":"message","role":"assistant","timestamp":"2026-07-30T01:00:02Z","cwd":"/workspace/example-project","model":"example-model","content":[{"type":"tool_use","id":"call-example","name":"Bash","input":{"command":"go test ./..."}}]}
+{"type":"message","role":"tool","timestamp":"2026-07-30T01:00:03Z","cwd":"/workspace/example-project","content":[{"type":"tool-result","toolCallId":"call-example","result":{"status":"ok"}}]}

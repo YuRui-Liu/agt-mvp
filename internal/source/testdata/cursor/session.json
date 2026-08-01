@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Locate the campus library</user_query>"},{"type":"tool_result","tool_use_id":"tool-1","content":"map loaded"}]}}
+{"role":"assistant","extra_secret":"do-not-export","message":{"content":[{"type":"text","text":"The library is beside the quad."},{"type":"tool_use","id":"tool-1","name":"read_map","input":{"campus":"north"},"extra_secret":"do-not-export"}]}}

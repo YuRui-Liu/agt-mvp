@@ -1,0 +1,7 @@
+.DS_Store
+.superpowers/
+.worktrees/
+/dist/
+/kuai
+/kuai.exe
+/node_modules/

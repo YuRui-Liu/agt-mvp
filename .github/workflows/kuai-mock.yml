@@ -1,0 +1,81 @@
+name: kuAI Mock MVP
+
+# TODO（后续供应链加固）：核验上游 commit 后将 Actions major tag 固定到完整 SHA；当前不猜测 SHA。
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  KUAI_MOCK_SCENARIO: success
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.5
+      - run: go test ./...
+      - run: go vet ./...
+      - run: bash tests/test_kuai_install_sh.sh
+      - run: bash tests/test_build_kuai_release_sh.sh
+      - run: git diff --check
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.5
+      - run: go test ./...
+      - run: bash tests/test_kuai_install_sh.sh
+      - run: bash tests/test_build_kuai_release_sh.sh
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.5
+      - run: go test ./...
+      - shell: pwsh
+        run: '& ./tests/Test-KuaiInstall.ps1'
+
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.5
+      - run: bash tests/test_build_kuai_release_sh.sh
+      - run: bash scripts/build-kuai-release.sh
+      - name: Verify seven regular files and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts=(
+            kuai-darwin-amd64
+            kuai-darwin-arm64
+            kuai-linux-amd64
+            kuai-linux-arm64
+            kuai-windows-amd64.exe
+            kuai-windows-arm64.exe
+          )
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq 7
+          test "$(find dist -mindepth 1 -maxdepth 1 -type l | wc -l)" -eq 0
+          test "$(find dist -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0
+          test "$(find dist -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 7
+          test "$(wc -l < dist/SHA256SUMS)" -eq 6
+          for artifact in "${artifacts[@]}"; do
+            test -f "dist/$artifact"
+            grep -Eq "^[0-9a-fA-F]{64} [ *]$artifact$" dist/SHA256SUMS
+          done
+          cd dist
+          sha256sum --check SHA256SUMS

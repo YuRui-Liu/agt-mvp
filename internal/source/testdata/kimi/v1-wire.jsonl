@@ -1,0 +1,6 @@
+{"type":"metadata","version":1}
+{"timestamp":1760000000,"message":{"type":"TurnBegin","payload":{"user_input":[{"type":"text","text":"example request"}]}}}
+{"timestamp":1760000001,"message":{"type":"ContentPart","payload":{"type":"text","text":"example response"}}}
+{"timestamp":1760000002,"message":{"type":"ToolCall","payload":{"id":"call-1","name":"read_file","arguments":{"path":"example.go"}}}}
+{"timestamp":1760000003,"message":{"type":"ToolResult","payload":{"tool_call_id":"call-1","content":"example result"}}}
+{"timestamp":1760000004,"message":{"type":"TurnEnd","payload":{}}}

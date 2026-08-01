@@ -1,0 +1,1833 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="CPQL 精密系统设计师——一份基于 7D AI 协作行为的正向职业画像。"
+    />
+    <title>CPQL 精密系统设计师｜KwAITI · Kuaishou AI Career Profile</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #25221f;
+        --ink-soft: #645e58;
+        --paper: #fffdf9;
+        --paper-warm: #fff8ee;
+        --line: #eadfd3;
+        --line-strong: #d8cabd;
+        --orange: #ff6b12;
+        --orange-deep: #e84f00;
+        --orange-dark: #a93600;
+        --orange-soft: #fff0df;
+        --amber: #ffb646;
+        --charcoal: #33343a;
+        --sage: #727c69;
+        --shadow: 0 28px 70px rgba(100, 58, 22, 0.12);
+        --radius-xl: 36px;
+        --radius-lg: 26px;
+        --radius-md: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 82% 8%, rgba(255, 169, 76, 0.12), transparent 28rem),
+          radial-gradient(circle at 5% 42%, rgba(255, 107, 18, 0.07), transparent 32rem),
+          var(--paper);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+        text-rendering: optimizeLegibility;
+      }
+
+      button,
+      a {
+        font: inherit;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page-shell {
+        overflow: hidden;
+      }
+
+      .site-header {
+        position: relative;
+        z-index: 10;
+        width: min(1180px, calc(100% - 40px));
+        height: 84px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 38px;
+        height: 38px;
+        place-items: center;
+        border-radius: 13px;
+        color: white;
+        background: linear-gradient(145deg, var(--orange), #ff8c2e);
+        box-shadow: 0 8px 22px rgba(255, 107, 18, 0.28);
+        font-weight: 900;
+        letter-spacing: -0.08em;
+      }
+
+      .brand-copy {
+        display: grid;
+        gap: 1px;
+      }
+
+      .brand-copy strong {
+        font-size: 14px;
+        letter-spacing: 0.04em;
+      }
+
+      .brand-copy span {
+        color: var(--ink-soft);
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .header-note {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--ink-soft);
+        font-size: 13px;
+      }
+
+      .header-note::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--orange);
+        content: "";
+        box-shadow: 0 0 0 5px rgba(255, 107, 18, 0.1);
+      }
+
+      .hero {
+        position: relative;
+        width: min(1180px, calc(100% - 40px));
+        min-height: 680px;
+        margin: 8px auto 0;
+        padding: 68px 62px;
+        display: grid;
+        grid-template-columns: minmax(0, 0.93fr) minmax(420px, 1.07fr);
+        align-items: center;
+        gap: 48px;
+        border: 1px solid rgba(231, 212, 194, 0.88);
+        border-radius: 46px;
+        background:
+          linear-gradient(120deg, rgba(255, 255, 255, 0.98) 0 46%, rgba(255, 247, 236, 0.94) 100%);
+        box-shadow: var(--shadow);
+      }
+
+      .hero::before,
+      .hero::after {
+        position: absolute;
+        content: "";
+        pointer-events: none;
+      }
+
+      .hero::before {
+        inset: 22px;
+        border: 1px solid rgba(255, 107, 18, 0.08);
+        border-radius: 30px;
+      }
+
+      .hero::after {
+        right: -90px;
+        bottom: -110px;
+        width: 330px;
+        height: 330px;
+        border: 70px solid rgba(255, 107, 18, 0.05);
+        border-radius: 50%;
+      }
+
+      .hero-copy,
+      .hero-visual {
+        position: relative;
+        z-index: 1;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 24px;
+        color: var(--orange-deep);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 30px;
+        height: 2px;
+        background: var(--orange);
+        content: "";
+      }
+
+      .type-code {
+        margin: 0 0 10px;
+        color: var(--orange);
+        font-size: clamp(54px, 7.4vw, 96px);
+        font-weight: 950;
+        line-height: 0.9;
+        letter-spacing: -0.07em;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(34px, 4vw, 58px);
+        font-weight: 850;
+        line-height: 1.12;
+        letter-spacing: -0.05em;
+      }
+
+      .hero-lead {
+        max-width: 560px;
+        margin: 24px 0 0;
+        color: var(--ink-soft);
+        font-size: 17px;
+        line-height: 1.85;
+      }
+
+      .hero-lead strong {
+        color: var(--ink);
+        font-weight: 750;
+      }
+
+      .trait-row {
+        margin: 30px 0 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+
+      .trait {
+        padding: 9px 13px;
+        border: 1px solid #f1d2b6;
+        border-radius: 999px;
+        color: #82451d;
+        background: rgba(255, 245, 233, 0.84);
+        font-size: 12px;
+        font-weight: 720;
+      }
+
+      .hero-actions {
+        margin-top: 34px;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 18px;
+      }
+
+      .hero-actions button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      .poster-link {
+        min-height: 48px;
+        padding: 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid #f1b487;
+        border-radius: 14px;
+        color: var(--orange-deep);
+        background: rgba(255, 250, 245, 0.9);
+        font-size: 14px;
+        font-weight: 760;
+        text-decoration: none;
+        transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+      }
+
+      .poster-link:hover {
+        background: var(--orange-soft);
+        box-shadow: 0 12px 26px rgba(232, 79, 0, 0.12);
+        transform: translateY(-2px);
+      }
+
+      .kwaiti-inline-panel[hidden],
+      .kwaiti-identity-result[hidden] {
+        display: none;
+      }
+
+      .kwaiti-inline-panel {
+        width: min(1180px, calc(100% - 40px));
+        margin-top: 26px;
+        margin-right: auto;
+        margin-left: auto;
+        padding: 26px;
+        border: 1px solid #f1d2b6;
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(255, 251, 246, 0.98), rgba(255, 244, 232, 0.86));
+        box-shadow: 0 18px 44px rgba(108, 62, 25, 0.1);
+      }
+
+      .kwaiti-inline-panel.is-result {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .kwaiti-inline-form h2 {
+        margin: 6px 0 18px;
+        font-size: 22px;
+        letter-spacing: -0.04em;
+      }
+
+      .kwaiti-inline-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        align-items: end;
+        gap: 12px;
+      }
+
+      .kwaiti-code-input {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+      }
+
+      .kwaiti-send-code {
+        min-height: 44px;
+        padding: 0 14px;
+        border: 1px solid #f1b487;
+        border-radius: 11px;
+        color: var(--orange-deep);
+        background: #fff8f1;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 760;
+        white-space: nowrap;
+      }
+
+      .kwaiti-send-code:hover {
+        background: var(--orange-soft);
+      }
+
+      .kwaiti-field {
+        display: grid;
+        gap: 7px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 780;
+      }
+
+      .kwaiti-field input {
+        width: 100%;
+        min-height: 44px;
+        padding: 0 13px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        color: var(--ink);
+        background: white;
+        outline: none;
+      }
+
+      .kwaiti-field input:focus {
+        border-color: var(--orange);
+        box-shadow: 0 0 0 4px var(--orange-soft);
+      }
+
+      .kwaiti-status {
+        min-height: 0;
+        margin: 0;
+        color: var(--orange-deep) !important;
+        font-size: 12px !important;
+      }
+
+      .kwaiti-status:empty {
+        display: none;
+      }
+
+      .kwaiti-status.success {
+        color: #267b58 !important;
+      }
+
+      .kwaiti-identity-result {
+        display: grid;
+        grid-template-columns: minmax(0, 1.08fr) minmax(260px, 0.92fr);
+        gap: 16px;
+      }
+
+      .kwaiti-id-card,
+      .kwaiti-qr-card {
+        min-height: 300px;
+        padding: 28px;
+        border: 2px solid var(--orange);
+        border-radius: 20px;
+        background: linear-gradient(145deg, #fffdf9, #fff5ea);
+      }
+
+      .kwaiti-id-eyebrow {
+        margin: 0 0 20px;
+        color: var(--orange);
+        font-size: 12px;
+        font-weight: 850;
+        letter-spacing: 0.16em;
+      }
+
+      .kwaiti-id-card h2,
+      .kwaiti-qr-card h2 {
+        margin: 0;
+        font-size: 25px;
+        letter-spacing: -0.04em;
+      }
+
+      .kwaiti-id-card strong {
+        display: block;
+        margin: 26px 0 12px;
+        color: var(--orange);
+        font-size: clamp(48px, 8vw, 78px);
+        line-height: 0.95;
+        letter-spacing: 0.06em;
+      }
+
+      .kwaiti-id-card > p:not(.kwaiti-id-eyebrow),
+      .kwaiti-qr-card > p {
+        color: var(--ink-soft);
+        font-size: 13px;
+      }
+
+      .kwaiti-id-meta {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 8px 22px;
+        margin: 24px 0 0;
+        font-size: 13px;
+      }
+
+      .kwaiti-id-meta dt {
+        color: var(--ink-soft);
+      }
+
+      .kwaiti-id-meta dd {
+        margin: 0;
+        font-weight: 750;
+      }
+
+      .kwaiti-qr-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+
+      .kwaiti-qr-image {
+        display: block;
+        width: 148px;
+        height: 148px;
+        margin-bottom: 22px;
+        padding: 12px;
+        border: 1px solid #eadfd3;
+        border-radius: 14px;
+        background: white;
+        image-rendering: pixelated;
+        box-shadow: 0 8px 22px rgba(36, 27, 19, 0.1);
+      }
+
+      .kwaiti-qr-card .primary-link {
+        margin-top: 20px;
+      }
+
+      @media (max-width: 720px) {
+        .kwaiti-inline-fields,
+        .kwaiti-identity-result {
+          grid-template-columns: 1fr;
+        }
+
+        .kwaiti-inline-fields .primary-link {
+          width: 100%;
+        }
+      }
+
+      .primary-link {
+        display: inline-flex;
+        min-height: 48px;
+        padding: 0 22px;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        border-radius: 14px;
+        color: white;
+        background: linear-gradient(135deg, var(--orange), var(--orange-deep));
+        box-shadow: 0 14px 30px rgba(232, 79, 0, 0.25);
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 760;
+        transition: transform 180ms ease, box-shadow 180ms ease;
+      }
+
+      .primary-link:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 18px 36px rgba(232, 79, 0, 0.3);
+      }
+
+      .text-link {
+        color: var(--ink-soft);
+        font-size: 13px;
+        text-underline-offset: 4px;
+      }
+
+      .hero-visual {
+        min-width: 0;
+      }
+
+      .portrait-frame {
+        position: relative;
+        padding: 14px;
+        border: 1px solid #efcfaf;
+        border-radius: 40px 40px 120px 40px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 26px 60px rgba(121, 76, 37, 0.15);
+        transform: rotate(1.2deg);
+      }
+
+      .portrait-frame::before {
+        position: absolute;
+        top: -18px;
+        right: 30px;
+        z-index: 2;
+        padding: 10px 15px;
+        border: 1px solid #ffd1aa;
+        border-radius: 999px;
+        color: #8a4217;
+        background: #fff8ef;
+        content: "高推进型";
+        font-size: 12px;
+        font-weight: 800;
+        box-shadow: 0 8px 20px rgba(120, 70, 30, 0.12);
+        transform: rotate(-1.2deg);
+      }
+
+      .portrait-frame img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1.095;
+        object-fit: cover;
+        border-radius: 29px 29px 106px 29px;
+      }
+
+      .portrait-caption {
+        position: absolute;
+        right: 30px;
+        bottom: 22px;
+        z-index: 2;
+        padding: 12px 15px;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 15px;
+        color: #70411f;
+        background: rgba(255, 252, 246, 0.84);
+        backdrop-filter: blur(14px);
+        font-size: 12px;
+        font-weight: 760;
+        box-shadow: 0 10px 25px rgba(68, 41, 20, 0.11);
+      }
+
+      .section {
+        width: min(1100px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 112px 0 0;
+      }
+
+      .section-heading {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+        gap: 80px;
+        align-items: end;
+        margin-bottom: 44px;
+      }
+
+      .section-kicker {
+        margin: 0 0 13px;
+        color: var(--orange-deep);
+        font-size: 12px;
+        font-weight: 820;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+
+      .section h2 {
+        margin: 0;
+        font-size: clamp(32px, 4vw, 52px);
+        line-height: 1.16;
+        letter-spacing: -0.05em;
+      }
+
+      .section-intro {
+        margin: 0;
+        color: var(--ink-soft);
+        font-size: 16px;
+        line-height: 1.85;
+      }
+
+      .section-intro strong {
+        color: var(--ink);
+      }
+
+      .radar-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.03fr) minmax(360px, 0.97fr);
+        gap: 24px;
+        align-items: stretch;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        background: rgba(255, 255, 255, 0.86);
+        box-shadow: 0 20px 50px rgba(77, 48, 25, 0.07);
+      }
+
+      .radar-panel {
+        position: relative;
+        min-height: 560px;
+        padding: 30px 24px 22px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .radar-panel::before {
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(rgba(255, 107, 18, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 107, 18, 0.025) 1px, transparent 1px);
+        background-size: 24px 24px;
+        content: "";
+        mask-image: linear-gradient(to bottom, black, transparent 92%);
+      }
+
+      .radar-head {
+        position: absolute;
+        top: 26px;
+        left: 30px;
+        z-index: 2;
+      }
+
+      .radar-head strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      .radar-head span {
+        display: block;
+        margin-top: 5px;
+        color: var(--ink-soft);
+        font-size: 11px;
+      }
+
+      #radarChart {
+        position: relative;
+        z-index: 1;
+        width: min(100%, 500px);
+        height: auto;
+        overflow: visible;
+      }
+
+      .radar-ring {
+        fill: rgba(255, 107, 18, 0.012);
+        stroke: #eadfd5;
+        stroke-width: 1;
+      }
+
+      .radar-axis {
+        stroke: #e8dbd0;
+        stroke-width: 1;
+      }
+
+      .radar-shape {
+        fill: url("#radarFill");
+        stroke: var(--orange);
+        stroke-width: 3;
+        stroke-linejoin: round;
+        filter: drop-shadow(0 12px 16px rgba(255, 107, 18, 0.18));
+        transition: opacity 180ms ease;
+      }
+
+      .radar-dot {
+        fill: white;
+        stroke: var(--orange);
+        stroke-width: 3;
+        cursor: pointer;
+        transition: r 160ms ease, fill 160ms ease, stroke-width 160ms ease;
+      }
+
+      .radar-dot:hover,
+      .radar-dot.is-active {
+        r: 8px;
+        fill: var(--orange);
+        stroke: white;
+        stroke-width: 4;
+        filter: drop-shadow(0 4px 6px rgba(255, 107, 18, 0.36));
+      }
+
+      .radar-label {
+        fill: var(--ink-soft);
+        font-size: 11px;
+        font-weight: 760;
+        cursor: pointer;
+        transition: fill 160ms ease;
+      }
+
+      .radar-label.is-active {
+        fill: var(--orange-deep);
+      }
+
+      .radar-score {
+        fill: var(--orange-deep);
+        font-size: 10px;
+        font-weight: 850;
+      }
+
+      .insight-panel {
+        padding: 36px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .insight-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .insight-tag {
+        margin: 0 0 10px;
+        color: var(--orange-deep);
+        font-size: 11px;
+        font-weight: 820;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .insight-title {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.18;
+        letter-spacing: -0.04em;
+      }
+
+      .insight-score {
+        color: var(--orange);
+        font-size: 48px;
+        font-weight: 900;
+        line-height: 0.9;
+        letter-spacing: -0.06em;
+      }
+
+      .insight-score small {
+        color: #af9d8e;
+        font-size: 13px;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .insight-summary {
+        min-height: 116px;
+        margin: 28px 0 0;
+        color: var(--ink-soft);
+        font-size: 16px;
+        line-height: 1.85;
+      }
+
+      .insight-summary strong {
+        color: var(--ink);
+      }
+
+      .evidence-box {
+        margin-top: 22px;
+        padding: 18px;
+        border: 1px solid #f0dbc7;
+        border-radius: 18px;
+        background: var(--paper-warm);
+      }
+
+      .evidence-box span {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--orange-deep);
+        font-size: 10px;
+        font-weight: 820;
+        letter-spacing: 0.12em;
+      }
+
+      .evidence-box p {
+        margin: 0;
+        color: #67584c;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .dimension-tabs {
+        margin-top: auto;
+        padding-top: 26px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .dimension-tab {
+        min-width: 0;
+        padding: 10px 5px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--ink-soft);
+        background: white;
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 740;
+        transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+      }
+
+      .dimension-tab:hover,
+      .dimension-tab.is-active {
+        border-color: #f3b681;
+        color: var(--orange-deep);
+        background: var(--orange-soft);
+      }
+
+      .metric-grid {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .metric-mini {
+        min-width: 0;
+        padding: 17px 14px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: rgba(255, 255, 255, 0.75);
+        text-align: center;
+        cursor: pointer;
+        transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+      }
+
+      .metric-mini:hover,
+      .metric-mini.is-active {
+        border-color: #f2ad71;
+        box-shadow: 0 12px 26px rgba(105, 60, 25, 0.09);
+        transform: translateY(-3px);
+      }
+
+      .metric-mini strong {
+        display: block;
+        color: var(--orange-deep);
+        font-size: 22px;
+        letter-spacing: -0.04em;
+      }
+
+      .metric-mini span {
+        display: block;
+        margin-top: 6px;
+        overflow: hidden;
+        color: var(--ink-soft);
+        font-size: 10px;
+        font-weight: 720;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .type-breakdown {
+        margin-top: 70px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        overflow: hidden;
+        background: white;
+      }
+
+      .type-letter {
+        position: relative;
+        min-height: 230px;
+        padding: 30px 26px;
+        border-right: 1px solid var(--line);
+      }
+
+      .type-letter:last-child {
+        border-right: 0;
+      }
+
+      .type-letter .letter {
+        color: var(--orange);
+        font-size: 50px;
+        font-weight: 930;
+        line-height: 1;
+        letter-spacing: -0.06em;
+      }
+
+      .type-letter h3 {
+        margin: 17px 0 0;
+        font-size: 17px;
+      }
+
+      .type-letter p {
+        margin: 10px 0 0;
+        color: var(--ink-soft);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .type-letter .basis {
+        position: absolute;
+        right: 24px;
+        bottom: 24px;
+        left: 24px;
+        color: #a37c5e;
+        font-size: 10px;
+        font-weight: 720;
+      }
+
+      .need-section {
+        position: relative;
+        margin-top: 112px;
+        padding: 104px 0;
+        color: white;
+        background:
+          radial-gradient(circle at 84% 12%, rgba(255, 150, 66, 0.28), transparent 25rem),
+          linear-gradient(145deg, #242329, #342a25 56%, #442715);
+      }
+
+      .need-section::before {
+        position: absolute;
+        inset: 0;
+        background-image: radial-gradient(rgba(255, 255, 255, 0.1) 0.8px, transparent 0.8px);
+        background-size: 18px 18px;
+        content: "";
+        opacity: 0.3;
+      }
+
+      .need-inner {
+        position: relative;
+        width: min(1100px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .need-intro {
+        max-width: 730px;
+      }
+
+      .need-intro .section-kicker {
+        color: #ffaf67;
+      }
+
+      .need-intro h2 {
+        max-width: 650px;
+        font-size: clamp(35px, 5vw, 62px);
+      }
+
+      .need-intro p {
+        max-width: 660px;
+        margin: 24px 0 0;
+        color: rgba(255, 255, 255, 0.67);
+        font-size: 16px;
+        line-height: 1.85;
+      }
+
+      .need-grid {
+        margin-top: 52px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .need-card {
+        min-height: 290px;
+        padding: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.055);
+        backdrop-filter: blur(10px);
+      }
+
+      .need-number {
+        color: #ff9b4c;
+        font-size: 12px;
+        font-weight: 850;
+        letter-spacing: 0.15em;
+      }
+
+      .need-card h3 {
+        margin: 46px 0 0;
+        font-size: 22px;
+        letter-spacing: -0.025em;
+      }
+
+      .need-card p {
+        margin: 15px 0 0;
+        color: rgba(255, 255, 255, 0.62);
+        font-size: 13px;
+        line-height: 1.8;
+      }
+
+      .need-card .match {
+        display: inline-flex;
+        margin-top: 24px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        color: #ffc797;
+        background: rgba(255, 107, 18, 0.13);
+        font-size: 10px;
+        font-weight: 760;
+      }
+
+      .closing {
+        width: min(1100px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 112px 0 64px;
+      }
+
+      .closing-card {
+        position: relative;
+        min-height: 380px;
+        padding: 65px;
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        align-items: center;
+        gap: 50px;
+        border: 1px solid #f0d2b5;
+        border-radius: 40px;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 84% 45%, rgba(255, 172, 89, 0.33), transparent 18rem),
+          linear-gradient(135deg, #fff5e9, #fffdf9 60%);
+      }
+
+      .closing-card::after {
+        position: absolute;
+        top: 50%;
+        right: 8%;
+        width: 210px;
+        height: 210px;
+        border: 38px solid rgba(255, 107, 18, 0.08);
+        border-radius: 50%;
+        content: "";
+        transform: translateY(-50%);
+      }
+
+      .closing-copy {
+        position: relative;
+        z-index: 1;
+      }
+
+      .closing h2 {
+        max-width: 680px;
+      }
+
+      .closing p {
+        max-width: 630px;
+        margin: 22px 0 0;
+        color: var(--ink-soft);
+        font-size: 16px;
+        line-height: 1.8;
+      }
+
+      .closing .primary-link {
+        margin-top: 30px;
+      }
+
+      .closing-monogram {
+        position: relative;
+        z-index: 1;
+        justify-self: center;
+        color: var(--orange);
+        font-size: clamp(70px, 11vw, 145px);
+        font-weight: 950;
+        letter-spacing: -0.1em;
+        line-height: 1;
+        text-shadow: 0 14px 35px rgba(255, 107, 18, 0.17);
+      }
+
+      footer {
+        width: min(1100px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 0 0 34px;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        color: #958a81;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 980px) {
+        .hero {
+          min-height: 0;
+          padding: 56px 44px;
+          grid-template-columns: 1fr;
+        }
+
+        .hero-copy {
+          max-width: 680px;
+        }
+
+        .hero-visual {
+          width: min(100%, 650px);
+          justify-self: center;
+        }
+
+        .section-heading {
+          grid-template-columns: 1fr;
+          gap: 24px;
+        }
+
+        .radar-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .metric-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
+        .type-breakdown {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .type-letter:nth-child(2) {
+          border-right: 0;
+        }
+
+        .type-letter:nth-child(-n + 2) {
+          border-bottom: 1px solid var(--line);
+        }
+
+        .need-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .site-header {
+          width: min(100% - 28px, 1180px);
+          height: 72px;
+        }
+
+        .header-note {
+          display: none;
+        }
+
+        .hero {
+          width: min(100% - 24px, 1180px);
+          padding: 44px 24px 28px;
+          gap: 36px;
+          border-radius: 30px;
+        }
+
+        .hero::before {
+          display: none;
+        }
+
+        .hero-lead {
+          font-size: 15px;
+        }
+
+        .hero-actions {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .portrait-frame {
+          border-radius: 28px 28px 72px 28px;
+        }
+
+        .portrait-frame img {
+          border-radius: 20px 20px 58px 20px;
+        }
+
+        .section {
+          width: min(100% - 28px, 1100px);
+          padding-top: 82px;
+        }
+
+        .radar-panel {
+          min-height: 430px;
+          padding: 68px 5px 10px;
+          border-radius: 26px;
+        }
+
+        .insight-panel {
+          padding: 28px 24px;
+          border-radius: 26px;
+        }
+
+        .dimension-tabs {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .metric-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .type-breakdown {
+          grid-template-columns: 1fr;
+          border-radius: 26px;
+        }
+
+        .type-letter,
+        .type-letter:nth-child(2) {
+          min-height: 210px;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .type-letter:last-child {
+          border-bottom: 0;
+        }
+
+        .need-section {
+          margin-top: 84px;
+          padding: 82px 0;
+        }
+
+        .need-inner,
+        .closing {
+          width: min(100% - 28px, 1100px);
+        }
+
+        .closing {
+          padding-top: 82px;
+        }
+
+        .closing-card {
+          padding: 42px 26px;
+          grid-template-columns: 1fr;
+          border-radius: 28px;
+        }
+
+        .closing-monogram {
+          justify-self: start;
+        }
+
+        footer {
+          width: min(100% - 28px, 1100px);
+          flex-direction: column;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="#" aria-label="返回画像顶部">
+          <span class="brand-mark">A</span>
+          <span class="brand-copy">
+            <strong>KwAITI</strong>
+            <span>Kuaishou AI Career Profile</span>
+          </span>
+        </a>
+        <div class="header-note">基于你的 AI 协作行为生成</div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="profile-title">
+          <div class="hero-copy">
+            <div class="eyebrow">Your AI collaboration identity</div>
+            <p class="type-code">CPQL</p>
+            <h1 id="profile-title">精密系统设计师</h1>
+            <p class="hero-lead">
+              你擅长把复杂目标整理成清晰结构，并在关键节点与 AI 保持协作。
+              <strong>你不是简单地使用 AI，而是在为 AI 建立一套可靠工作的系统。</strong>
+            </p>
+            <div class="trait-row" aria-label="画像特征">
+              <span class="trait">关键节点掌舵</span>
+              <span class="trait">规划先行</span>
+              <span class="trait">质量导向</span>
+              <span class="trait">持续进化</span>
+            </div>
+            <div class="hero-actions">
+              <button class="primary-link" type="button" data-toggle-kwaiti-inline>生成专属ID并投递简历 <span aria-hidden="true">→</span></button>
+              <a class="poster-link" href="asserts/poster.png" download="KwAITI-专属海报.png" data-download-poster>下载专属海报 <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="#seven-d">深度解析我的 KwAITI</a>
+            </div>
+          </div>
+
+          <figure class="hero-visual">
+            <div class="portrait-frame">
+              <img
+                src="./asserts/演示图.png"
+                alt="身穿工程设计师服装、手持系统蓝图的小块机器人"
+              />
+              <figcaption class="portrait-caption">小块 · Precision Systems Designer</figcaption>
+            </div>
+          </figure>
+        </section>
+
+        <section class="kwaiti-inline-panel" id="kwaitiInlinePanel" hidden aria-labelledby="kwaiti-inline-title">
+          <div class="kwaiti-inline-form" id="kwaitiInlineForm">
+            <h2 id="kwaiti-inline-title">生成你的专属 KwAITI ID</h2>
+            <div class="kwaiti-inline-fields">
+              <label class="kwaiti-field">手机号
+                <input id="kwaitiPhone" name="phone" inputmode="numeric" autocomplete="tel" placeholder="请输入手机号" required />
+              </label>
+              <label class="kwaiti-field">验证码
+                <span class="kwaiti-code-input">
+                  <input id="kwaitiCode" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入验证码" required />
+                  <button class="kwaiti-send-code" id="sendKwaitiCodeButton" type="button">发送验证码</button>
+                </span>
+              </label>
+              <button class="primary-link" id="verifyKwaitiButton" type="button">验证并生成ID</button>
+            </div>
+            <p class="kwaiti-status" id="kwaitiStatus" role="status" aria-live="polite"></p>
+          </div>
+          <div class="kwaiti-identity-result" id="kwaitiIdentityResult" hidden></div>
+        </section>
+
+        <section class="section" id="seven-d" aria-labelledby="seven-d-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Your 7D signature</p>
+              <h2 id="seven-d-title">你的协作优势，<br />有迹可循</h2>
+            </div>
+            <p class="section-intro">
+              7D 描述的是你与 AI 一起工作的方式，而不是能力排名。
+              这组分布显示你尤其擅长<strong>结构化规划、工程质量控制和清晰引导</strong>；
+              相对克制的自主度，则体现了你愿意在关键节点保持判断与责任。
+            </p>
+          </div>
+
+          <div class="radar-layout">
+            <div class="panel radar-panel">
+              <div class="radar-head">
+                <strong>7D AI 协作雷达</strong>
+                <span>点击节点查看正向解读</span>
+              </div>
+              <svg
+                id="radarChart"
+                viewBox="0 0 520 520"
+                role="img"
+                aria-labelledby="radar-title radar-desc"
+              >
+                <title id="radar-title">精密系统设计师七维雷达图</title>
+                <desc id="radar-desc">
+                  包含引导、执行、工程、规划、产品、自主和适应七项 AI 协作指标。
+                </desc>
+                <defs>
+                  <linearGradient id="radarFill" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stop-color="#ff8b2e" stop-opacity="0.46" />
+                    <stop offset="100%" stop-color="#ff5b09" stop-opacity="0.16" />
+                  </linearGradient>
+                </defs>
+                <g id="radarRings"></g>
+                <g id="radarAxes"></g>
+                <polygon id="radarShape" class="radar-shape" points=""></polygon>
+                <g id="radarDots"></g>
+                <g id="radarLabels"></g>
+              </svg>
+            </div>
+
+            <aside class="panel insight-panel" aria-live="polite">
+              <div class="insight-top">
+                <div>
+                  <p class="insight-tag" id="insightEnglish">Engineering</p>
+                  <h3 class="insight-title" id="insightTitle">质量锚点</h3>
+                </div>
+                <div class="insight-score">
+                  <span id="insightScore">80</span><small>/100</small>
+                </div>
+              </div>
+              <p class="insight-summary" id="insightSummary">
+                你会把测试、检查与可靠性放进 AI 工作流，而不是只追求更快生成。
+                <strong>这让你特别适合需要长期维护和团队协作的复杂系统。</strong>
+              </p>
+              <div class="evidence-box">
+                <span>这个指标在表达什么</span>
+                <p id="insightEvidence">
+                  结合工具稳定性、返工信号、健康度和工程工具使用方式，呈现你对交付质量的关注。
+                </p>
+              </div>
+              <div class="dimension-tabs" id="dimensionTabs" aria-label="选择一个维度"></div>
+            </aside>
+          </div>
+
+          <div class="metric-grid" id="metricGrid" aria-label="七项指标得分"></div>
+
+          <div class="type-breakdown" aria-label="CPQL 类型解读">
+            <article class="type-letter">
+              <div class="letter">C</div>
+              <h3>Co-pilot · 关键节点掌舵</h3>
+              <p>你愿意参与关键过程，用清晰约束帮助 AI 保持在正确方向上。</p>
+              <div class="basis">依据：Steering 72 · Autonomy 35</div>
+            </article>
+            <article class="type-letter">
+              <div class="letter">P</div>
+              <h3>Planner · 规划先行</h3>
+              <p>面对复杂问题，你习惯先梳理结构、边界和验收方式，再进入执行。</p>
+              <div class="basis">依据：Planning 74</div>
+            </article>
+            <article class="type-letter">
+              <div class="letter">Q</div>
+              <h3>Quality · 质量导向</h3>
+              <p>你关注输出是否可靠、可检查、可维护，让 AI 结果更适合真实工程。</p>
+              <div class="basis">依据：Engineering 80 · Product 43</div>
+            </article>
+            <article class="type-letter">
+              <div class="letter">L</div>
+              <h3>Learner · 持续进化</h3>
+              <p>你会根据反馈调整工作方式，让有效经验逐渐沉淀为自己的方法。</p>
+              <div class="basis">依据：Adaptation 67</div>
+            </article>
+          </div>
+        </section>
+
+        <section class="need-section" id="why-you" aria-labelledby="why-you-title">
+          <div class="need-inner">
+            <div class="need-intro">
+              <p class="section-kicker">Why teams need you</p>
+              <h2 id="why-you-title">复杂的 Agent 系统，<br />需要你这样的建造者</h2>
+              <p>
+                当 AI 开始承担更完整的工程任务，团队需要的不只是更快的生成速度，
+                更需要能够定义结构、守住质量并持续优化协作方式的人。
+              </p>
+            </div>
+
+            <div class="need-grid">
+              <article class="need-card">
+                <div class="need-number">01 / STRUCTURE</div>
+                <h3>让复杂任务变得可执行</h3>
+                <p>
+                  你能够把模糊目标拆成结构、约束和验证节点，为长时间运行的 Agent
+                  建立清晰路线。
+                </p>
+                <span class="match">Planning × Steering</span>
+              </article>
+              <article class="need-card">
+                <div class="need-number">02 / TRUST</div>
+                <h3>让 AI 结果值得信任</h3>
+                <p>
+                  你会自然地关注测试、审查和失败恢复，让 AI 产出的代码更容易进入真实交付。
+                </p>
+                <span class="match">Engineering × Execution</span>
+              </article>
+              <article class="need-card">
+                <div class="need-number">03 / EVOLUTION</div>
+                <h3>把经验变成团队方法</h3>
+                <p>
+                  你愿意复盘并调整协作方式，有潜力把个人经验沉淀成团队可以复用的 Playbook。
+                </p>
+                <span class="match">Adaptation × Planning</span>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="closing" id="application" aria-labelledby="closing-title">
+          <div class="closing-card">
+            <div class="closing-copy">
+              <p class="section-kicker">Build with us</p>
+              <h2 id="closing-title">你的工作方式，正适合我们正在解决的问题</h2>
+              <p>
+                带着你的精密系统设计师画像，来和我们聊聊：怎样让人与 Agent
+                的协作从一次对话，成长为可以被团队信任的工程系统。
+              </p>
+              <a class="primary-link" href="mailto:talent@example.com?subject=CPQL%20精密系统设计师">
+                带着画像和我们聊聊 <span aria-hidden="true">→</span>
+              </a>
+            </div>
+            <div class="closing-monogram" aria-hidden="true">CPQL</div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>KwAITI 是 Kuaishou 的 AI 协作画像，不是心理测评，也不用于自动决定录用结果。</span>
+        <span>Precision Systems Designer · CPQL</span>
+      </footer>
+    </div>
+
+    <script src="_kwaiti-mock.js"></script>
+    <script>
+      const kwaitiInlinePanel = document.querySelector("#kwaitiInlinePanel");
+      const kwaitiInlineForm = document.querySelector("#kwaitiInlineForm");
+      const kwaitiIdentityResult = document.querySelector("#kwaitiIdentityResult");
+      const kwaitiPhone = document.querySelector("#kwaitiPhone");
+      const kwaitiCode = document.querySelector("#kwaitiCode");
+      const sendKwaitiCodeButton = document.querySelector("#sendKwaitiCodeButton");
+      const verifyKwaitiButton = document.querySelector("#verifyKwaitiButton");
+      const kwaitiStatus = document.querySelector("#kwaitiStatus");
+
+      function toggleKwaitiInline() {
+        kwaitiInlinePanel.hidden = !kwaitiInlinePanel.hidden;
+        if (!kwaitiInlinePanel.hidden && !kwaitiIdentityResult.hidden) {
+          kwaitiIdentityResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        } else if (!kwaitiInlinePanel.hidden) {
+          kwaitiPhone.focus();
+        }
+      }
+
+      async function downloadPoster(event) {
+        event.preventDefault();
+        const link = event.currentTarget;
+        const fileName = link.download || "KwAITI-专属海报.png";
+
+        try {
+          const response = await fetch(link.href);
+          if (!response.ok) throw new Error(`Poster download failed: ${response.status}`);
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          const downloadLink = document.createElement("a");
+          downloadLink.href = objectUrl;
+          downloadLink.download = fileName;
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          downloadLink.remove();
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        } catch (error) {
+          const fallbackLink = document.createElement("a");
+          fallbackLink.href = link.href;
+          fallbackLink.download = fileName;
+          document.body.appendChild(fallbackLink);
+          fallbackLink.click();
+          fallbackLink.remove();
+        }
+      }
+
+      function renderKwaitiIdentity(item) {
+        const generatedDate = new Date().toISOString().slice(0, 10).replaceAll("-", ".");
+        kwaitiInlinePanel.classList.add("is-result");
+        kwaitiInlineForm.hidden = true;
+        kwaitiIdentityResult.hidden = false;
+        kwaitiIdentityResult.innerHTML = `
+          <div class="kwaiti-id-card">
+            <p class="kwaiti-id-eyebrow">YOUR KWAITI ID</p>
+            <h2>专属 KwAITI 身份码</h2>
+            <strong>${item.value}</strong>
+            <p>每一种协作方式，都有独一无二的编号</p>
+            <dl class="kwaiti-id-meta">
+              <dt>生成日期</dt><dd>${generatedDate}</dd>
+              <dt>AI 协作类型</dt><dd>精密系统设计师</dd>
+            </dl>
+          </div>
+          <div class="kwaiti-qr-card">
+            <img class="kwaiti-qr-image" src="asserts/kwaiti-qr.svg" alt="扫码投递你的简历" />
+            <h2>扫码投递你的简历</h2>
+            <p>让招聘方快速认识你的 AI 协作优势</p>
+            <a class="primary-link" data-kwaiti-apply>投递简历 <span aria-hidden="true">→</span></a>
+          </div>
+        `;
+        kwaitiIdentityResult.querySelector("[data-kwaiti-apply]").href =
+          `recruitment-list.html?kwaitiId=${encodeURIComponent(item.value)}&source=kwaiti`;
+      }
+
+      function restoreLatestKwaitiId() {
+        try {
+          const value = window.localStorage.getItem("kwaiti-demo-last-generated-id");
+          if (!value) return;
+          const result = window.KwAITIMock.lookupId(value);
+          if (result.item) {
+            kwaitiInlinePanel.hidden = false;
+            renderKwaitiIdentity(result.item);
+          }
+        } catch (_error) {
+          // Ignore unavailable local storage in the static mock.
+        }
+      }
+
+      document.querySelector("[data-toggle-kwaiti-inline]").addEventListener("click", toggleKwaitiInline);
+      document.querySelector("[data-download-poster]").addEventListener("click", downloadPoster);
+
+      sendKwaitiCodeButton.addEventListener("click", () => {
+        const phone = kwaitiPhone.value.trim();
+        kwaitiStatus.classList.remove("success");
+        if (!/^\d{11}$/.test(phone)) {
+          kwaitiStatus.textContent = "请先输入 11 位手机号";
+          return;
+        }
+        kwaitiStatus.classList.add("success");
+        kwaitiStatus.textContent = "验证码已发送，请输入任意数字完成验证";
+        sendKwaitiCodeButton.textContent = "重新发送";
+      });
+
+      verifyKwaitiButton.addEventListener("click", () => {
+        const phone = kwaitiPhone.value.trim();
+        const code = kwaitiCode.value.trim();
+        kwaitiStatus.classList.remove("success");
+
+        if (!/^\d{11}$/.test(phone)) {
+          kwaitiStatus.textContent = "请输入 11 位手机号";
+          return;
+        }
+        if (!window.KwAITIMock.verifyCode(code)) {
+          kwaitiStatus.textContent = "验证码请输入数字";
+          return;
+        }
+
+        const item = window.KwAITIMock.generateId(phone);
+        try {
+          window.localStorage.setItem("kwaiti-demo-last-generated-id", item.value);
+        } catch (_error) {
+          // The generated ID still remains available in the current page.
+        }
+        renderKwaitiIdentity(item);
+        kwaitiStatus.classList.add("success");
+        kwaitiStatus.textContent = "验证通过，已生成唯一 KwAITI ID";
+      });
+
+      restoreLatestKwaitiId();
+
+      const dimensions = [
+        {
+          key: "steering",
+          label: "引导",
+          english: "Steering",
+          score: 72,
+          title: "清晰引导",
+          summary:
+            "你愿意在关键节点补充信息、明确边界并校准方向。<strong>这种参与感让复杂协作更清晰，也让 Agent 更容易理解真正的目标。</strong>",
+          evidence:
+            "综合用户参与比例、提示表达和执行过程中的互动信号，呈现你如何为 Agent 提供方向。",
+        },
+        {
+          key: "execution",
+          label: "执行",
+          english: "Execution",
+          score: 68,
+          title: "稳健推进",
+          summary:
+            "你不满足于停留在讨论和方案阶段，而是会推动任务形成实际结果。<strong>你的节奏兼顾进度与可控性，适合把复杂计划逐步落地。</strong>",
+          evidence:
+            "结合会话完成信号、任务推进深度和互动节奏，呈现你推动工作向结果发展的方式。",
+        },
+        {
+          key: "engineering",
+          label: "工程",
+          english: "Engineering",
+          score: 80,
+          title: "质量锚点",
+          summary:
+            "你会把测试、检查与可靠性放进 AI 工作流，而不是只追求更快生成。<strong>这让你特别适合需要长期维护和团队协作的复杂系统。</strong>",
+          evidence:
+            "结合工具稳定性、返工信号、健康度和工程工具使用方式，呈现你对交付质量的关注。",
+        },
+        {
+          key: "planning",
+          label: "规划",
+          english: "Planning",
+          score: 74,
+          title: "结构先行",
+          summary:
+            "面对复杂任务，你会先建立结构、步骤和完成标准。<strong>你擅长把不确定的问题，整理成 Agent 可以理解和执行的路线。</strong>",
+          evidence:
+            "综合任务展开方式、上下文组织、思考过程和复杂会话结构，呈现你的规划倾向。",
+        },
+        {
+          key: "product",
+          label: "产品",
+          english: "Product",
+          score: 43,
+          title: "价值校准",
+          summary:
+            "你以工程可靠性为核心，同时保留对目标和使用价值的关注。<strong>这使你能够从坚实实现出发，逐步连接真实业务场景。</strong>",
+          evidence:
+            "呈现协作中对产品语境、用户目标和 Skill 组合的关注；这里表达相对倾向，而不是能力高低。",
+        },
+        {
+          key: "autonomy",
+          label: "自主",
+          english: "Autonomy",
+          score: 35,
+          title: "协作可控",
+          summary:
+            "你更愿意在关键节点保持参与，而不是把复杂任务完全交给 AI。<strong>在高风险工程中，这种责任感有助于及时校准并守住边界。</strong>",
+          evidence:
+            "根据两次用户介入之间 Agent 的连续运行方式，呈现你偏好的协作距离，并不代表能力高低。",
+        },
+        {
+          key: "adaptation",
+          label: "适应",
+          english: "Adaptation",
+          score: 67,
+          title: "持续升级",
+          summary:
+            "你会根据反馈调整 Prompt、工具和协作流程。<strong>有效经验不会只停留在一次任务里，而会逐渐成为更成熟的工作方法。</strong>",
+          evidence:
+            "通过不同阶段的工作方式变化与连续任务表现，呈现你吸收反馈、调整方法的倾向。",
+        },
+      ];
+
+      const svg = document.getElementById("radarChart");
+      const ringsGroup = document.getElementById("radarRings");
+      const axesGroup = document.getElementById("radarAxes");
+      const dotsGroup = document.getElementById("radarDots");
+      const labelsGroup = document.getElementById("radarLabels");
+      const shape = document.getElementById("radarShape");
+      const tabs = document.getElementById("dimensionTabs");
+      const metricGrid = document.getElementById("metricGrid");
+      const center = 260;
+      const radius = 172;
+      const labelRadius = 216;
+      const namespace = "http://www.w3.org/2000/svg";
+      let activeIndex = 2;
+
+      function pointAt(index, distance) {
+        const angle = -Math.PI / 2 + (index * Math.PI * 2) / dimensions.length;
+        return {
+          x: center + Math.cos(angle) * distance,
+          y: center + Math.sin(angle) * distance,
+        };
+      }
+
+      function pointsForScale(scale) {
+        return dimensions
+          .map((_, index) => {
+            const point = pointAt(index, radius * scale);
+            return `${point.x},${point.y}`;
+          })
+          .join(" ");
+      }
+
+      for (let ring = 1; ring <= 4; ring += 1) {
+        const polygon = document.createElementNS(namespace, "polygon");
+        polygon.setAttribute("points", pointsForScale(ring / 4));
+        polygon.setAttribute("class", "radar-ring");
+        ringsGroup.appendChild(polygon);
+      }
+
+      dimensions.forEach((dimension, index) => {
+        const end = pointAt(index, radius);
+        const axis = document.createElementNS(namespace, "line");
+        axis.setAttribute("x1", center);
+        axis.setAttribute("y1", center);
+        axis.setAttribute("x2", end.x);
+        axis.setAttribute("y2", end.y);
+        axis.setAttribute("class", "radar-axis");
+        axesGroup.appendChild(axis);
+
+        const scorePoint = pointAt(index, radius * (dimension.score / 100));
+        const dot = document.createElementNS(namespace, "circle");
+        dot.setAttribute("cx", scorePoint.x);
+        dot.setAttribute("cy", scorePoint.y);
+        dot.setAttribute("r", "6");
+        dot.setAttribute("class", "radar-dot");
+        dot.setAttribute("data-index", index);
+        dot.setAttribute("tabindex", "0");
+        dot.setAttribute("role", "button");
+        dot.setAttribute("aria-label", `${dimension.english} ${dimension.score}分`);
+        dot.addEventListener("click", () => selectDimension(index));
+        dot.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectDimension(index);
+          }
+        });
+        dotsGroup.appendChild(dot);
+
+        const labelPoint = pointAt(index, labelRadius);
+        const label = document.createElementNS(namespace, "text");
+        label.setAttribute("x", labelPoint.x);
+        label.setAttribute("y", labelPoint.y - 3);
+        label.setAttribute("text-anchor", "middle");
+        label.setAttribute("class", "radar-label");
+        label.setAttribute("data-index", index);
+        label.textContent = dimension.english;
+        label.addEventListener("click", () => selectDimension(index));
+        labelsGroup.appendChild(label);
+
+        const score = document.createElementNS(namespace, "text");
+        score.setAttribute("x", labelPoint.x);
+        score.setAttribute("y", labelPoint.y + 13);
+        score.setAttribute("text-anchor", "middle");
+        score.setAttribute("class", "radar-score");
+        score.textContent = dimension.score;
+        labelsGroup.appendChild(score);
+
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.className = "dimension-tab";
+        tab.dataset.index = index;
+        tab.textContent = dimension.label;
+        tab.addEventListener("click", () => selectDimension(index));
+        tabs.appendChild(tab);
+
+        const mini = document.createElement("button");
+        mini.type = "button";
+        mini.className = "metric-mini";
+        mini.dataset.index = index;
+        mini.setAttribute("aria-label", `查看${dimension.english}指标`);
+        mini.innerHTML = `<strong>${dimension.score}</strong><span>${dimension.english}</span>`;
+        mini.addEventListener("click", () => {
+          selectDimension(index);
+          document.querySelector(".insight-panel").scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        });
+        metricGrid.appendChild(mini);
+      });
+
+      const shapePoints = dimensions
+        .map((dimension, index) => {
+          const point = pointAt(index, radius * (dimension.score / 100));
+          return `${point.x},${point.y}`;
+        })
+        .join(" ");
+      shape.setAttribute("points", shapePoints);
+
+      function selectDimension(index) {
+        activeIndex = index;
+        const dimension = dimensions[index];
+        document.getElementById("insightEnglish").textContent = dimension.english;
+        document.getElementById("insightTitle").textContent = dimension.title;
+        document.getElementById("insightScore").textContent = dimension.score;
+        document.getElementById("insightSummary").innerHTML = dimension.summary;
+        document.getElementById("insightEvidence").textContent = dimension.evidence;
+
+        document.querySelectorAll("[data-index]").forEach((element) => {
+          element.classList.toggle("is-active", Number(element.dataset.index) === activeIndex);
+        });
+      }
+
+      selectDimension(activeIndex);
+    </script>
+  </body>
+</html>

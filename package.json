@@ -1,0 +1,10 @@
+{
+  "name": "kuai-local-web-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test internal/webapp/assets/flow_logic.test.js internal/webapp/assets/flow_dom.test.js tests/session_selection_interactions.js tests/report_interactions.js"
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1"
+  }
+}
