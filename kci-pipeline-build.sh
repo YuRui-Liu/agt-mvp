@@ -72,18 +72,14 @@ if [ -L "$targets" ] || { [ -e "$targets" ] && [ ! -d "$targets" ]; }; then
 fi
 mkdir -p "$targets"
 
-stage=$(mktemp -d "$targets/.$artifact_name.stage.XXXXXX")
-backup_root=
-old_moved=0
 target_dir="$targets/$artifact_name"
+[ ! -e "$target_dir" ] && [ ! -L "$target_dir" ] || {
+  echo "kuai: immutable target pair already exists" >&2
+  exit 1
+}
+stage=$(mktemp -d "$targets/.$artifact_name.stage.XXXXXX")
 cleanup() {
   [ -z "$stage" ] || rm -rf "$stage"
-  if [ "$old_moved" -eq 1 ] && [ -n "$backup_root" ] &&
-    [ -d "$backup_root/previous" ] && [ ! -e "$target_dir" ]; then
-    mv "$backup_root/previous" "$target_dir" || true
-    old_moved=0
-  fi
-  [ -z "$backup_root" ] || rm -rf "$backup_root"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -113,10 +109,14 @@ if [ "$SIGN" = true ] && [ "$goos" = darwin ]; then
     notary_timeout_value=${notary_timeout%?}
     notary_timeout_unit=${notary_timeout#"$notary_timeout_value"}
     case "$notary_timeout_value" in
-      ''|0|*[!0-9]*)
+      ''|*[!0-9]*)
         echo "kuai: APPLE_NOTARY_TIMEOUT must be a positive duration such as 20m" >&2
         exit 1
         ;;
+    esac
+    case "$notary_timeout_value" in
+      *[1-9]*) ;;
+      *) echo "kuai: APPLE_NOTARY_TIMEOUT must be greater than zero" >&2; exit 1 ;;
     esac
     case "$notary_timeout_unit" in
       s|m|h) ;;
@@ -240,37 +240,12 @@ if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -L "$targets" ] || [ ! -d "$targets" 
   exit 1
 fi
 
-if [ -e "$target_dir" ] || [ -L "$target_dir" ]; then
-  [ -d "$target_dir" ] && [ ! -L "$target_dir" ] || {
-    echo "kuai: target pair path must be a real directory" >&2
-    exit 1
-  }
-  for existing in "$target_dir/$artifact_name" "$target_dir/$artifact_name.sha256"; do
-    [ -f "$existing" ] && [ ! -L "$existing" ] || {
-      echo "kuai: existing target pair contains a non-regular entry" >&2
-      exit 1
-    }
-  done
-  [ "$(find "$target_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" -eq 2 ] || {
-    echo "kuai: existing target pair contains unexpected entries" >&2
-    exit 1
-  }
-  backup_root=$(mktemp -d "$targets/.$artifact_name.backup.XXXXXX")
-  mv "$target_dir" "$backup_root/previous"
-  old_moved=1
-fi
-
-if ! mv "$stage" "$target_dir"; then
-  if [ "$old_moved" -eq 1 ] && mv "$backup_root/previous" "$target_dir"; then
-    old_moved=0
-  fi
+[ ! -e "$target_dir" ] && [ ! -L "$target_dir" ] || {
+  echo "kuai: immutable target pair already exists" >&2
   exit 1
-fi
+}
+
+mv "$stage" "$target_dir"
 stage=
-if [ "$old_moved" -eq 1 ]; then
-  rm -rf "$backup_root"
-  backup_root=
-  old_moved=0
-fi
 
 echo "kuai: built $target_dir/$artifact_name (version $version, sign=$SIGN, notarize=$NOTARIZE)"

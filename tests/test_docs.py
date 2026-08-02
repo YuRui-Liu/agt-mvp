@@ -186,6 +186,9 @@ class DocumentationTests(unittest.TestCase):
             "pair 目录",
             "重新计算六个产物的 SHA-256",
             "只接受 `Accepted`",
+            "不可变 pair 目录",
+            "精确 12 个条目",
+            "硬链接",
         ):
             self.assertIn(phrase, self.readme)
         self.assertNotIn("APPLE_APP_SPECIFIC_PASSWORD", self.readme)

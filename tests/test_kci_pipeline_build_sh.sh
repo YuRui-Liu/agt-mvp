@@ -104,18 +104,14 @@ esac
 EOF
 chmod +x "$TEST_ROOT/fakebin/xcrun"
 
-cat >"$TEST_ROOT/fakebin/mv" <<'EOF'
+cat >"$TEST_ROOT/fakebin/rm" <<'EOF'
 #!/bin/sh
-if [ "${FAKE_FAIL_PAIR_PUBLISH:-}" = true ]; then
-  case "$1" in
-    *.stage.*)
-      case "$2" in */targets/kuai-linux-amd64) exit 73 ;; esac
-      ;;
-  esac
+if [ "${FAKE_FAIL_STAGE_CLEANUP:-}" = true ]; then
+  case "$*" in *.stage.*) exit 74 ;; esac
 fi
-exec /bin/mv "$@"
+exec /bin/rm "$@"
 EOF
-chmod +x "$TEST_ROOT/fakebin/mv"
+chmod +x "$TEST_ROOT/fakebin/rm"
 
 export FAKE_GO_LOG="$TEST_ROOT/go.log"
 export FAKE_SIGN_LOG="$TEST_ROOT/sign.log"
@@ -203,15 +199,22 @@ run_kci linux amd64 >/dev/null 2>&1 && {
 }
 rm -rf "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64"
 
-mkdir "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64"
-printf 'old artifact\n' >"$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64"
-printf 'old checksum\n' >"$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256"
-FAKE_FAIL_PAIR_PUBLISH=true run_kci linux amd64 >/dev/null 2>&1 && {
-  echo "forced pair publication failure unexpectedly succeeded" >&2
+run_kci linux amd64 >/dev/null
+old_artifact=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64")
+old_checksum=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256")
+run_kci linux amd64 >/dev/null 2>&1 && {
+  echo "immutable target pair was overwritten" >&2
   exit 1
 }
-grep -qx 'old artifact' "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64"
-grep -qx 'old checksum' "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256"
+[ "$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64")" = "$old_artifact" ]
+[ "$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256")" = "$old_checksum" ]
+
+FAKE_FAIL_STAGE_CLEANUP=true run_kci linux amd64 >/dev/null 2>&1 && {
+  echo "existing pair with forced cleanup failure unexpectedly succeeded" >&2
+  exit 1
+}
+[ "$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64")" = "$old_artifact" ]
+[ "$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256")" = "$old_checksum" ]
 
 run_kci linux amd64 true false >/dev/null 2>&1 && {
   echo "Linux signing unexpectedly accepted" >&2
@@ -229,6 +232,7 @@ run_kci darwin amd64 false true >/dev/null 2>&1 && {
 WINDOWS_SIGNING_PUBLISHER='CN=Qrite Technology Limited' \
   run_kci win32 amd64 true false >/dev/null
 grep -q '^verify /pa /all /v ' "$FAKE_SIGN_LOG"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-windows-amd64.exe"
 
 FAKE_SIGN_PUBLISHER_OUTPUT='Unexpected Publisher' \
 WINDOWS_SIGNING_PUBLISHER='CN=Qrite Technology Limited' \
@@ -260,6 +264,7 @@ notary_line=$(grep -n '^xcrun notarytool submit ' "$FAKE_SIGN_LOG" | cut -d: -f1
 last_verify=$(grep -n '^codesign --verify --strict --verbose=2 ' "$FAKE_SIGN_LOG" | tail -1 | cut -d: -f1)
 [ "$first_verify" -lt "$notary_line" ] && [ "$notary_line" -lt "$last_verify" ]
 ! grep -Eq -- '--password|stapler' "$FAKE_SIGN_LOG"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-darwin-arm64"
 
 APPLE_NOTARY_TIMEOUT=0m APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null 2>&1 && {
@@ -267,10 +272,19 @@ APPLE_NOTARY_TIMEOUT=0m APPLE_NOTARY_PROFILE=kuai-notary \
   exit 1
 }
 
+for invalid_timeout in 00m 000s; do
+  APPLE_NOTARY_TIMEOUT=$invalid_timeout APPLE_NOTARY_PROFILE=kuai-notary \
+    run_kci darwin arm64 true true >/dev/null 2>&1 && {
+    echo "zero notarization timeout accepted: $invalid_timeout" >&2
+    exit 1
+  }
+done
+
 : >"$FAKE_SIGN_LOG"
 APPLE_NOTARY_TIMEOUT=5m APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null
 grep -q -- '--timeout 5m --output-format json$' "$FAKE_SIGN_LOG"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-darwin-arm64"
 
 FAKE_NOTARY_STATUS=Invalid APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null 2>&1 && {

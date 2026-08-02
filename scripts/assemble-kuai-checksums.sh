@@ -21,12 +21,10 @@ output_dir_physical=$(CDPATH= cd -- "$output_dir" && pwd -P)
   exit 1
 }
 output="$input_dir/SHA256SUMS"
-if [ -e "$output" ] || [ -L "$output" ]; then
-  [ -f "$output" ] && [ ! -L "$output" ] || {
-    echo "kuai: existing checksum output must be a regular file" >&2
-    exit 1
-  }
-fi
+[ ! -e "$output" ] && [ ! -L "$output" ] || {
+  echo "kuai: checksum output already exists" >&2
+  exit 1
+}
 
 expected='kuai-darwin-amd64
 kuai-darwin-arm64
@@ -35,9 +33,9 @@ kuai-linux-arm64
 kuai-windows-amd64.exe
 kuai-windows-arm64.exe'
 
-fragment_count=$(find "$input_dir" -mindepth 1 -maxdepth 1 -name '*.sha256' -print | wc -l | tr -d ' ')
-[ "$fragment_count" -eq 6 ] || {
-  echo "kuai: expected exactly six checksum fragments" >&2
+entry_count=$(find "$input_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')
+[ "$entry_count" -eq 12 ] || {
+  echo "kuai: expected exactly six artifacts and six checksum fragments" >&2
   exit 1
 }
 
@@ -94,17 +92,21 @@ done | LC_ALL=C sort >"$manifest"
   exit 1
 }
 
-# Revalidate the destination immediately before the same-directory rename.
+# Revalidate the fresh directory, excluding our private manifest inode.
 [ -d "$input_dir" ] && [ ! -L "$input_dir" ] || {
   echo "kuai: checksum input directory changed during assembly" >&2
   exit 1
 }
-if [ -e "$output" ] || [ -L "$output" ]; then
-  [ -f "$output" ] && [ ! -L "$output" ] || {
-    echo "kuai: checksum output changed during assembly" >&2
-    exit 1
-  }
-fi
-mv "$manifest" "$output"
+manifest_name=$(basename -- "$manifest")
+entry_count=$(find "$input_dir" -mindepth 1 -maxdepth 1 ! -name "$manifest_name" -print | wc -l | tr -d ' ')
+[ "$entry_count" -eq 12 ] || {
+  echo "kuai: release input directory changed during assembly" >&2
+  exit 1
+}
+# A same-directory hard link creates SHA256SUMS only if the name is absent.
+# A concurrent file, directory, or symlink makes ln fail without overwriting it.
+ln "$manifest" "$output"
+rm -f "$manifest"
+manifest=
 trap - EXIT HUP INT TERM
 echo "kuai: wrote $output"
