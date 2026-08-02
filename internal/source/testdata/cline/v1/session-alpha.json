@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "session_id": "session-alpha",
+  "source": "cline",
+  "pid": 4242,
+  "started_at": "2026-06-01T10:00:00Z",
+  "ended_at": "2026-06-01T10:01:00Z",
+  "status": "completed",
+  "interactive": true,
+  "provider": "synthetic-provider",
+  "model": "synthetic-model",
+  "cwd": "/synthetic/garden",
+  "workspace_root": "/synthetic/garden",
+  "enable_tools": true,
+  "enable_spawn": false,
+  "enable_teams": false,
+  "prompt": "must never be exported",
+  "messages_path": "../decoy/messages.json"
+}
