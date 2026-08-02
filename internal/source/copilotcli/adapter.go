@@ -255,6 +255,9 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		out = append(out, session)
 		next[session.OpaqueRef] = auth
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	a.replaceKnown(next)
 	return out, nil
 }

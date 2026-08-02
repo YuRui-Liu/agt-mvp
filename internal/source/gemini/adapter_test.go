@@ -19,6 +19,7 @@ import (
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/adaptertest"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/safeopen"
 )
 
 func installGemini(t *testing.T, root, project, name string, data []byte) string {
@@ -420,6 +421,57 @@ func TestGeminiLargeNestedCancellationDoesNotAuthorize(t *testing.T) {
 	}
 	if len(a.known) != 0 {
 		t.Fatal("canceled discovery installed authorization")
+	}
+}
+
+func TestGeminiFinalCancellationPreservesKnown(t *testing.T) {
+	root := t.TempDir()
+	fixture := adaptertest.ReadFixture(t, "../testdata/gemini/object-v1.json")
+	installGemini(t, root, "project", "session-object.json", fixture)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	before := a.known[got[0].OpaqueRef]
+	if err := os.Rename(filepath.Join(root, "tmp"), filepath.Join(root, "tmp-before-cancel")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelContext{Context: context.Background(), after: 3}
+	if sessions, err := a.Discover(ctx); !errors.Is(err, context.Canceled) || len(sessions) != 0 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+	after, exists := a.known[got[0].OpaqueRef]
+	if !exists || len(a.known) != 1 || after.id != before.id || after.digest != before.digest || after.metadata != before.metadata {
+		t.Fatal("canceled discovery replaced known snapshot")
+	}
+}
+
+func TestGeminiProjectMapCancellationPropagates(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	padding := strings.Repeat(`"synthetic",`, 70000) + `"synthetic"`
+	data := []byte(`{"projects":{},"padding":[` + padding + `]}`)
+	if err := os.WriteFile(filepath.Join(root, "projects.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := safeopen.Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	ctx := &cancelContext{Context: context.Background(), after: 3}
+	if _, err := readProjectMap(ctx, bound); !errors.Is(err, context.Canceled) {
+		t.Fatalf("mapping cancellation err=%v", err)
+	}
+	discoverCtx := &cancelContext{Context: context.Background(), after: 3}
+	if sessions, err := New(root).Discover(discoverCtx); !errors.Is(err, context.Canceled) || len(sessions) != 0 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
 }
 

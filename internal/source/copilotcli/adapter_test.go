@@ -484,6 +484,32 @@ func TestCopilotLargeNestedCancellationDoesNotAuthorize(t *testing.T) {
 	}
 }
 
+func TestCopilotFinalCancellationPreservesKnown(t *testing.T) {
+	root := t.TempDir()
+	fixture := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
+	installFlat(t, root, uuidFixture, fixture)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	before := a.known[got[0].OpaqueRef]
+	if err := os.Rename(filepath.Join(root, "session-state"), filepath.Join(root, "session-state-before-cancel")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "session-state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelContext{Context: context.Background(), after: 3}
+	if sessions, err := a.Discover(ctx); !errors.Is(err, context.Canceled) || len(sessions) != 0 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+	after, exists := a.known[got[0].OpaqueRef]
+	if !exists || len(a.known) != 1 || after.id != before.id || after.digest != before.digest || after.metadata != before.metadata {
+		t.Fatal("canceled discovery replaced known snapshot")
+	}
+}
+
 func TestCopilotDeduplicatesCaseAliasesByRootIdentity(t *testing.T) {
 	root := t.TempDir()
 	alias := filepath.Join(filepath.Dir(root), strings.ToUpper(filepath.Base(root)))

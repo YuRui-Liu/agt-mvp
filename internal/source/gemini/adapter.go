@@ -184,7 +184,10 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err != nil {
 			return nil, directoryError(err)
 		}
-		labels := readProjectMap(ctx, bound)
+		labels, mapErr := readProjectMap(ctx, bound)
+		if mapErr != nil {
+			return nil, mapErr
+		}
 		globalVisited += len(projects)
 		if globalVisited > maxGlobalEntries {
 			return nil, errors.New("gemini-cli: directory limit")
@@ -246,6 +249,9 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		out = append(out, session)
 		next[session.OpaqueRef] = auth
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	a.replaceKnown(next)
 	return out, nil
 }
@@ -289,19 +295,31 @@ type projectsFile struct {
 	Projects map[string]string `json:"projects"`
 }
 
-func readProjectMap(ctx context.Context, bound *safeopen.BoundRoot) map[string]string {
+func readProjectMap(ctx context.Context, bound *safeopen.BoundRoot) (map[string]string, error) {
 	file, _, err := bound.OpenWithPathIdentity("projects.json", maxMappingBytes)
 	if err != nil {
-		return nil
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxMappingBytes+1))
-	if err != nil || len(data) > maxMappingBytes || !jsonDepthOK(ctx, data, maxJSONDepth) {
-		return nil
+	if err != nil || len(data) > maxMappingBytes {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
+	}
+	if !jsonDepthOK(ctx, data, maxJSONDepth) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
 	}
 	var parsed projectsFile
 	if json.Unmarshal(data, &parsed) != nil || len(parsed.Projects) > maxDirectoryEntries {
-		return nil
+		return nil, nil
 	}
 	result := map[string]string{}
 	keys := make([]string, 0, len(parsed.Projects))
@@ -310,6 +328,9 @@ func readProjectMap(ctx context.Context, bound *safeopen.BoundRoot) map[string]s
 	}
 	sort.Strings(keys)
 	for _, path := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			continue
 		}
@@ -326,7 +347,10 @@ func readProjectMap(ctx context.Context, bound *safeopen.BoundRoot) map[string]s
 			result[key] = label
 		}
 	}
-	return result
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func safeLabel(value string) string {
@@ -1041,7 +1065,11 @@ func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadClos
 	}
 	project := filepath.Base(filepath.Dir(filepath.Dir(auth.relative)))
 	item := candidate{root: auth.root, path: auth.path, relative: auth.relative, project: project, bound: bound}
-	if mapping := readProjectMap(ctx, bound); mapping != nil {
+	mapping, mapErr := readProjectMap(ctx, bound)
+	if mapErr != nil {
+		return nil, mapErr
+	}
+	if mapping != nil {
 		item.projectLabel = mapping[project]
 	}
 	fresh, freshAuth, output, valid := a.snapshot(ctx, item)
