@@ -312,7 +312,11 @@ vX.Y.Z[-prerelease]
 
 npm Trusted Publishing 只用于 `npm publish`（以及可选的 `npm stage publish`），不得假设 OIDC 身份同时授权 `npm dist-tag` 或 `npm deprecate`。后续版本可选择 staged publishing，但它要求包已存在且由维护者使用 2FA 批准，因此首版仍使用上述“平台包先发、主包最后发”的引导流程。
 
-由于 Trusted Publisher 是逐包在 npm 包设置中配置的，新名称首次发布不能预先依赖该配置。五个包的首次引导发布由维护者在可信本机登录、逐次完成 2FA，并严格复用相同的 tarball 验证和“平台包先发、主包最后发”顺序；发布后立即为五包分别绑定 Trusted Publisher，后续版本才走无长期 token 的 OIDC workflow。不得为引导发布把长期 npm token 写入 CI。
+由于 Trusted Publisher 是逐包在 npm 包设置中配置的，新名称首次发布不能预先依赖该配置。五个包的首次引导发布由维护者在可信本机登录、逐次完成 2FA，并严格复用相同的 tarball 验证和“平台包先发、四平台预发布烟测、主包最后发、四平台 registry 烟测”顺序；发布后立即为五包分别绑定 Trusted Publisher，后续版本才走无长期 token 的 OIDC workflow。不得为引导发布把长期 npm token 写入 CI。
+
+首次 bootstrap 是唯一没有 GitHub OIDC provenance 的版本，README 与发布记录必须披露这一点；完成五包 Trusted Publisher 配置后，后续发布缺少 provenance 必须失败。若产品不能接受首版无 provenance，就必须暂停公开发布，直到 npm 提供可在建包前配置的官方引导能力。
+
+后续 provenance 还要求发布源仓库公开，且 manifest 的 `repository.url` 与 Trusted Publisher 所绑定 GitHub 仓库精确一致；不满足时阻止正式发布，但不回退到长期 token。
 
 ## 10. 测试策略
 
