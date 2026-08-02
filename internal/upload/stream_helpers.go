@@ -123,12 +123,8 @@ func collectReadToolIDs(value any, ids map[string]struct{}) {
 	switch typed := value.(type) {
 	case map[string]any:
 		if isReadTool(typed) {
-			for key, value := range typed {
-				if normalizeName(key) == "id" {
-					if id, ok := value.(string); ok && id != "" {
-						ids[id] = struct{}{}
-					}
-				}
+			if id := readCallID(typed); id != "" {
+				ids[id] = struct{}{}
 			}
 		}
 		for _, child := range typed {
@@ -145,13 +141,7 @@ func omitCorrelatedReadResults(value any, ids map[string]struct{}) int {
 	omitted := 0
 	switch typed := value.(type) {
 	case map[string]any:
-		var toolID string
-		for key, child := range typed {
-			if normalizeName(key) == "tooluseid" {
-				toolID, _ = child.(string)
-			}
-		}
-		if _, isRead := ids[toolID]; isRead && toolID != "" {
+		if isCorrelatedReadResult(typed, ids) {
 			for key := range typed {
 				if !isReadPayloadKey(key) {
 					continue

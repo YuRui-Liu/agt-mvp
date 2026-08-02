@@ -24,6 +24,28 @@ import (
 
 type testAdapter struct{}
 
+type selectedScopeAdapter struct {
+	mu     sync.Mutex
+	opened []string
+}
+
+func (*selectedScopeAdapter) Product() string { return "codex" }
+func (*selectedScopeAdapter) Capabilities() []source.Capability {
+	return []source.Capability{source.CapabilityMessages}
+}
+func (*selectedScopeAdapter) Discover(context.Context) ([]source.Session, error) {
+	return []source.Session{
+		{ID: "alpha-session", Scope: source.ScopeRef{Type: source.ScopeProject, Root: "/private/alpha", Label: "alpha"}},
+		{ID: "beta-session", Scope: source.ScopeRef{Type: source.ScopeProject, Root: "/private/beta", Label: "beta"}},
+	}, nil
+}
+func (a *selectedScopeAdapter) Open(_ context.Context, session source.Session) (io.ReadCloser, error) {
+	a.mu.Lock()
+	a.opened = append(a.opened, session.ID)
+	a.mu.Unlock()
+	return io.NopCloser(strings.NewReader(`{"type":"message","role":"user","text":"hello"}` + "\n")), nil
+}
+
 func (testAdapter) Product() string { return "codex" }
 func (testAdapter) Capabilities() []source.Capability {
 	return []source.Capability{"message", "tool"}
@@ -272,6 +294,43 @@ func TestScopeAPIAndCompleteServiceFlow(t *testing.T) {
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("submission-only route %s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestPrepareExportsOnlyTheExplicitlySelectedScope(t *testing.T) {
+	adapter := &selectedScopeAdapter{}
+	registry := source.NewRegistry(adapter)
+	app := newTestApp()
+	app.Registry = registry
+	app.Exporter = upload.NewStreamExporter(registry, upload.Client{Name: "kuai", Version: "test", Platform: "test"}, upload.Limits{})
+	defer app.Close()
+	handler := Handler(app)
+
+	response := call(t, handler, http.MethodGet, "/api/scopes", "", "")
+	var result struct {
+		Scopes []scopeView `json:"scopes"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Scopes) != 2 {
+		t.Fatalf("scopes status=%d body=%s", response.Code, response.Body.String())
+	}
+	var selected scopeView
+	for _, scope := range result.Scopes {
+		if scope.Label == "beta" {
+			selected = scope
+		}
+	}
+	if selected.Key == "" {
+		t.Fatalf("beta scope missing: %#v", result.Scopes)
+	}
+	response = call(t, handler, http.MethodPost, "/api/prepare", `{"scope_key":"`+selected.Key+`"}`, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("prepare status=%d body=%s", response.Code, response.Body.String())
+	}
+	adapter.mu.Lock()
+	opened := append([]string(nil), adapter.opened...)
+	adapter.mu.Unlock()
+	if !reflect.DeepEqual(opened, []string{"beta-session"}) {
+		t.Fatalf("prepare opened unselected sessions: %v", opened)
 	}
 }
 

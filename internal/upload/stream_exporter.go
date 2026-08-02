@@ -29,6 +29,7 @@ type StreamExporter struct {
 	limits  Limits
 	now     func() time.Time
 	tempDir string
+	remove  func(string) error
 }
 
 func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *StreamExporter {
@@ -37,6 +38,7 @@ func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *Stre
 		client: client,
 		limits: withDefaultLimits(limits),
 		now:    time.Now,
+		remove: os.Remove,
 	}
 }
 
@@ -110,10 +112,21 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 	}
 	path := file.Name()
 	keep := false
+	remove := e.remove
+	if remove == nil {
+		remove = os.Remove
+	}
 	defer func() {
+		// A failed export must never leave a parseable partial package behind.
+		// Truncate while the private descriptor is still open so even a later
+		// unlink failure (for example a Windows sharing violation) cannot expose
+		// session data as an apparently usable artifact.
+		if !keep {
+			_ = file.Truncate(0)
+		}
 		_ = file.Close()
 		if !keep {
-			_ = os.Remove(path)
+			_ = remove(path)
 		}
 	}()
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,6 +107,72 @@ func TestBuildScopeCountsEachRemovedFieldOnce(t *testing.T) {
 	}
 }
 
+func TestBuildScopeOmitsCanonicalReadResultAcrossJSONLLines(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","call_id":"read-1","tool":{"name":"Read","arguments":{"path":"/private/source.txt"}}}`,
+			`{"type":"tool_result","call_id":"read-1","content":"COMPLETE PRIVATE FILE"}`,
+		}, "\n") + "\n",
+	}}
+
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "COMPLETE PRIVATE FILE") || !strings.Contains(body, omittedFileContent) {
+		t.Fatalf("canonical Read result leaked across JSONL lines: %s", body)
+	}
+}
+
+func TestBuildScopeFiltersCanonicalEventsAcrossProducts(t *testing.T) {
+	scope := source.Scope{
+		Key: "selected-project", Type: source.ScopeProject, Label: "selected",
+		Sessions: []source.Session{
+			{ID: "codex:selected", Product: "codex", Capabilities: []source.Capability{source.CapabilityMessages, source.CapabilityTools, source.CapabilityReasoning}},
+			{ID: "qoder:selected", Product: "qoder-cli", Capabilities: []source.Capability{source.CapabilityMessages, source.CapabilityTools, source.CapabilityReasoning}},
+		},
+	}
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:selected": strings.Join([]string{
+			`{"type":"message","role":"user","text":"open /Users/alice/private.go and call 13812345678. token sk-proj-abcdefghijklmnopqrstuvwxyz"}`,
+			`{"type":"thinking","text":"nested","payload":{"items":[{"text":"C:\\Users\\alice\\secret.txt"}]}}`,
+			`{"type":"tool_use","call_id":"read-1","tool":{"name":"Read","arguments":{"path":"/Users/alice/private.go"}}}`,
+			`{"type":"tool_result","call_id":"read-1","content":"PRIVATE FILE BODY"}`,
+		}, "\n") + "\n",
+		"qoder:selected": strings.Join([]string{
+			`{"type":"tool_use","call_id":"write-1","tool":{"name":"apply_patch"}}`,
+			`{"type":"tool_result","call_id":"write-1","content":"diff --git a/a b/a"}`,
+		}, "\n") + "\n",
+	}}
+
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	for _, secret := range []string{
+		"/Users/alice/private.go", `C:\\Users\\alice\\secret.txt`, "13812345678",
+		"sk-proj-abcdefghijklmnopqrstuvwxyz", "PRIVATE FILE BODY",
+	} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("export leaked %q: %s", secret, body)
+		}
+	}
+	for _, retained := range []string{`"type":"message"`, `"type":"thinking"`, `"type":"tool_use"`, `"type":"tool_result"`, "diff --git a/a b/a"} {
+		if !strings.Contains(body, retained) {
+			t.Fatalf("export lost canonical semantic value %q: %s", retained, body)
+		}
+	}
+	if !reflect.DeepEqual(opener.opens, []string{"codex:selected", "qoder:selected"}) {
+		t.Fatalf("opened sessions=%v", opener.opens)
+	}
+}
+
 func TestBuildScopeFailureReturnsNoArtifactAndCleansTemporaryFile(t *testing.T) {
 	tempDir := t.TempDir()
 	opener := &fakeSessionOpener{
@@ -121,6 +188,34 @@ func TestBuildScopeFailureReturnsNoArtifactAndCleansTemporaryFile(t *testing.T) 
 	entries, readErr := os.ReadDir(tempDir)
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("temporary files=%v err=%v", entries, readErr)
+	}
+}
+
+func TestBuildScopeFailureDestroysPartialPackageWhenRemovalIsBlocked(t *testing.T) {
+	tempDir := t.TempDir()
+	opener := &fakeSessionOpener{
+		data:  map[string]string{"codex:2": `{"type":"message","text":"partial private value"}` + "\n"},
+		errAt: "claude-code:1",
+	}
+	exporter := NewStreamExporter(opener, Client{}, Limits{})
+	exporter.tempDir = tempDir
+	exporter.remove = func(string) error { return errors.New("simulated sharing violation") }
+	artifact, err := exporter.BuildScope(context.Background(), testScope())
+	if err == nil || artifact != nil {
+		t.Fatalf("artifact=%v err=%v", artifact, err)
+	}
+	entries, readErr := os.ReadDir(tempDir)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		info, statErr := entry.Info()
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Size() != 0 {
+			t.Fatalf("failed export retained %d bytes in %q", info.Size(), entry.Name())
+		}
 	}
 }
 

@@ -445,6 +445,30 @@ func TestRedactEventInternationalPhones(t *testing.T) {
 	}
 }
 
+func TestRedactEventPhoneImmediatelyBeforePeriod(t *testing.T) {
+	got, stats, err := RedactEvent(map[string]any{"v": "Call 13812345678. Then continue."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := got["v"].(string)
+	if strings.Contains(value, "13812345678") || value != "Call [REDACTED_PHONE]. Then continue." {
+		t.Fatalf("phone before period leaked or punctuation changed: %q", value)
+	}
+	if stats.Replacements != 1 {
+		t.Fatalf("Replacements=%d want 1", stats.Replacements)
+	}
+}
+
+func TestRedactEventDoesNotTreatDecimalAsPhoneBeforePeriod(t *testing.T) {
+	got, stats, err := RedactEvent(map[string]any{"v": "measurement 1234567.89 remains"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["v"] != "measurement 1234567.89 remains" || stats != (Stats{}) {
+		t.Fatalf("decimal was treated as a phone: value=%q stats=%+v", got["v"], stats)
+	}
+}
+
 func TestRedactEventUnicodeAndQuotedPaths(t *testing.T) {
 	input := map[string]any{"v": `"/Users/张三/My Project/秘密.txt" /用户/张三/文件.txt "C:\Users\张三\My Project\秘密.txt" / C:\ https://example.com/a/b`}
 	got, stats, err := RedactEvent(input)

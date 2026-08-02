@@ -44,7 +44,7 @@ var (
 	querySecretPattern      = regexp.MustCompile(`(?i)([?&](?:access_token|auth|api[_-]?key|token|secret|password|ticket)=)[^&#\s]+`)
 	labeledTokenPattern     = regexp.MustCompile(`(?i)\b(api[_-]?key|apikey|token|secret)([ \t]*[:=][ \t]*)([A-Za-z0-9._~+/=-]{16,})`)
 	emailPattern            = regexp.MustCompile(`\b[A-Za-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b`)
-	phoneCandidatePattern   = regexp.MustCompile(`\+?(?:\([0-9]{1,4}\)|[0-9])[0-9() -]{5,}[0-9]([^0-9.]|$)`)
+	phoneCandidatePattern   = regexp.MustCompile(`\+?(?:\([0-9]{1,4}\)|[0-9])[0-9() -]{5,}[0-9]([^0-9.]|\.(?:[^0-9]|$)|$)`)
 	datePattern             = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 	ipv4Pattern             = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 )
