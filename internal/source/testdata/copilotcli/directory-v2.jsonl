@@ -1,4 +1,4 @@
-{"type":"session.start","timestamp":"2026-06-04T10:00:00Z","data":{"sessionId":"directory-session","context":{"cwd":"synthetic-project"}}}
+{"type":"session.start","timestamp":"2026-06-04T10:00:00Z","data":{"sessionId":"33333333-3333-4333-8333-333333333333"}}
 {"type":"user.message","timestamp":"2026-06-04T10:00:01Z","data":{"content":"synthetic directory question"}}
 {"type":"assistant.reasoning","timestamp":"2026-06-04T10:00:02Z","data":{"content":"synthetic directory reasoning"}}
 {"type":"assistant.message","timestamp":"2026-06-04T10:00:03Z","data":{"content":"synthetic directory answer"}}

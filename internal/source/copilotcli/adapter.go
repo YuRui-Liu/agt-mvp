@@ -276,14 +276,19 @@ func rootIndex(roots []string, root string) int {
 }
 
 func validSessionName(value string) bool {
-	if value == "" || len(value) > 128 || value == "." || value == ".." {
+	if len(value) != 36 {
 		return false
 	}
-	for _, char := range value {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+	for index, char := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if char != '-' {
+				return false
+			}
 			continue
 		}
-		return false
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
 	}
 	return true
 }
@@ -403,8 +408,12 @@ func parse(ctx context.Context, data []byte) (parsedSession, bool) {
 			return parsedSession{}, false
 		}
 		var object map[string]any
-		if !jsonDepthOK(line, maxJSONDepth) || json.Unmarshal(line, &object) != nil {
+		if !jsonDepthOK(ctx, line, maxJSONDepth) || json.Unmarshal(line, &object) != nil {
 			parsed.malformed++
+			continue
+		}
+		typeName, _ := object["type"].(string)
+		if !recognizedType(typeName) {
 			continue
 		}
 		id, _ := object["id"].(string)
@@ -482,7 +491,11 @@ func parse(ctx context.Context, data []byte) (parsedSession, bool) {
 				parsed.malformed++
 				continue
 			}
-			events = []event{{Type: "message", Role: "user", Content: sanitizePayload(content), Timestamp: timestamp}}
+			clean, ok := sanitizePayload(ctx, content)
+			if !ok {
+				return parsedSession{}, false
+			}
+			events = []event{{Type: "message", Role: "user", Content: clean, Timestamp: timestamp}}
 			message = true
 		case "assistant.message":
 			var valid bool
@@ -501,7 +514,11 @@ func parse(ctx context.Context, data []byte) (parsedSession, bool) {
 				parsed.malformed++
 				continue
 			}
-			events = []event{thinkingEvent(sanitizePayload(text).(string), timestamp)}
+			clean, ok := sanitizePayload(ctx, text)
+			if !ok {
+				return parsedSession{}, false
+			}
+			events = []event{thinkingEvent(clean.(string), timestamp)}
 		case "tool.execution_complete":
 			id, _ := dataObject["toolCallId"].(string)
 			name, _ := dataObject["name"].(string)
@@ -510,7 +527,11 @@ func parse(ctx context.Context, data []byte) (parsedSession, bool) {
 				parsed.malformed++
 				continue
 			}
-			events = []event{{Type: "tool_result", Timestamp: timestamp, CallID: id, Name: name, Result: sanitizePayload(result)}}
+			clean, ok := sanitizePayload(ctx, result)
+			if !ok {
+				return parsedSession{}, false
+			}
+			events = []event{{Type: "tool_result", Timestamp: timestamp, CallID: id, Name: name, Result: clean}}
 		}
 		if !validateToolPairs(events, pending, completed) {
 			parsed.malformed++
@@ -550,14 +571,22 @@ func assistantEvents(ctx context.Context, data map[string]any, timestamp string)
 		if !ok || strings.TrimSpace(text) == "" {
 			return nil, false
 		}
-		out = append(out, thinkingEvent(sanitizePayload(text).(string), timestamp))
+		clean, ok := sanitizePayload(ctx, text)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, thinkingEvent(clean.(string), timestamp))
 	}
 	if raw, exists := data["content"]; exists {
 		text, ok := raw.(string)
 		if !ok || strings.TrimSpace(text) == "" {
 			return nil, false
 		}
-		out = append(out, event{Type: "message", Role: "assistant", Content: sanitizePayload(text), Timestamp: timestamp})
+		clean, ok := sanitizePayload(ctx, text)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, event{Type: "message", Role: "assistant", Content: clean, Timestamp: timestamp})
 	}
 	if raw, exists := data["toolRequests"]; exists {
 		requests, ok := raw.([]any)
@@ -581,7 +610,11 @@ func assistantEvents(ctx context.Context, data map[string]any, timestamp string)
 			if input == nil {
 				input = map[string]any{}
 			}
-			out = append(out, event{Type: "tool_use", Timestamp: timestamp, CallID: id, Name: name, Input: sanitizePayload(input)})
+			clean, ok := sanitizePayload(ctx, input)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, event{Type: "tool_use", Timestamp: timestamp, CallID: id, Name: name, Input: clean})
 		}
 	}
 	return out, len(out) > 0
@@ -626,30 +659,60 @@ func safeToken(value string, limit int) bool {
 	return value != "" && len(value) <= limit && !strings.ContainsAny(value, "\x00\r\n") && !isAbsoluteString(value)
 }
 
-func sanitizePayload(value any) any {
+type traversalGuard struct {
+	ctx       context.Context
+	remaining int
+}
+
+func (g *traversalGuard) allowed() bool {
+	g.remaining--
+	if g.remaining > 0 {
+		return true
+	}
+	g.remaining = 64
+	return g.ctx.Err() == nil
+}
+
+func sanitizePayload(ctx context.Context, value any) (any, bool) {
+	guard := &traversalGuard{ctx: ctx, remaining: 1}
+	return sanitizePayloadGuarded(guard, value)
+}
+
+func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
+	if !guard.allowed() {
+		return nil, false
+	}
 	switch typed := value.(type) {
 	case string:
 		if isAbsoluteString(typed) {
-			return "[redacted-path]"
+			return "[redacted-path]", true
 		}
-		return typed
+		return typed, true
 	case []any:
 		out := make([]any, len(typed))
 		for i := range typed {
-			out[i] = sanitizePayload(typed[i])
+			clean, ok := sanitizePayloadGuarded(guard, typed[i])
+			if !ok {
+				return nil, false
+			}
+			out[i] = clean
 		}
-		return out
+		return out, true
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
 			if isAbsoluteString(key) {
 				key = "[redacted-path-key]"
 			}
-			out[key] = sanitizePayload(child)
+			clean, ok := sanitizePayloadGuarded(guard, child)
+			if !ok {
+				return nil, false
+			}
+			out[key] = clean
 		}
-		return out
+		return out, true
 	default:
-		return value
+		return value, true
 	}
 }
 
@@ -750,10 +813,13 @@ func samePathIdentity(left, right pathIdentity) bool {
 	return true
 }
 
-func jsonDepthOK(data []byte, limit int) bool {
+func jsonDepthOK(ctx context.Context, data []byte, limit int) bool {
 	depth := 0
 	inString, escaped := false, false
-	for _, value := range data {
+	for index, value := range data {
+		if index&4095 == 0 && ctx.Err() != nil {
+			return false
+		}
 		if inString {
 			if escaped {
 				escaped = false
@@ -779,7 +845,7 @@ func jsonDepthOK(data []byte, limit int) bool {
 			}
 		}
 	}
-	return depth == 0 && !inString
+	return depth == 0 && !inString && ctx.Err() == nil
 }
 
 func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadCloser, error) {

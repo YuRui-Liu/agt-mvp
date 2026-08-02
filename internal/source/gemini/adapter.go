@@ -184,7 +184,7 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err != nil {
 			return nil, directoryError(err)
 		}
-		labels := readProjectMap(bound)
+		labels := readProjectMap(ctx, bound)
 		globalVisited += len(projects)
 		if globalVisited > maxGlobalEntries {
 			return nil, errors.New("gemini-cli: directory limit")
@@ -289,14 +289,14 @@ type projectsFile struct {
 	Projects map[string]string `json:"projects"`
 }
 
-func readProjectMap(bound *safeopen.BoundRoot) map[string]string {
+func readProjectMap(ctx context.Context, bound *safeopen.BoundRoot) map[string]string {
 	file, _, err := bound.OpenWithPathIdentity("projects.json", maxMappingBytes)
 	if err != nil {
 		return nil
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxMappingBytes+1))
-	if err != nil || len(data) > maxMappingBytes || !jsonDepthOK(data, maxJSONDepth) {
+	if err != nil || len(data) > maxMappingBytes || !jsonDepthOK(ctx, data, maxJSONDepth) {
 		return nil
 	}
 	var parsed projectsFile
@@ -487,7 +487,7 @@ func parse(ctx context.Context, data []byte) (parsedSession, bool) {
 		return parsedSession{}, false
 	}
 	var object map[string]any
-	if jsonDepthOK(trimmed, maxJSONDepth) && json.Unmarshal(trimmed, &object) == nil {
+	if jsonDepthOK(ctx, trimmed, maxJSONDepth) && json.Unmarshal(trimmed, &object) == nil {
 		if _, exists := object["messages"]; exists {
 			return parseObject(ctx, object)
 		}
@@ -555,7 +555,7 @@ func parseStream(ctx context.Context, data []byte) (parsedSession, bool) {
 			return parsedSession{}, false
 		}
 		var object map[string]any
-		if !jsonDepthOK(line, maxJSONDepth) || json.Unmarshal(line, &object) != nil {
+		if !jsonDepthOK(ctx, line, maxJSONDepth) || json.Unmarshal(line, &object) != nil {
 			parsed.malformed++
 			continue
 		}
@@ -679,7 +679,11 @@ func geminiMessageEvents(ctx context.Context, typeName string, message map[strin
 			if strings.TrimSpace(description) == "" {
 				return nil, false
 			}
-			out = append(out, thinkingEvent(sanitizePayload(description).(string), timestamp))
+			clean, ok := sanitizePayload(ctx, description)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, thinkingEvent(clean.(string), timestamp))
 		}
 	}
 	if raw, exists := message["content"]; exists {
@@ -717,7 +721,11 @@ func geminiContent(ctx context.Context, role string, raw any, timestamp string) 
 		if strings.TrimSpace(value) == "" {
 			return nil, false
 		}
-		return []event{{Type: "message", Role: role, Content: sanitizePayload(value), Timestamp: timestamp}}, true
+		clean, ok := sanitizePayload(ctx, value)
+		if !ok {
+			return nil, false
+		}
+		return []event{{Type: "message", Role: role, Content: clean, Timestamp: timestamp}}, true
 	case []any:
 		if len(value) == 0 {
 			return nil, false
@@ -739,7 +747,11 @@ func geminiContent(ctx context.Context, role string, raw any, timestamp string) 
 			if !ok || strings.TrimSpace(value) == "" {
 				return nil, false
 			}
-			out = append(out, event{Type: "message", Role: role, Content: sanitizePayload(value), Timestamp: timestamp})
+			clean, ok := sanitizePayload(ctx, value)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, event{Type: "message", Role: role, Content: clean, Timestamp: timestamp})
 		}
 		return out, true
 	default:
@@ -761,7 +773,11 @@ func geminiToolCall(ctx context.Context, raw any, timestamp string) ([]event, bo
 	if input == nil {
 		input = map[string]any{}
 	}
-	out := []event{{Type: "tool_use", Timestamp: timestamp, CallID: id, Name: name, Input: sanitizePayload(input)}}
+	cleanInput, ok := sanitizePayload(ctx, input)
+	if !ok {
+		return nil, false
+	}
+	out := []event{{Type: "tool_use", Timestamp: timestamp, CallID: id, Name: name, Input: cleanInput}}
 	rawResults, exists := call["result"]
 	if !exists {
 		return out, true
@@ -796,7 +812,11 @@ func geminiToolCall(ctx context.Context, raw any, timestamp string) ([]event, bo
 				body = output
 			}
 		}
-		out = append(out, event{Type: "tool_result", Timestamp: timestamp, CallID: id, Name: name, Result: sanitizePayload(body)})
+		cleanResult, ok := sanitizePayload(ctx, body)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, event{Type: "tool_result", Timestamp: timestamp, CallID: id, Name: name, Result: cleanResult})
 	}
 	return out, true
 }
@@ -840,30 +860,60 @@ func safeToken(value string, limit int) bool {
 	return value != "" && len(value) <= limit && !strings.ContainsAny(value, "\x00\r\n") && !isAbsoluteString(value)
 }
 
-func sanitizePayload(value any) any {
+type traversalGuard struct {
+	ctx       context.Context
+	remaining int
+}
+
+func (g *traversalGuard) allowed() bool {
+	g.remaining--
+	if g.remaining > 0 {
+		return true
+	}
+	g.remaining = 64
+	return g.ctx.Err() == nil
+}
+
+func sanitizePayload(ctx context.Context, value any) (any, bool) {
+	guard := &traversalGuard{ctx: ctx, remaining: 1}
+	return sanitizePayloadGuarded(guard, value)
+}
+
+func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
+	if !guard.allowed() {
+		return nil, false
+	}
 	switch typed := value.(type) {
 	case string:
 		if isAbsoluteString(typed) {
-			return "[redacted-path]"
+			return "[redacted-path]", true
 		}
-		return typed
+		return typed, true
 	case []any:
 		out := make([]any, len(typed))
 		for i := range typed {
-			out[i] = sanitizePayload(typed[i])
+			clean, ok := sanitizePayloadGuarded(guard, typed[i])
+			if !ok {
+				return nil, false
+			}
+			out[i] = clean
 		}
-		return out
+		return out, true
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
 			if isAbsoluteString(key) {
 				key = "[redacted-path-key]"
 			}
-			out[key] = sanitizePayload(child)
+			clean, ok := sanitizePayloadGuarded(guard, child)
+			if !ok {
+				return nil, false
+			}
+			out[key] = clean
 		}
-		return out
+		return out, true
 	default:
-		return value
+		return value, true
 	}
 }
 
@@ -933,10 +983,13 @@ func hasReasoning(events []event) bool {
 	return false
 }
 
-func jsonDepthOK(data []byte, limit int) bool {
+func jsonDepthOK(ctx context.Context, data []byte, limit int) bool {
 	depth := 0
 	inString, escaped := false, false
-	for _, value := range data {
+	for index, value := range data {
+		if index&4095 == 0 && ctx.Err() != nil {
+			return false
+		}
 		if inString {
 			if escaped {
 				escaped = false
@@ -962,7 +1015,7 @@ func jsonDepthOK(data []byte, limit int) bool {
 			}
 		}
 	}
-	return depth == 0 && !inString
+	return depth == 0 && !inString && ctx.Err() == nil
 }
 
 func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadCloser, error) {
@@ -988,7 +1041,7 @@ func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadClos
 	}
 	project := filepath.Base(filepath.Dir(filepath.Dir(auth.relative)))
 	item := candidate{root: auth.root, path: auth.path, relative: auth.relative, project: project, bound: bound}
-	if mapping := readProjectMap(bound); mapping != nil {
+	if mapping := readProjectMap(ctx, bound); mapping != nil {
 		item.projectLabel = mapping[project]
 	}
 	fresh, freshAuth, output, valid := a.snapshot(ctx, item)

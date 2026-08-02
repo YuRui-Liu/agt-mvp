@@ -19,6 +19,19 @@ import (
 	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/adaptertest"
 )
 
+const (
+	uuidShared    = "11111111-1111-4111-8111-111111111111"
+	uuidFlat      = "22222222-2222-4222-8222-222222222222"
+	uuidDirectory = "33333333-3333-4333-8333-333333333333"
+	uuidCWD       = "44444444-4444-4444-8444-444444444444"
+	uuidTools     = "55555555-5555-4555-8555-555555555555"
+	uuidLimit     = "66666666-6666-4666-8666-666666666666"
+	uuidFixture   = "77777777-7777-4777-8777-777777777777"
+	uuidOutside   = "88888888-8888-4888-8888-888888888888"
+	uuidSame      = "99999999-9999-4999-8999-999999999999"
+	uuidComposite = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+)
+
 func installFlat(t *testing.T, root, id string, data []byte) string {
 	t.Helper()
 	d := filepath.Join(root, "session-state")
@@ -67,9 +80,9 @@ func TestFlatDirectoryPriorityAndCapabilities(t *testing.T) {
 	root := t.TempDir()
 	flat := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
 	dir := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2.jsonl")
-	installFlat(t, root, "shared", flat)
-	installDirectory(t, root, "shared", dir)
-	installFlat(t, root, "flat-only", flat)
+	installFlat(t, root, uuidShared, flat)
+	installDirectory(t, root, uuidShared, dir)
+	installFlat(t, root, uuidFlat, flat)
 	a := New(root)
 	got, err := a.Discover(context.Background())
 	if err != nil || len(got) != 2 {
@@ -101,8 +114,8 @@ func TestDirectoryPriorityIndependentOfCreationOrder(t *testing.T) {
 	root := t.TempDir()
 	flat := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
 	directory := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2.jsonl")
-	installDirectory(t, root, "shared", directory)
-	installFlat(t, root, "shared", flat)
+	installDirectory(t, root, uuidShared, directory)
+	installFlat(t, root, uuidShared, flat)
 	got, err := New(root).Discover(context.Background())
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
@@ -112,14 +125,51 @@ func TestDirectoryPriorityIndependentOfCreationOrder(t *testing.T) {
 	}
 }
 
+func TestNonUUIDSessionNamesAreIgnored(t *testing.T) {
+	root := t.TempDir()
+	fixture := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
+	installFlat(t, root, "not-a-uuid", fixture)
+	installDirectory(t, root, "also-not-a-uuid", fixture)
+	got, err := New(root).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("non-UUID sessions accepted: %#v", got)
+	}
+}
+
+func TestUnknownMetadataCannotReplaceRecognizedEventWithSameID(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Join([]string{
+		`{"type":"session.start","data":{"sessionId":"11111111-1111-4111-8111-111111111111"}}`,
+		`{"id":"event-1","type":"user.message","data":{"content":"kept message"}}`,
+		`{"id":"event-1","type":"future.metadata","data":{"content":"must not replace"}}`,
+		`{"id":"event-bad","type":"user.message","data":{"content":42}}`,
+	}, "\n") + "\n"
+	installFlat(t, root, uuidShared, []byte(body))
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].MalformedCount != 1 {
+		t.Fatalf("session=%#v", got[0])
+	}
+	events := copilotEvents(t, a, got[0])
+	if len(events) != 1 || events[0]["content"] != "kept message" {
+		t.Fatalf("events=%#v", events)
+	}
+}
+
 func TestCWDOnlyFromValidEnvelopeAndNoAbsoluteScope(t *testing.T) {
 	root := t.TempDir()
 	body := strings.Join([]string{
 		`{"type":"session.start","data":{"context":{"cwd":"relative/project"}}}`,
-		`{"type":"session.start","data":{"sessionId":"cwd","context":{"cwd":"/synthetic/project"}}}`,
+		`{"type":"session.start","data":{"sessionId":"44444444-4444-4444-8444-444444444444","context":{"cwd":"/synthetic/project"}}}`,
 		`{"type":"user.message","data":{"content":"hello"}}`,
 	}, "\n") + "\n"
-	installFlat(t, root, "cwd", []byte(body))
+	installFlat(t, root, uuidCWD, []byte(body))
 	got, err := New(root).Discover(context.Background())
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
@@ -132,7 +182,7 @@ func TestCWDOnlyFromValidEnvelopeAndNoAbsoluteScope(t *testing.T) {
 func TestToolPairingRollbackPartialTailAndMetadata(t *testing.T) {
 	root := t.TempDir()
 	body := strings.Join([]string{
-		`{"type":"session.start","data":{"sessionId":"tools"}}`,
+		`{"type":"session.start","data":{"sessionId":"55555555-5555-4555-8555-555555555555"}}`,
 		`{"type":"user.message","data":{"content":"start"}}`,
 		`{"type":"future.metadata","data":{"path":"ignored"}}`,
 		`{"type":"assistant.message","data":{"toolRequests":[{"toolCallId":"c1","name":"one","arguments":{}},{"toolCallId":"c2","name":"two","arguments":{}}]}}`,
@@ -143,7 +193,7 @@ func TestToolPairingRollbackPartialTailAndMetadata(t *testing.T) {
 		`{"type":"tool.execution_complete","data":{"toolCallId":"c2","result":{}}}`,
 		`{"type":"assistant.message"`,
 	}, "\n") + "\n"
-	installDirectory(t, root, "tools", []byte(body))
+	installDirectory(t, root, uuidTools, []byte(body))
 	a := New(root)
 	got, err := a.Discover(context.Background())
 	if err != nil || len(got) != 1 {
@@ -185,11 +235,11 @@ func TestCopilotLimitsCancelAndDirectoryCaps(t *testing.T) {
 	t.Run("record-limit", func(t *testing.T) {
 		root := t.TempDir()
 		var b strings.Builder
-		b.WriteString(`{"type":"session.start","data":{"sessionId":"limit"}}` + "\n")
+		b.WriteString(`{"type":"session.start","data":{"sessionId":"66666666-6666-4666-8666-666666666666"}}` + "\n")
 		for i := 0; i < maxSessionRecords+1; i++ {
 			fmt.Fprintf(&b, `{"type":"user.message","data":{"content":"%d"}}`+"\n", i)
 		}
-		installFlat(t, root, "limit", []byte(b.String()))
+		installFlat(t, root, uuidLimit, []byte(b.String()))
 		got, err := New(root).Discover(context.Background())
 		if err != nil || len(got) != 0 {
 			t.Fatalf("sessions=%d err=%v", len(got), err)
@@ -197,7 +247,7 @@ func TestCopilotLimitsCancelAndDirectoryCaps(t *testing.T) {
 	})
 	t.Run("cancel", func(t *testing.T) {
 		root := t.TempDir()
-		installFlat(t, root, "flat", adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl"))
+		installFlat(t, root, uuidFlat, adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl"))
 		got, err := New(root).Discover(&cancelContext{Context: context.Background(), after: 5})
 		if !errors.Is(err, context.Canceled) || len(got) != 0 {
 			t.Fatalf("sessions=%d err=%v", len(got), err)
@@ -223,7 +273,7 @@ func TestCopilotLimitsCancelAndDirectoryCaps(t *testing.T) {
 func TestCopilotAuthorizationTamperAndRootSwap(t *testing.T) {
 	root := t.TempDir()
 	body := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
-	path := installFlat(t, root, "flat", body)
+	path := installFlat(t, root, uuidFlat, body)
 	a := New(root)
 	got, err := a.Discover(context.Background())
 	if err != nil || len(got) != 1 {
@@ -264,11 +314,11 @@ func TestCopilotAdapterContracts(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(dir, "fixture.jsonl"), data, 0o600)
+		return os.WriteFile(filepath.Join(dir, uuidFixture+".jsonl"), data, 0o600)
 	}, fixture)
 
 	root := t.TempDir()
-	path := installFlat(t, root, "fixture", fixture)
+	path := installFlat(t, root, uuidFixture, fixture)
 	a, other := New(root), New(root)
 	forged, err := other.Discover(context.Background())
 	if err != nil || len(forged) != 1 {
@@ -285,7 +335,7 @@ func TestCopilotRejectsSymlinksAndRootSwap(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "copilot")
 	body := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
-	installFlat(t, root, "fixture", body)
+	installFlat(t, root, uuidFixture, body)
 	a := New(root)
 	got, err := a.Discover(context.Background())
 	if err != nil || len(got) != 1 {
@@ -294,19 +344,19 @@ func TestCopilotRejectsSymlinksAndRootSwap(t *testing.T) {
 	if err := os.Rename(root, filepath.Join(base, "original")); err != nil {
 		t.Fatal(err)
 	}
-	installFlat(t, root, "fixture", body)
+	installFlat(t, root, uuidFixture, body)
 	if r, err := a.Open(context.Background(), got[0]); err == nil {
 		r.Close()
 		t.Fatal("replacement root accepted")
 	}
 
 	outside := t.TempDir()
-	outsidePath := installFlat(t, outside, "outside", body)
+	outsidePath := installFlat(t, outside, uuidOutside, body)
 	linkedRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(linkedRoot, "session-state"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outsidePath, filepath.Join(linkedRoot, "session-state", "outside.jsonl")); err != nil {
+	if err := os.Symlink(outsidePath, filepath.Join(linkedRoot, "session-state", uuidOutside+".jsonl")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	if sessions, err := New(linkedRoot).Discover(context.Background()); err != nil || len(sessions) != 0 {
@@ -317,7 +367,7 @@ func TestCopilotRejectsSymlinksAndRootSwap(t *testing.T) {
 func TestCopilotOpenRejectsSameByteFileSwap(t *testing.T) {
 	root := t.TempDir()
 	body := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
-	path := installFlat(t, root, "fixture", body)
+	path := installFlat(t, root, uuidFixture, body)
 	a := New(root)
 	got, err := a.Discover(context.Background())
 	if err != nil || len(got) != 1 {
@@ -338,8 +388,8 @@ func TestCopilotOpenRejectsSameByteFileSwap(t *testing.T) {
 func TestCopilotRootsDeduplicateWithoutIDCollisions(t *testing.T) {
 	body := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
 	first, second := t.TempDir(), t.TempDir()
-	installFlat(t, first, "same", body)
-	installFlat(t, second, "same", body)
+	installFlat(t, first, uuidSame, body)
+	installFlat(t, second, uuidSame, body)
 	got, err := New(first, first, second).Discover(context.Background())
 	if err != nil || len(got) != 2 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
@@ -375,7 +425,7 @@ func TestCopilotCancellationInterruptsSingleCompositeRecord(t *testing.T) {
 		requests[i] = fmt.Sprintf(`{"toolCallId":"call-%d","name":"lookup","arguments":{}}`, i)
 	}
 	body := strings.Join([]string{
-		`{"type":"session.start","data":{"sessionId":"composite"}}`,
+		`{"type":"session.start","data":{"sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}`,
 		`{"type":"assistant.message","data":{"toolRequests":[` + strings.Join(requests, ",") + `]}}`,
 	}, "\n") + "\n"
 	ctx := &cancelContext{Context: context.Background(), after: 6}
@@ -385,7 +435,11 @@ func TestCopilotCancellationInterruptsSingleCompositeRecord(t *testing.T) {
 }
 
 func TestCopilotSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
-	cleaned := sanitizePayload(map[string]any{`\synthetic-key`: `\synthetic-value`}).(map[string]any)
+	raw, ok := sanitizePayload(context.Background(), map[string]any{`\synthetic-key`: `\synthetic-value`})
+	if !ok {
+		t.Fatal("sanitization canceled")
+	}
+	cleaned := raw.(map[string]any)
 	if _, exists := cleaned[`\synthetic-key`]; exists {
 		t.Fatal("rooted map key preserved")
 	}
@@ -393,6 +447,40 @@ func TestCopilotSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
 		if value == `\synthetic-value` {
 			t.Fatal("rooted map value preserved")
 		}
+	}
+}
+
+func TestCopilotTraversalHelpersHonorCancellation(t *testing.T) {
+	deep := make([]any, 1024)
+	for i := range deep {
+		deep[i] = map[string]any{"value": "synthetic"}
+	}
+	ctx := &cancelContext{Context: context.Background(), after: 3}
+	if _, ok := sanitizePayload(ctx, deep); ok {
+		t.Fatal("canceled deep payload accepted")
+	}
+	depthCtx := &cancelContext{Context: context.Background(), after: 3}
+	if jsonDepthOK(depthCtx, []byte(strings.Repeat(" ", 20<<10)+"[]"), maxJSONDepth) {
+		t.Fatal("canceled JSON depth scan accepted")
+	}
+}
+
+func TestCopilotLargeNestedCancellationDoesNotAuthorize(t *testing.T) {
+	root := t.TempDir()
+	values := strings.Repeat(`"synthetic",`, 70000) + `"synthetic"`
+	body := strings.Join([]string{
+		`{"type":"session.start","data":{"sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}`,
+		`{"type":"assistant.message","data":{"toolRequests":[{"toolCallId":"call-1","name":"lookup","arguments":{"values":[` + values + `]}}]}}`,
+	}, "\n") + "\n"
+	installFlat(t, root, uuidComposite, []byte(body))
+	a := New(root)
+	ctx := &cancelContext{Context: context.Background(), after: 100}
+	got, err := a.Discover(ctx)
+	if !errors.Is(err, context.Canceled) || len(got) != 0 {
+		t.Fatalf("sessions=%d err=%v", len(got), err)
+	}
+	if len(a.known) != 0 {
+		t.Fatal("canceled discovery installed authorization")
 	}
 }
 
@@ -404,7 +492,7 @@ func TestCopilotDeduplicatesCaseAliasesByRootIdentity(t *testing.T) {
 	if leftErr != nil || rightErr != nil || !os.SameFile(left, right) || alias == root {
 		t.Skip("filesystem has no distinct case alias")
 	}
-	installFlat(t, root, "same", adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl"))
+	installFlat(t, root, uuidSame, adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl"))
 	got, err := New(root, alias).Discover(context.Background())
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)

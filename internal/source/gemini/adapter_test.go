@@ -377,7 +377,11 @@ func TestGeminiMappedScopesDoNotCollideOnLabel(t *testing.T) {
 }
 
 func TestGeminiSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
-	cleaned := sanitizePayload(map[string]any{`\synthetic-key`: `\synthetic-value`}).(map[string]any)
+	raw, ok := sanitizePayload(context.Background(), map[string]any{`\synthetic-key`: `\synthetic-value`})
+	if !ok {
+		t.Fatal("sanitization canceled")
+	}
+	cleaned := raw.(map[string]any)
 	if _, exists := cleaned[`\synthetic-key`]; exists {
 		t.Fatal("rooted map key preserved")
 	}
@@ -385,6 +389,37 @@ func TestGeminiSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
 		if value == `\synthetic-value` {
 			t.Fatal("rooted map value preserved")
 		}
+	}
+}
+
+func TestGeminiTraversalHelpersHonorCancellation(t *testing.T) {
+	deep := make([]any, 1024)
+	for i := range deep {
+		deep[i] = map[string]any{"value": "synthetic"}
+	}
+	ctx := &cancelContext{Context: context.Background(), after: 3}
+	if _, ok := sanitizePayload(ctx, deep); ok {
+		t.Fatal("canceled deep payload accepted")
+	}
+	depthCtx := &cancelContext{Context: context.Background(), after: 3}
+	if jsonDepthOK(depthCtx, []byte(strings.Repeat(" ", 20<<10)+"[]"), maxJSONDepth) {
+		t.Fatal("canceled JSON depth scan accepted")
+	}
+}
+
+func TestGeminiLargeNestedCancellationDoesNotAuthorize(t *testing.T) {
+	root := t.TempDir()
+	values := strings.Repeat(`"synthetic",`, 70000) + `"synthetic"`
+	body := []byte(`{"sessionId":"large","messages":[{"type":"gemini","toolCalls":[{"id":"call-1","name":"lookup","args":{"values":[` + values + `]}}]}]}`)
+	installGemini(t, root, "project", "session-large.json", body)
+	a := New(root)
+	ctx := &cancelContext{Context: context.Background(), after: 100}
+	got, err := a.Discover(ctx)
+	if !errors.Is(err, context.Canceled) || len(got) != 0 {
+		t.Fatalf("sessions=%d err=%v", len(got), err)
+	}
+	if len(a.known) != 0 {
+		t.Fatal("canceled discovery installed authorization")
 	}
 }
 
