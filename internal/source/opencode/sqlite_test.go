@@ -33,10 +33,14 @@ func (q recordingSQLiteQueryer) QueryRowContext(ctx context.Context, query strin
 }
 
 func installSQLite(t *testing.T, root string) *sql.DB {
-	return installSQLiteWithUsage(t, root, true)
+	return installSQLiteFixture(t, root, true, false)
 }
 
 func installSQLiteWithUsage(t *testing.T, root string, withUsage bool) *sql.DB {
+	return installSQLiteFixture(t, root, withUsage, false)
+}
+
+func installSQLiteFixture(t *testing.T, root string, withUsage, nullableMetadata bool) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
 	if err != nil {
@@ -50,6 +54,9 @@ func installSQLiteWithUsage(t *testing.T, root string, withUsage bool) *sql.DB {
 		sessionSchema = `CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, directory TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, tokens_input INTEGER NOT NULL DEFAULT 0, tokens_output INTEGER NOT NULL DEFAULT 0, tokens_reasoning INTEGER NOT NULL DEFAULT 0, tokens_cache_read INTEGER NOT NULL DEFAULT 0, tokens_cache_write INTEGER NOT NULL DEFAULT 0)`
 		parentInsert = `INSERT INTO session VALUES ('parent','p1',NULL,'/synthetic/project',10,20,0,0,0,0,0)`
 		sessionInsert = `INSERT INTO session VALUES ('s1','p1','parent','/synthetic/project',30,90,11,22,3,4,5)`
+	}
+	if nullableMetadata {
+		sessionSchema = `CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER, tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0, tokens_reasoning INTEGER DEFAULT 0, tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0)`
 	}
 	statements := []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA wal_autocheckpoint=0`,
@@ -71,6 +78,10 @@ func installSQLiteWithUsage(t *testing.T, root string, withUsage bool) *sql.DB {
 		`INSERT INTO part VALUES ('p-z-think','m-a-assistant','s1',50,'{"type":"reasoning","text":"synthetic thought"}')`,
 		`INSERT INTO part VALUES ('p-a-user','m-z-user','s1',50,'{"type":"text","text":"synthetic user"}')`,
 		`INSERT INTO part VALUES ('p-m-tool','m-a-assistant','s1',60,'{"type":"tool","tool":"shell","callID":"call-1","state":{"status":"completed","input":{"command":"synthetic"},"output":"synthetic result"}}')`,
+		`INSERT INTO part VALUES ('p-patch','m-a-assistant','s1',61,'{"type":"patch","hash":"synthetic"}')`,
+		`INSERT INTO part VALUES ('p-step-start','m-a-assistant','s1',62,'{"type":"step-start"}')`,
+		`INSERT INTO part VALUES ('p-future','m-a-assistant','s1',63,'{"type":"future-native-part","value":1}')`,
+		`INSERT INTO part VALUES ('p-bad-tool','m-a-assistant','s1',64,'{"type":"tool","tool":"shell","state":{"status":"completed","output":"bad"}}')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -108,6 +119,9 @@ func TestSQLiteDiscoverOpenWALAndRestrictedQueries(t *testing.T) {
 	s := findSession(t, sessions, "opencode:s1")
 	if s.FormatVersion != "db-v2" || s.Scope.Type != source.ScopeProject || s.Scope.Root != "/synthetic/project" || s.ParentID != "opencode:parent" || s.MessageCount != 2 || s.SnapshotID == "" {
 		t.Fatalf("metadata=%#v", s)
+	}
+	if s.MalformedCount != 1 {
+		t.Fatalf("valid unexported parts counted malformed: %d", s.MalformedCount)
 	}
 	if s.Usage["input_tokens"] != 11 || s.Usage["output_tokens"] != 22 || s.Usage["reasoning_tokens"] != 3 || s.Usage["cache_read_tokens"] != 4 || s.Usage["cache_write_tokens"] != 5 {
 		t.Fatalf("usage=%#v", s.Usage)
@@ -241,6 +255,43 @@ func TestSQLiteMalformedSessionDoesNotHideHealthySession(t *testing.T) {
 	for _, session := range sessions {
 		if session.ID == "opencode:bad" {
 			t.Fatal("malformed session was accepted")
+		}
+	}
+}
+
+func TestSQLiteNullableAndMalformedMetadataRowsAreIsolated(t *testing.T) {
+	root := t.TempDir()
+	db := installSQLiteFixture(t, root, true, true)
+	statements := []string{
+		`INSERT INTO session VALUES ('s-null','p1',NULL,'/synthetic/project',NULL,NULL,NULL,NULL,NULL,NULL,NULL)`,
+		`INSERT INTO message VALUES ('null-message','s-null',201,'{"role":"user"}')`,
+		`INSERT INTO part VALUES ('null-part','null-message','s-null',202,'{"type":"text","text":"nullable metadata session"}')`,
+		`INSERT INTO session VALUES (NULL,'p1',NULL,'/synthetic/project',120,130,0,0,0,0,0)`,
+		`INSERT INTO session VALUES ('bad-time','p1',NULL,'/synthetic/project','not-an-integer',140,0,0,0,0,0)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := New(root)
+	sessions, err := a.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	findSession(t, sessions, "opencode:s1")
+	nullable := findSession(t, sessions, "opencode:s-null")
+	if len(nullable.Usage) != 0 || !nullable.StartedAt.IsZero() || !nullable.EndedAt.IsZero() {
+		t.Fatalf("nullable metadata not safely defaulted: %#v", nullable)
+	}
+	if r, err := a.Open(context.Background(), nullable); err != nil {
+		t.Fatal(err)
+	} else {
+		r.Close()
+	}
+	for _, session := range sessions {
+		if session.ID == "opencode:bad-time" || session.ID == "opencode:" {
+			t.Fatalf("invalid metadata row accepted: %#v", session)
 		}
 	}
 }

@@ -51,6 +51,7 @@ var requiredSQLiteColumns = map[string][]string{
 type sqliteMeta struct {
 	id, projectID, parentID, directory, worktree string
 	created, updated                             int64
+	createdPresent, updatedPresent               bool
 	usage                                        map[string]int64
 }
 
@@ -110,43 +111,53 @@ func sqliteMetaProjection(schema sqliteSchema) string {
 }
 
 func scanSQLiteMeta(scanner interface{ Scan(...any) error }, schema sqliteSchema) (sqliteMeta, error) {
-	var m sqliteMeta
-	var values [5]int64
-	err := scanner.Scan(&m.id, &m.projectID, &m.parentID, &m.directory, &m.worktree, &m.created, &m.updated,
+	var id, projectID, parentID, directory, worktree sql.NullString
+	var created, updated sql.NullInt64
+	var values [5]sql.NullInt64
+	err := scanner.Scan(&id, &projectID, &parentID, &directory, &worktree, &created, &updated,
 		&values[0], &values[1], &values[2], &values[3], &values[4])
-	if err == nil {
-		m.usage = map[string]int64{}
-		for index, usage := range sqliteUsageColumns {
-			if schema.columns["session"][usage.column] {
-				m.usage[usage.key] = values[index]
-			}
+	if err != nil || !id.Valid || id.String == "" || !projectID.Valid || projectID.String == "" || !worktree.Valid || worktree.String == "" {
+		return sqliteMeta{}, errors.New("opencode: invalid database session metadata")
+	}
+	m := sqliteMeta{
+		id: id.String, projectID: projectID.String, parentID: parentID.String,
+		directory: directory.String, worktree: worktree.String,
+		created: created.Int64, updated: updated.Int64,
+		createdPresent: created.Valid, updatedPresent: updated.Valid,
+		usage: map[string]int64{},
+	}
+	for index, usage := range sqliteUsageColumns {
+		if schema.columns["session"][usage.column] && values[index].Valid {
+			m.usage[usage.key] = values[index].Int64
 		}
 	}
-	return m, err
+	return m, nil
 }
 
 func listSQLiteMeta(ctx context.Context, tx sqliteQueryer, schema sqliteSchema) ([]sqliteMeta, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s JOIN project AS p ON p.id=s.project_id ORDER BY s.time_created,s.id LIMIT ?`, maxDatabaseSessions+1)
+	rows, err := tx.QueryContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s LEFT JOIN project AS p ON p.id=s.project_id ORDER BY s.time_created,s.id LIMIT ?`, maxDatabaseSessions+1)
 	if err != nil {
 		return nil, errors.New("opencode: unsupported database schema")
 	}
 	defer rows.Close()
 	var out []sqliteMeta
+	seen := 0
 	for rows.Next() {
+		seen++
 		m, err := scanSQLiteMeta(rows, schema)
 		if err != nil {
-			return nil, errors.New("opencode: unsupported database schema")
+			continue
 		}
 		out = append(out, m)
 	}
-	if err := rows.Err(); err != nil || len(out) > maxDatabaseSessions {
+	if err := rows.Err(); err != nil || seen > maxDatabaseSessions {
 		return nil, errors.New("opencode: unsupported database schema")
 	}
 	return out, nil
 }
 
 func getSQLiteMeta(ctx context.Context, tx sqliteQueryer, schema sqliteSchema, id string) (sqliteMeta, error) {
-	row, err := tx.QueryRowContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s JOIN project AS p ON p.id=s.project_id WHERE s.id=?`, id)
+	row, err := tx.QueryRowContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s LEFT JOIN project AS p ON p.id=s.project_id WHERE s.id=?`, id)
 	if err != nil {
 		return sqliteMeta{}, err
 	}
@@ -283,7 +294,10 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 	var events []event
 	for _, item := range ordered {
 		mapped, recognized, valid := mapSQLitePart(item.message, item.part, item.created)
-		if !recognized || !valid {
+		if !recognized {
+			continue
+		}
+		if !valid {
 			bad++
 			continue
 		}
@@ -312,10 +326,17 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 	if meta.parentID != "" {
 		parent = "opencode:" + meta.parentID
 	}
+	var startedAt, endedAt time.Time
+	if meta.createdPresent {
+		startedAt = time.UnixMilli(meta.created)
+	}
+	if meta.updatedPresent {
+		endedAt = time.UnixMilli(meta.updated)
+	}
 	session := source.Session{
 		ID: "opencode:" + meta.id, Product: "opencode", FormatVersion: databaseFormat, AdapterVersion: "1",
 		Capabilities: []source.Capability{"messages", "tools"}, Scope: scope,
-		StartedAt: time.UnixMilli(meta.created), EndedAt: time.UnixMilli(meta.updated), MessageCount: len(messages),
+		StartedAt: startedAt, EndedAt: endedAt, MessageCount: len(messages),
 		MalformedCount: bad, ParentID: parent,
 		Usage:     meta.usage,
 		OpaqueRef: databaseRefPrefix + meta.id,
@@ -325,10 +346,12 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 		Scope      source.ScopeRef
 		Started    int64
 		Ended      int64
+		StartedSet bool
+		EndedSet   bool
 		Messages   int
 		Malformed  int
 		Usage      map[string]int64
-	}{session.ID, session.ParentID, session.Scope, meta.created, meta.updated, session.MessageCount, session.MalformedCount, session.Usage})
+	}{session.ID, session.ParentID, session.Scope, meta.created, meta.updated, meta.createdPresent, meta.updatedPresent, session.MessageCount, session.MalformedCount, session.Usage})
 	if err != nil {
 		return source.Session{}, nil, "", errors.New("opencode: database metadata encoding failed")
 	}
