@@ -172,7 +172,6 @@ type parsedCLI struct {
 	events         []canonicalEvent
 	seenRecords    map[string][32]byte
 	malformed      int
-	hasReasoning   bool
 	lastAt         time.Time
 	started, ended time.Time
 }
@@ -476,7 +475,6 @@ func parseCLILine(ctx context.Context, data []byte, taskID string, parsed *parse
 				events = append(events, canonicalEvent{Type: "message", Role: "assistant", Content: sanitizeCanonicalText(*part.Text), Timestamp: timestamp.UTC().Format(time.RFC3339Nano), StableID: stable, at: timestamp.UnixNano(), rank: 2})
 			case part.Type != nil && *part.Type == "thinking" && part.Thinking != nil && part.Text == nil && strings.TrimSpace(*part.Thinking) != "":
 				events = append(events, canonicalEvent{Type: "reasoning", Content: sanitizeCanonicalText(*part.Thinking), Timestamp: timestamp.UTC().Format(time.RFC3339Nano), StableID: stable, at: timestamp.UnixNano(), rank: 1})
-				parsed.hasReasoning = true
 			default:
 				parsed.malformed++
 				return nil
@@ -495,8 +493,10 @@ func parseCLILine(ctx context.Context, data []byte, taskID string, parsed *parse
 
 func cliCapabilities(parsed parsedCLI) []source.Capability {
 	capabilities := []source.Capability{source.CapabilityMessages}
-	if parsed.hasReasoning {
-		capabilities = append(capabilities, source.CapabilityReasoning)
+	for _, event := range parsed.events {
+		if event.Type == "reasoning" {
+			return append(capabilities, source.CapabilityReasoning)
+		}
 	}
 	return capabilities
 }

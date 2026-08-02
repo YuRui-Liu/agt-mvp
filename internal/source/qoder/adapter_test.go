@@ -182,6 +182,63 @@ func TestCLIStrictEnvelopeDuplicateAndCandidateIsolation(t *testing.T) {
 	}
 }
 
+func TestCLIReasoningCapabilityUsesOnlyCommittedEvents(t *testing.T) {
+	cases := []struct {
+		name          string
+		mutate        func(map[string]any)
+		wantReasoning bool
+		wantMessages  int
+	}{
+		{
+			name: "thinking rolled back when a later block is unknown",
+			mutate: func(value map[string]any) {
+				value["message"] = map[string]any{"content": []any{
+					map[string]any{"type": "thinking", "thinking": "must roll back"},
+					map[string]any{"type": "future", "payload": "unknown"},
+				}}
+			},
+			wantMessages: 1,
+		},
+		{
+			name: "valid thinking commits capability",
+			mutate: func(value map[string]any) {
+				value["message"] = map[string]any{"content": []any{map[string]any{"type": "thinking", "thinking": "committed"}}}
+			},
+			wantReasoning: true,
+			wantMessages:  2,
+		},
+		{
+			name: "text only does not claim reasoning",
+			mutate: func(value map[string]any) {
+				value["message"] = map[string]any{"content": []any{map[string]any{"type": "text", "text": "plain answer"}}}
+			},
+			wantMessages: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			body := mutateQoderFixture(t, qoderFixture(), func(index int, value map[string]any) {
+				if index == 3 {
+					tc.mutate(value)
+				}
+			})
+			installQoderCLI(t, root, "-synthetic-course-project", "session-1", body)
+			sessions, err := NewCLI(root).Discover(context.Background())
+			if err != nil || len(sessions) != 1 {
+				t.Fatalf("sessions=%#v err=%v", sessions, err)
+			}
+			session := sessions[0]
+			if session.MessageCount != tc.wantMessages {
+				t.Fatalf("messageCount=%d want=%d", session.MessageCount, tc.wantMessages)
+			}
+			if got := slices.Contains(session.Capabilities, source.CapabilityReasoning); got != tc.wantReasoning {
+				t.Fatalf("capabilities=%v wantReasoning=%v", session.Capabilities, tc.wantReasoning)
+			}
+		})
+	}
+}
+
 func TestCLIAggregateActualIOBudgetExactAndOneLess(t *testing.T) {
 	root := t.TempDir()
 	first := mutateQoderFixture(t, qoderFixture(), func(_ int, value map[string]any) { value["sessionId"] = "session-a" })
