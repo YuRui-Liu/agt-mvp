@@ -232,3 +232,93 @@ func TestRecognizedInvalidEnvelopeCountsMalformedButMetadataDoesNot(t *testing.T
 		t.Fatalf("ok=%v malformed=%d", ok, malformed)
 	}
 }
+
+func TestToolResponsesRequireMatchingOutstandingCall(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded", "chats")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		`{"sessionId":"pairing","type":"user","message":{"role":"user","parts":[{"text":"ask"}]}}`,
+		`{"sessionId":"pairing","type":"assistant","message":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"lookup","args":{}}}]}}`,
+		`{"sessionId":"pairing","type":"user","message":{"role":"user","parts":[{"functionResponse":{"id":"orphan","name":"lookup","response":{}}}]}}`,
+		`{"sessionId":"pairing","type":"user","message":{"role":"user","parts":[{"functionResponse":{"id":"call-1","name":"other","response":{}}}]}}`,
+		`{"sessionId":"pairing","type":"user","message":{"role":"user","parts":[{"functionResponse":{"id":"call-1","name":"lookup","response":{"ok":true}}}]}}`,
+		`{"sessionId":"pairing","type":"user","message":{"role":"user","parts":[{"functionResponse":{"id":"call-1","name":"lookup","response":{"ok":true}}}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "pairing.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].MalformedCount != 3 {
+		t.Fatalf("session=%#v", got[0])
+	}
+	r, err := a.Open(context.Background(), got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var toolResults int
+	dec := json.NewDecoder(r)
+	for {
+		var e map[string]any
+		if err := dec.Decode(&e); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if e["type"] == "tool_result" {
+			toolResults++
+		}
+	}
+	if toolResults != 1 {
+		t.Fatalf("tool results=%d", toolResults)
+	}
+}
+
+func TestCompositeBlockValidityRules(t *testing.T) {
+	_, events, _, malformed, _, _, ok := parse([]byte(strings.Join([]string{
+		`{"sessionId":"blocks","type":"user","message":{"role":"user","parts":[{"text":"valid"}]}}`,
+		`{"sessionId":"blocks","type":"assistant","message":{"role":"model","parts":[]}}`,
+		`{"sessionId":"blocks","type":"assistant","message":{"role":"model","parts":[{"type":"text"}]}}`,
+		`{"sessionId":"blocks","type":"assistant","message":{"role":"model","parts":[{"thought":false,"text":"ordinary text"}]}}`,
+		`{"sessionId":"blocks","type":"assistant","message":{"role":"model","parts":[{"futureBlock":{"value":true}}]}}`,
+	}, "\n") + "\n"))
+	if !ok || malformed != 2 {
+		t.Fatalf("ok=%v malformed=%d", ok, malformed)
+	}
+	var ordinary bool
+	for _, e := range events {
+		if e.Type == "message" && e.Content == "ordinary text" {
+			ordinary = true
+		}
+	}
+	if !ordinary {
+		t.Fatalf("events=%#v", events)
+	}
+}
+
+func TestInvalidFirstConversationRecordCannotChooseIdentityOrScope(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded", "chats")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"sessionId":"forged","type":"user","cwd":"/forged/project","message":{"role":"user","parts":[]}}` + "\n" +
+		`{"sessionId":"real","type":"user","cwd":"/trusted/project","message":{"role":"user","parts":[{"text":"valid"}]}}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "real.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].Scope.Root != "/trusted/project" || got[0].MalformedCount != 1 {
+		t.Fatalf("session=%#v", got[0])
+	}
+}

@@ -111,6 +111,7 @@ type parsed struct {
 	usage          map[string]int64
 	start, end     time.Time
 	reasoning      bool
+	tools          bool
 }
 
 func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
@@ -188,11 +189,14 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			return nil, err
 		}
 		s, auth, ok := inspect(candidate.root, candidate.path)
-		if !ok || byID[s.ID] {
+		if !ok {
+			continue
+		}
+		byPath[candidate.path] = s.ID
+		if byID[s.ID] {
 			continue
 		}
 		byID[s.ID] = true
-		byPath[candidate.path] = s.ID
 		out = append(out, s)
 		next[candidate.path] = auth
 	}
@@ -226,7 +230,7 @@ func validProjectDir(entry os.DirEntry) bool {
 		return false
 	}
 	switch entry.Name() {
-	case "connectors", "plugins", "mcp", "cache", "sessions":
+	case "connectors", "plugins", "mcp", "cache", "sessions", "index", "workbuddy.db":
 		return false
 	}
 	return entry.Name() != "" && entry.Name() != "." && entry.Name() != ".."
@@ -295,7 +299,10 @@ func inspect(root, path string) (source.Session, authorization, bool) {
 	if p.end.IsZero() {
 		p.end = info.ModTime()
 	}
-	capabilities := []source.Capability{"messages", "tools"}
+	capabilities := []source.Capability{source.CapabilityMessages}
+	if p.tools {
+		capabilities = append(capabilities, source.CapabilityTools)
+	}
 	if p.reasoning {
 		capabilities = append(capabilities, source.CapabilityReasoning)
 	}
@@ -344,6 +351,51 @@ func parse(data []byte) (parsed, bool) {
 			// Metadata must not influence identity, scope, timestamps, or counts.
 			continue
 		}
+		var events []event
+		valid := false
+		switch r.Type {
+		case "message":
+			if r.Role != "user" && r.Role != "assistant" {
+				p.malformed++
+				continue
+			}
+			var ok bool
+			events, ok = messageContentEvents(r.Role, r.Content, r.Timestamp)
+			if !ok {
+				p.malformed++
+				continue
+			}
+			valid = true
+		case "reasoning":
+			var ok bool
+			events, ok = reasoningEvents(r.Content, r.RawContent, r.Timestamp)
+			if !ok {
+				continue
+			}
+			valid = true
+		case "function_call":
+			if r.CallID == "" || r.Name == "" {
+				p.malformed++
+				continue
+			}
+			events = []event{{Type: "tool_use", Timestamp: r.Timestamp, CallID: r.CallID, Name: r.Name, Input: r.Arguments}}
+			valid = true
+		case "function_call_result":
+			if r.CallID == "" || r.Output == nil {
+				p.malformed++
+				continue
+			}
+			events = []event{{Type: "tool_result", Timestamp: r.Timestamp, CallID: r.CallID, Result: r.Output}}
+			valid = true
+		case "usage":
+			if p.sessionID != "" && (r.SessionID == "" || r.SessionID == p.sessionID) {
+				mergeUsage(p.usageMap(), r.Provider["usage"])
+			}
+			continue
+		}
+		if !valid {
+			continue
+		}
 		if r.SessionID != "" {
 			if p.sessionID == "" {
 				p.sessionID = r.SessionID
@@ -361,52 +413,19 @@ func parse(data []byte) (parsed, bool) {
 			}
 		}
 		trackTime(r.Timestamp, &p.start, &p.end)
-		switch r.Type {
-		case "message":
-			if r.Role != "user" && r.Role != "assistant" {
-				p.malformed++
-				continue
+		p.events = append(p.events, events...)
+		p.messages += len(events)
+		for _, e := range events {
+			switch e.Type {
+			case "tool_use", "tool_result":
+				p.tools = true
 			}
-			events, ok := messageContentEvents(r.Role, r.Content, r.Timestamp)
-			if !ok {
-				p.malformed++
-				continue
-			}
-			p.events = append(p.events, events...)
-			p.messages += len(events)
-			if hasThinking(events) {
-				p.reasoning = true
-			}
-			mergeUsage(p.usageMap(), r.Message["usage"])
-			mergeUsage(p.usageMap(), r.Provider["usage"])
-			mergeUsage(p.usageMap(), r.Provider["rawUsage"])
-		case "reasoning":
-			events, ok := reasoningEvents(r.Content, r.RawContent, r.Timestamp)
-			if !ok {
-				continue
-			}
-			p.events = append(p.events, events...)
-			p.messages += len(events)
+		}
+		if hasThinking(events) {
 			p.reasoning = true
-		case "function_call":
-			if r.CallID == "" || r.Name == "" {
-				p.malformed++
-				continue
-			}
-			p.events = append(p.events, event{Type: "tool_use", Timestamp: r.Timestamp, CallID: r.CallID, Name: r.Name, Input: r.Arguments})
-			p.messages++
-		case "function_call_result":
-			if r.CallID == "" || r.Output == nil {
-				p.malformed++
-				continue
-			}
-			p.events = append(p.events, event{Type: "tool_result", Timestamp: r.Timestamp, CallID: r.CallID, Result: r.Output})
-			p.messages++
-		case "usage":
+		}
+		if r.Type == "message" {
 			mergeUsage(p.usageMap(), r.Provider["usage"])
-			mergeUsage(p.usageMap(), r.Provider["rawUsage"])
-		default:
-			// Metadata and future non-conversation records are intentionally ignored.
 		}
 	}
 	if sc.Err() != nil {

@@ -187,6 +187,8 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 	messages, malformed := 0, 0
 	var start, end time.Time
 	cwd, cwdTrusted := "", true
+	pending := map[string]string{}
+	completed := map[string]bool{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 4096), maxLineBytes+1)
 	for sc.Scan() {
@@ -199,55 +201,52 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 			malformed++
 			continue
 		}
+		if metadataType(r.Type) {
+			continue
+		}
+		want, role := "user", "user"
+		if r.Type == "assistant" {
+			want, role = "model", "assistant"
+		}
+		if r.Message.Role != want {
+			malformed++
+			continue
+		}
+		events, textBearing, recognized, invalid := qwenMessageEvents(role, r.Message.Parts, r.Message.Content, r.Timestamp)
+		if invalid {
+			malformed++
+			continue
+		}
+		if !recognized {
+			continue
+		}
+		nextPending, nextCompleted, validPairs := validateToolPairs(events, pending, completed)
+		if !validPairs {
+			malformed++
+			continue
+		}
 		if header.SessionID == "" {
-			if metadataType(r.Type) {
-				continue
-			}
-			if r.Type != "user" || r.Message.Role != "user" || r.SessionID == "" {
+			if r.Type != "user" || r.SessionID == "" {
 				malformed++
 				continue
 			}
 			header = r
+		} else if r.SessionID != header.SessionID {
+			malformed++
+			continue
 		}
-		ts := r.Timestamp
-		switch r.Type {
-		case "user", "assistant":
-			if r.SessionID != header.SessionID {
-				malformed++
-				continue
+		if r.CWD != "" {
+			if !filepath.IsAbs(r.CWD) || filepath.Clean(r.CWD) != r.CWD || (cwd != "" && cwd != r.CWD) {
+				cwdTrusted = false
+			} else if cwd == "" {
+				cwd = r.CWD
 			}
-			if r.CWD != "" {
-				if !filepath.IsAbs(r.CWD) || filepath.Clean(r.CWD) != r.CWD || (cwd != "" && cwd != r.CWD) {
-					cwdTrusted = false
-				} else if cwd == "" {
-					cwd = r.CWD
-				}
-			}
-			trackTime(ts, &start, &end)
-			want := "user"
-			role := "user"
-			if r.Type == "assistant" {
-				want = "model"
-				role = "assistant"
-			}
-			if r.Message.Role != want {
-				malformed++
-				continue
-			}
-			events, textBearing, recognized, invalid := qwenMessageEvents(role, r.Message.Parts, r.Message.Content, ts)
-			if invalid {
-				malformed++
-				continue
-			}
-			if !recognized {
-				continue
-			}
-			out = append(out, events...)
-			if r.Type == "assistant" || textBearing {
-				messages++
-			}
-		default:
-			// Qwen metadata/system telemetry and future metadata are not exportable.
+		}
+		trackTime(r.Timestamp, &start, &end)
+		pending, completed = nextPending, nextCompleted
+		out = append(out, events...)
+		if r.Type == "assistant" || textBearing {
+			messages++
 		}
 	}
 	if sc.Err() != nil {
@@ -259,6 +258,34 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 		header.CWD = cwd
 	}
 	return header, out, messages, malformed, start, end, header.SessionID != "" && len(out) > 0
+}
+
+func validateToolPairs(events []event, pending map[string]string, completed map[string]bool) (map[string]string, map[string]bool, bool) {
+	nextPending := make(map[string]string, len(pending))
+	for id, name := range pending {
+		nextPending[id] = name
+	}
+	nextCompleted := make(map[string]bool, len(completed))
+	for id, done := range completed {
+		nextCompleted[id] = done
+	}
+	for _, e := range events {
+		switch e.Type {
+		case "tool_use":
+			if nextCompleted[e.CallID] || nextPending[e.CallID] != "" {
+				return nil, nil, false
+			}
+			nextPending[e.CallID] = e.Name
+		case "tool_result":
+			name, exists := nextPending[e.CallID]
+			if !exists || nextCompleted[e.CallID] || (e.Name != "" && e.Name != name) {
+				return nil, nil, false
+			}
+			delete(nextPending, e.CallID)
+			nextCompleted[e.CallID] = true
+		}
+	}
+	return nextPending, nextCompleted, true
 }
 
 func metadataType(typ string) bool {
@@ -278,6 +305,9 @@ func qwenMessageEvents(role string, partsRaw, contentRaw any, ts string) ([]even
 		}
 		blocks, ok := rawCollection.([]any)
 		if !ok {
+			return nil, false, true, true
+		}
+		if len(blocks) == 0 {
 			return nil, false, true, true
 		}
 		for _, raw := range blocks {
@@ -309,8 +339,12 @@ func qwenBlock(role string, block map[string]any, ts string) ([]event, bool, boo
 		case string:
 			text = value
 		case bool:
-			if value {
-				text, _ = block["text"].(string)
+			text, _ = block["text"].(string)
+			if !value {
+				if strings.TrimSpace(text) == "" {
+					return nil, false, true, true
+				}
+				return []event{{Type: "message", Role: role, Content: text, Timestamp: ts}}, true, true, false
 			}
 		default:
 			return nil, false, true, true
@@ -337,6 +371,13 @@ func qwenBlock(role string, block map[string]any, ts string) ([]event, bool, boo
 		}
 		return []event{qwenThinking(role, text, ts)}, false, true, false
 	}
+	if typ, _ := block["type"].(string); typ == "text" {
+		text, ok := block["text"].(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, false, true, true
+		}
+		return []event{{Type: "message", Role: role, Content: text, Timestamp: ts}}, true, true, false
+	}
 	if rawCall, exists := block["functionCall"]; exists {
 		call, ok := rawCall.(map[string]any)
 		if !ok || role != "assistant" {
@@ -355,11 +396,12 @@ func qwenBlock(role string, block map[string]any, ts string) ([]event, bool, boo
 			return nil, false, true, true
 		}
 		id, _ := response["id"].(string)
+		name, _ := response["name"].(string)
 		result, hasResult := response["response"]
 		if id == "" || !hasResult {
 			return nil, false, true, true
 		}
-		return []event{{Type: "tool_result", Timestamp: ts, CallID: id, Result: result}}, false, true, false
+		return []event{{Type: "tool_result", Timestamp: ts, CallID: id, Name: name, Result: result}}, false, true, false
 	}
 	if textRaw, exists := block["text"]; exists {
 		text, ok := textRaw.(string)

@@ -206,6 +206,126 @@ func TestOnlyValidatedProjectSessionLayoutsAreScanned(t *testing.T) {
 	}
 }
 
+func TestIndexAndDatabaseDirectoriesAreNeverProjects(t *testing.T) {
+	root := t.TempDir()
+	body := []byte(`{"type":"message","sessionId":"must-not-discover","role":"user","content":"ignored"}` + "\n")
+	for _, reserved := range []string{"index", "workbuddy.db"} {
+		for _, rel := range []string{"session.jsonl", filepath.Join("parent", "subagents", "child.jsonl")} {
+			path := filepath.Join(root, reserved, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+}
+
+func TestCapabilitiesReflectObservedEvents(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	messageOnly := []byte(`{"type":"message","sessionId":"message-only","role":"user","content":"hello"}` + "\n")
+	withTool := []byte(`{"type":"message","sessionId":"with-tool","role":"user","content":"hello"}` + "\n" +
+		`{"type":"function_call","sessionId":"with-tool","callId":"call-1","name":"lookup","arguments":{}}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "message.jsonl"), messageOnly, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tool.jsonl"), withTool, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 2 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	for _, s := range got {
+		want := []source.Capability{source.CapabilityMessages}
+		if s.ID == "workbuddy:with-tool" {
+			want = append(want, source.CapabilityTools)
+		}
+		if !reflect.DeepEqual(s.Capabilities, want) {
+			t.Fatalf("id=%q capabilities=%#v want=%#v", s.ID, s.Capabilities, want)
+		}
+	}
+}
+
+func TestUsageOnlyComesFromProviderData(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"type":"message","sessionId":"usage","role":"assistant","content":"answer","message":{"usage":{"inputTokens":101,"outputTokens":202}}}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "usage.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].Usage["input_tokens"] != 0 || got[0].Usage["output_tokens"] != 0 {
+		t.Fatalf("usage=%#v", got[0].Usage)
+	}
+}
+
+func TestDuplicateParentInLaterRootStillLinksUniqueChild(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	parent := []byte(`{"type":"message","sessionId":"canonical-parent","role":"user","content":"parent"}` + "\n")
+	child := []byte(`{"type":"message","sessionId":"unique-child","role":"user","content":"child"}` + "\n")
+	for _, root := range []string{first, second} {
+		dir := filepath.Join(root, "encoded")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "parent.jsonl"), parent, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sub := filepath.Join(second, "encoded", "parent", "subagents")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "child.jsonl"), child, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(first, second).Discover(context.Background())
+	if err != nil || len(got) != 2 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	for _, s := range got {
+		if s.ID == "workbuddy:unique-child" && s.ParentID != "workbuddy:canonical-parent" {
+			t.Fatalf("child=%#v", s)
+		}
+	}
+}
+
+func TestInvalidRecordCannotChooseIdentityOrScope(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"type":"message","sessionId":"forged","role":"system","content":"invalid","cwd":"/forged/project"}` + "\n" +
+		`{"type":"message","sessionId":"real","role":"user","content":"valid","cwd":"/trusted/project"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "real.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].ID != "workbuddy:real" || got[0].Scope.Root != "/trusted/project" || got[0].MalformedCount != 1 {
+		t.Fatalf("session=%#v", got[0])
+	}
+}
+
 func TestConflictingCWDUsesStableCollectionScope(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "encoded")
