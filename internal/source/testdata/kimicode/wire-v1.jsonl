@@ -1,0 +1,10 @@
+{"type":"metadata","protocol_version":"1.4","created_at":1767225600000}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"inspect this"}],"toolCalls":[]},"time":1767225600000}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"step-1","turnId":"turn-1","step":0},"time":1767225601000}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part-1","turnId":"turn-1","step":0,"stepUuid":"step-1","part":{"type":"think","think":"considering"}},"time":1767225602000}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part-2","turnId":"turn-1","step":0,"stepUuid":"step-1","part":{"type":"text","text":"checking"}},"time":1767225603000}
+{"type":"context.append_loop_event","event":{"type":"tool.call","uuid":"call-event-1","turnId":"turn-1","step":0,"stepUuid":"step-1","toolCallId":"call-1","name":"lookup","args":{"query":"sample"}},"time":1767225604000}
+{"type":"context.append_loop_event","event":{"type":"tool.result","uuid":"result-event-1","parentUuid":"call-event-1","toolCallId":"call-1","result":{"output":{"value":"ok"},"isError":false}},"time":1767225605000}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"step-1","turnId":"turn-1","step":0,"usage":{"inputOther":99,"output":99},"finishReason":"end_turn"},"time":1767225606000}
+{"type":"usage.record","model":"fixture","usage":{"inputOther":10,"output":5,"inputCacheRead":2,"inputCacheCreation":1},"usageScope":"turn","time":1767225606001}
+{"type":"config.update","cwd":"/must/not/leak","time":1767225606002}

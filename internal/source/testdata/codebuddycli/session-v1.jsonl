@@ -1,0 +1,6 @@
+{"id":"event-1","type":"message","role":"user","content":[{"type":"input_text","text":"inspect this"}],"cwd":"/synthetic/project","timestamp":"2026-01-01T00:00:00Z","providerData":{"messageId":"private-turn-1"}}
+{"id":"event-2","type":"reasoning","rawContent":[{"type":"reasoning_text","text":"considering"}],"cwd":"/synthetic/project","timestamp":"2026-01-01T00:00:01Z"}
+{"id":"event-3","type":"function_call","callId":"call-1","name":"lookup","arguments":{"query":"sample"},"cwd":"/synthetic/project","timestamp":"2026-01-01T00:00:02Z"}
+{"id":"event-4","type":"function_call_result","callId":"call-1","name":"lookup","status":"completed","output":{"value":"ok"},"providerData":{"toolResult":{"error":false}},"cwd":"/synthetic/project","timestamp":"2026-01-01T00:00:03Z"}
+{"id":"event-5","type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}],"cwd":"/synthetic/project","timestamp":"2026-01-01T00:00:04Z"}
+{"id":"ignored","type":"summary","content":"must not appear","cwd":"/forged/project"}
