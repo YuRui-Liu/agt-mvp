@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
@@ -106,6 +107,29 @@ func TestAuthorizationDoesNotStoreOutput(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsForgedMetadata(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded", "chats")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"sessionId":"s","type":"user","message":{"role":"user","parts":[{"text":"ok"}]}}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	forged := got[0]
+	forged.MalformedCount++
+	if r, err := a.Open(context.Background(), forged); err == nil {
+		r.Close()
+		t.Fatal("forged metadata accepted")
+	}
+}
+
 func TestSameStemAcrossProjectsIsDistinctAndFallbackStable(t *testing.T) {
 	root := t.TempDir()
 	body := func(id, text string) []byte {
@@ -144,5 +168,67 @@ func TestSameStemAcrossProjectsIsDistinctAndFallbackStable(t *testing.T) {
 		if old := keys[s.ID]; old != "" && old != s.Scope.Root {
 			t.Fatalf("scope changed %#v", s)
 		}
+	}
+}
+
+func TestCompositeContentAndMetadataClassification(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded", "chats")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		`{"sessionId":"composite","type":"user","cwd":"/synthetic/project","message":{"role":"user","parts":[{"text":"ask"}]}}`,
+		`{"sessionId":"composite","type":"assistant","message":{"role":"model","parts":[{"thought":"explicit thought"},{"functionCall":{"id":"call-1","name":"lookup","args":{"query":"sample"}}}]}}`,
+		`{"sessionId":"composite","type":"user","message":{"role":"user","parts":[{"functionResponse":{"id":"call-1","response":{"value":"result"}}}]}}`,
+		`{"sessionId":"composite","type":"assistant","message":{"role":"model","content":[{"type":"thinking","thinking":"second thought"},{"type":"text","text":"answer"}]}}`,
+		`{"sessionId":"forged-metadata-id","type":"system","cwd":"/forged/metadata","systemPayload":{"path":"/must/not/be-opened"}}`,
+		`{"sessionId":"composite","type":"snapshot","snapshot":{"path":"/must/not-be-opened"}}`,
+		`{"sessionId":"composite","type":"uiEvent","uiEvent":{"name":"render"}}`,
+		`{"sessionId":"composite","type":"telemetry","telemetry":{"name":"metric"}}`,
+		`{"sessionId":"composite","type":"futureMetadata","payload":{"ok":true}}`,
+		`{"sessionId":"composite","type":"assistant","message":{"role":"model","parts":[{"functionCall":{"name":"missing-id"}}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "composite.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].MalformedCount != 1 {
+		t.Fatalf("session=%#v", got[0])
+	}
+	r, err := a.Open(context.Background(), got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var types []string
+	dec := json.NewDecoder(r)
+	for {
+		var e map[string]any
+		if err := dec.Decode(&e); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, e["type"].(string))
+	}
+	want := []string{"message", "message", "tool_use", "tool_result", "message", "message"}
+	if !reflect.DeepEqual(types, want) {
+		t.Fatalf("types=%#v", types)
+	}
+}
+
+func TestRecognizedInvalidEnvelopeCountsMalformedButMetadataDoesNot(t *testing.T) {
+	_, _, _, malformed, _, _, ok := parse([]byte(
+		`{"sessionId":"bad","type":"user","message":{"role":"user","parts":[{"text":"valid"}]}}` + "\n" +
+			`{"sessionId":"bad","type":"assistant","message":{"role":"user","parts":[{"text":"wrong role"}]}}` + "\n" +
+			`{"sessionId":"bad","type":"system","systemPayload":{}}` + "\n" +
+			`{"sessionId":"bad","type":"futureMetadata","payload":{}}` + "\n"))
+	if !ok || malformed != 1 {
+		t.Fatalf("ok=%v malformed=%d", ok, malformed)
 	}
 }

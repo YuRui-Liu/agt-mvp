@@ -24,7 +24,7 @@ const maxLineBytes = 1 << 20
 const maxSessionBytes = 4 << 20
 
 type authorization struct {
-	id, digest string
+	id, digest, metadata string
 }
 type Adapter struct {
 	root      string
@@ -60,8 +60,9 @@ func (*Adapter) Capabilities() []source.Capability { return []source.Capability{
 type record struct {
 	Type, SessionID, CWD, Timestamp, Model string
 	Message                                struct {
-		Role  string           `json:"role"`
-		Parts []map[string]any `json:"parts"`
+		Role    string `json:"role"`
+		Parts   any    `json:"parts"`
+		Content any    `json:"content"`
 	} `json:"message"`
 }
 type event struct {
@@ -170,10 +171,14 @@ func (a *Adapter) snapshot(path string) (source.Session, authorization, []byte, 
 	if end.IsZero() {
 		end = info.ModTime()
 	}
-	s := source.Session{ID: "qwen-code:" + project + ":" + stem, Product: "qwen-code", FormatVersion: "chat-jsonl-v1", AdapterVersion: "1", Capabilities: a.Capabilities(), Scope: scope, StartedAt: start, EndedAt: end, MessageCount: messages, MalformedCount: malformed, OpaqueRef: path}
+	capabilities := a.Capabilities()
+	if qwenHasReasoning(events) {
+		capabilities = append(capabilities, source.CapabilityReasoning)
+	}
+	s := source.Session{ID: "qwen-code:" + project + ":" + stem, Product: "qwen-code", FormatVersion: "chat-jsonl-v1", AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: start, EndedAt: end, MessageCount: messages, MalformedCount: malformed, OpaqueRef: path}
 	contentSum := sha256.Sum256(data)
 	s.SnapshotID = fmt.Sprintf("%x", contentSum[:])
-	auth := authorization{id: s.ID, digest: s.SnapshotID}
+	auth := authorization{id: s.ID, digest: s.SnapshotID, metadata: sessionMetadata(s)}
 	return s, auth, append([]byte(nil), output.Bytes()...), true
 }
 func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) {
@@ -181,9 +186,9 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 	var out []event
 	messages, malformed := 0, 0
 	var start, end time.Time
+	cwd, cwdTrusted := "", true
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 4096), maxLineBytes+1)
-	first := true
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
@@ -194,21 +199,31 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 			malformed++
 			continue
 		}
-		if first {
-			first = false
+		if header.SessionID == "" {
+			if metadataType(r.Type) {
+				continue
+			}
 			if r.Type != "user" || r.Message.Role != "user" || r.SessionID == "" {
-				return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
+				malformed++
+				continue
 			}
 			header = r
 		}
-		if r.SessionID != header.SessionID {
-			malformed++
-			continue
-		}
 		ts := r.Timestamp
-		trackTime(ts, &start, &end)
 		switch r.Type {
 		case "user", "assistant":
+			if r.SessionID != header.SessionID {
+				malformed++
+				continue
+			}
+			if r.CWD != "" {
+				if !filepath.IsAbs(r.CWD) || filepath.Clean(r.CWD) != r.CWD || (cwd != "" && cwd != r.CWD) {
+					cwdTrusted = false
+				} else if cwd == "" {
+					cwd = r.CWD
+				}
+			}
+			trackTime(ts, &start, &end)
 			want := "user"
 			role := "user"
 			if r.Type == "assistant" {
@@ -219,104 +234,160 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 				malformed++
 				continue
 			}
-			valid := false
-			textBearing := false
-			for _, p := range r.Message.Parts {
-				if text, ok := p["text"].(string); ok && strings.TrimSpace(text) != "" {
-					if thought, _ := p["thought"].(bool); thought {
-						out = append(out, event{Type: "message", Role: role, Content: []any{map[string]any{"type": "thinking", "thinking": text}}, Timestamp: ts})
-					} else {
-						out = append(out, event{Type: "message", Role: role, Content: text, Timestamp: ts})
-						textBearing = true
-					}
-					valid = true
-				}
-				if fc, ok := p["functionCall"].(map[string]any); ok {
-					id, _ := fc["id"].(string)
-					name, _ := fc["name"].(string)
-					if role != "assistant" || id == "" || name == "" {
-						malformed++
-						continue
-					}
-					out = append(out, event{Type: "tool_use", Timestamp: ts, CallID: id, Name: name, Input: fc["args"]})
-					valid = true
-				}
-				if fr, ok := p["functionResponse"].(map[string]any); ok {
-					id, _ := fr["id"].(string)
-					if role != "user" || id == "" {
-						malformed++
-						continue
-					}
-					out = append(out, event{Type: "tool_result", Timestamp: ts, CallID: id, Result: fr["response"]})
-					valid = true
-				}
-			}
-			if !valid {
+			events, textBearing, recognized, invalid := qwenMessageEvents(role, r.Message.Parts, r.Message.Content, ts)
+			if invalid {
 				malformed++
 				continue
 			}
+			if !recognized {
+				continue
+			}
+			out = append(out, events...)
 			if r.Type == "assistant" || textBearing {
 				messages++
 			}
 		default:
-			// Qwen metadata/system telemetry is recognized but not exportable.
+			// Qwen metadata/system telemetry and future metadata are not exportable.
 		}
 	}
 	if sc.Err() != nil {
 		return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
 	}
-	return header, out, messages, malformed, start, end, len(out) > 0
-}
-func contentEvents(role string, content any, ts string) ([]event, bool) {
-	switch v := content.(type) {
-	case string:
-		if strings.TrimSpace(v) == "" {
-			return nil, false
-		}
-		return []event{{Type: "message", Role: role, Content: v, Timestamp: ts}}, true
-	case []any:
-		var out []event
-		for _, raw := range v {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				return nil, false
-			}
-			typ, _ := m["type"].(string)
-			switch typ {
-			case "text":
-				text, _ := m["text"].(string)
-				if strings.TrimSpace(text) == "" {
-					return nil, false
-				}
-				out = append(out, event{Type: "message", Role: role, Content: text, Timestamp: ts})
-			case "toolCall", "tool_use":
-				if role != "assistant" {
-					return nil, false
-				}
-				id, _ := m["id"].(string)
-				name, _ := m["name"].(string)
-				if id == "" || name == "" {
-					return nil, false
-				}
-				input := m["arguments"]
-				if input == nil {
-					input = m["input"]
-				}
-				out = append(out, event{Type: "tool_use", Timestamp: ts, CallID: id, Name: name, Input: input})
-			case "thinking":
-				text, _ := m["thinking"].(string)
-				if role != "assistant" || strings.TrimSpace(text) == "" {
-					return nil, false
-				}
-				out = append(out, event{Type: "message", Role: role, Content: []any{map[string]any{"type": "thinking", "thinking": text}}, Timestamp: ts})
-			default:
-				return nil, false
-			}
-		}
-		return out, len(out) > 0
-	default:
-		return nil, false
+	if !cwdTrusted || cwd == "" {
+		header.CWD = ""
+	} else {
+		header.CWD = cwd
 	}
+	return header, out, messages, malformed, start, end, header.SessionID != "" && len(out) > 0
+}
+
+func metadataType(typ string) bool {
+	switch typ {
+	case "system", "systemPayload", "snapshot", "uiEvent", "telemetry":
+		return true
+	}
+	return typ != "user" && typ != "assistant"
+}
+
+func qwenMessageEvents(role string, partsRaw, contentRaw any, ts string) ([]event, bool, bool, bool) {
+	var out []event
+	textBearing, recognized := false, false
+	for _, rawCollection := range []any{partsRaw, contentRaw} {
+		if rawCollection == nil {
+			continue
+		}
+		blocks, ok := rawCollection.([]any)
+		if !ok {
+			return nil, false, true, true
+		}
+		for _, raw := range blocks {
+			block, ok := raw.(map[string]any)
+			if !ok {
+				return nil, false, true, true
+			}
+			events, text, known, invalid := qwenBlock(role, block, ts)
+			if invalid {
+				return nil, false, true, true
+			}
+			if known {
+				recognized = true
+				textBearing = textBearing || text
+				out = append(out, events...)
+			}
+		}
+	}
+	return out, textBearing, recognized, false
+}
+
+func qwenBlock(role string, block map[string]any, ts string) ([]event, bool, bool, bool) {
+	if rawThought, exists := block["thought"]; exists {
+		if role != "assistant" {
+			return nil, false, true, true
+		}
+		var text string
+		switch value := rawThought.(type) {
+		case string:
+			text = value
+		case bool:
+			if value {
+				text, _ = block["text"].(string)
+			}
+		default:
+			return nil, false, true, true
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, false, true, true
+		}
+		return []event{qwenThinking(role, text, ts)}, false, true, false
+	}
+	if rawThinking, exists := block["thinking"]; exists {
+		text, ok := rawThinking.(string)
+		if role != "assistant" || !ok || strings.TrimSpace(text) == "" {
+			return nil, false, true, true
+		}
+		return []event{qwenThinking(role, text, ts)}, false, true, false
+	}
+	if typ, _ := block["type"].(string); typ == "thinking" || typ == "thought" {
+		text, _ := block["thinking"].(string)
+		if text == "" {
+			text, _ = block["text"].(string)
+		}
+		if role != "assistant" || strings.TrimSpace(text) == "" {
+			return nil, false, true, true
+		}
+		return []event{qwenThinking(role, text, ts)}, false, true, false
+	}
+	if rawCall, exists := block["functionCall"]; exists {
+		call, ok := rawCall.(map[string]any)
+		if !ok || role != "assistant" {
+			return nil, false, true, true
+		}
+		id, _ := call["id"].(string)
+		name, _ := call["name"].(string)
+		if id == "" || name == "" {
+			return nil, false, true, true
+		}
+		return []event{{Type: "tool_use", Timestamp: ts, CallID: id, Name: name, Input: call["args"]}}, false, true, false
+	}
+	if rawResponse, exists := block["functionResponse"]; exists {
+		response, ok := rawResponse.(map[string]any)
+		if !ok || role != "user" {
+			return nil, false, true, true
+		}
+		id, _ := response["id"].(string)
+		result, hasResult := response["response"]
+		if id == "" || !hasResult {
+			return nil, false, true, true
+		}
+		return []event{{Type: "tool_result", Timestamp: ts, CallID: id, Result: result}}, false, true, false
+	}
+	if textRaw, exists := block["text"]; exists {
+		text, ok := textRaw.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, false, true, true
+		}
+		return []event{{Type: "message", Role: role, Content: text, Timestamp: ts}}, true, true, false
+	}
+	return nil, false, false, false
+}
+
+func qwenThinking(role, text, ts string) event {
+	return event{Type: "message", Role: role, Content: []any{map[string]any{"type": "thinking", "thinking": text}}, Timestamp: ts}
+}
+
+func qwenHasReasoning(events []event) bool {
+	for _, e := range events {
+		if _, ok := e.Content.([]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionMetadata(s source.Session) string {
+	data, _ := json.Marshal(s)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
 }
 func trackTime(raw string, start, end *time.Time) {
 	t, err := time.Parse(time.RFC3339Nano, raw)
@@ -340,7 +411,7 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	a.mu.RLock()
 	auth, ok := a.known[s.OpaqueRef]
 	a.mu.RUnlock()
-	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID {
+	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID || auth.metadata != sessionMetadata(s) {
 		return nil, errors.New("qwen-code: unknown session reference")
 	}
 	fresh, freshAuth, output, valid := a.snapshot(s.OpaqueRef)

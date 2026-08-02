@@ -1,4 +1,7 @@
-{"type":"message","role":"user","content":"example request","cwd":"workspace-example","timestamp":"2026-01-01T00:00:00Z"}
-{"type":"function_call","name":"read_file","callId":"call-1","arguments":{"path":"example.go"},"timestamp":"2026-01-01T00:00:01Z"}
-{"type":"function_call_result","callId":"call-1","output":"example result","timestamp":"2026-01-01T00:00:02Z"}
-{"type":"message","role":"assistant","content":"example response","timestamp":"2026-01-01T00:00:03Z"}
+{"type":"message","id":"event-1","sessionId":"session-fixture","role":"user","content":[{"type":"input_text","text":"example request"}],"cwd":"workspace-example","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"reasoning","id":"event-2","sessionId":"session-fixture","content":[],"rawContent":[{"type":"reasoning_text","text":"example thought"}],"timestamp":"2026-01-01T00:00:01Z"}
+{"type":"function_call","id":"event-3","sessionId":"session-fixture","name":"read_file","callId":"call-1","arguments":{"path":"example.go"},"timestamp":"2026-01-01T00:00:02Z"}
+{"type":"function_call_result","id":"event-4","sessionId":"session-fixture","callId":"call-1","output":"example result","timestamp":"2026-01-01T00:00:03Z"}
+{"type":"message","id":"event-5","sessionId":"session-fixture","role":"assistant","content":[{"type":"output_text","text":"example response","providerData":{"annotations":[]}}],"message":{"usage":{"inputTokens":3,"outputTokens":2}},"providerData":{"usage":{"inputTokens":3,"outputTokens":2,"outputTokensDetails":[{"reasoning_tokens":1}]}},"timestamp":"2026-01-01T00:00:04Z"}
+{"type":"ai-title","sessionId":"session-fixture","title":"Example session"}
+{"type":"file-history-snapshot","sessionId":"session-fixture","snapshot":{"path":"snapshot-example"}}
