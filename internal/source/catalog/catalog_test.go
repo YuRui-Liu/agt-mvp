@@ -1,14 +1,113 @@
 package catalog
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
 )
+
+func TestResolveFailsClosedWithoutRuntimeAndNormalizesStateCodes(t *testing.T) {
+	definition := Definition{Product: "codex", DisplayName: "Codex", Supported: true, Enabled: true,
+		Status: source.SourceReady, Verification: source.VerificationMachine,
+		Capabilities: []source.Capability{source.CapabilityMessages}}
+	tests := []struct {
+		name       string
+		status     *source.SourceStatus
+		state      source.SourceState
+		code       string
+		count      int
+		selectable bool
+	}{
+		{name: "missing runtime with sessions", state: source.SourceNotFound, count: 3},
+		{name: "ready strips code", status: &source.SourceStatus{State: source.SourceReady, Code: "read_failed"}, state: source.SourceReady, count: 1, selectable: true},
+		{name: "not found strips code", status: &source.SourceStatus{State: source.SourceNotFound, Code: "invalid_session"}, state: source.SourceNotFound},
+		{name: "detected unsupported strips code", status: &source.SourceStatus{State: source.SourceDetectedUnsupported, Code: "read_failed"}, state: source.SourceDetectedUnsupported},
+		{name: "format normalizes empty", status: &source.SourceStatus{State: source.SourceFormatUnsupported}, state: source.SourceFormatUnsupported, code: "format_unsupported"},
+		{name: "format normalizes mismatch", status: &source.SourceStatus{State: source.SourceFormatUnsupported, Code: "export_required"}, state: source.SourceFormatUnsupported, code: "format_unsupported"},
+		{name: "export normalizes empty", status: &source.SourceStatus{State: source.SourceExportRequired}, state: source.SourceExportRequired, code: "export_required"},
+		{name: "export normalizes mismatch", status: &source.SourceStatus{State: source.SourceExportRequired, Code: "format_unsupported"}, state: source.SourceExportRequired, code: "export_required"},
+		{name: "read error retains public code", status: &source.SourceStatus{State: source.SourceReadError, Code: "duplicate_product", Error: "/private/error"}, state: source.SourceReadError, code: "duplicate_product"},
+		{name: "read error normalizes empty", status: &source.SourceStatus{State: source.SourceReadError}, state: source.SourceReadError, code: "read_failed"},
+		{name: "read error normalizes mismatch", status: &source.SourceStatus{State: source.SourceReadError, Code: "export_required"}, state: source.SourceReadError, code: "read_failed"},
+		{name: "unknown state fails closed", status: &source.SourceStatus{State: "private-state", Code: "/private/error", Error: "secret"}, state: source.SourceReadError, code: "read_failed"},
+		{name: "negative count is zero", status: &source.SourceStatus{State: source.SourceReady}, state: source.SourceReady, count: -1},
+		{name: "max count remains safe", status: &source.SourceStatus{State: source.SourceReady}, state: source.SourceReady, count: math.MaxInt, selectable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Resolve(definition, tt.status, tt.count)
+			wantCount := tt.count
+			if wantCount < 0 {
+				wantCount = 0
+			}
+			if got.State != tt.state || got.Code != tt.code || got.Selectable != tt.selectable || got.SessionCount != wantCount {
+				t.Fatalf("resolved=%#v", got)
+			}
+			if strings.Contains(got.Code, "private") || strings.Contains(got.Code, "secret") {
+				t.Fatalf("resolved code leaked error: %#v", got)
+			}
+		})
+	}
+
+	unsupported := Definition{Product: "trae", Status: source.SourceDetectedUnsupported,
+		Verification: source.VerificationExport, Reason: "official_export_required", Capabilities: []source.Capability{}}
+	if got := Resolve(unsupported, nil, 0); got.State != source.SourceDetectedUnsupported || got.Selectable {
+		t.Fatalf("catalog-only unsupported did not retain status: %#v", got)
+	}
+	resolved := Resolve(definition, &source.SourceStatus{State: source.SourceReady}, 1)
+	resolved.Capabilities[0] = source.CapabilityTools
+	if definition.Capabilities[0] != source.CapabilityMessages {
+		t.Fatal("Resolve aliased definition capabilities")
+	}
+}
+
+func TestSharedClientRootsRejectUnsafeEnvironmentAndUsePlatformFallbacks(t *testing.T) {
+	home := filepath.Join(string(os.PathSeparator), "safe", "home")
+	tests := []struct {
+		name, goos, appData, xdg string
+		want                     string
+	}{
+		{name: "darwin", goos: "darwin", want: filepath.Join(home, "Library", "Application Support", "Lingma", "SharedClientCache")},
+		{name: "windows valid appdata", goos: "windows", appData: `C:\Users\student\AppData\Roaming`, want: `C:\Users\student\AppData\Roaming\Qoder\SharedClientCache`},
+		{name: "windows valid UNC appdata", goos: "windows", appData: `\\server\students\AppData`, want: `\\server\students\AppData\Qoder\SharedClientCache`},
+		{name: "windows empty falls back", goos: "windows", want: `C:\Users\student\AppData\Roaming\Qoder\SharedClientCache`},
+		{name: "windows relative falls back", goos: "windows", appData: `relative\AppData`, want: `C:\Users\student\AppData\Roaming\Qoder\SharedClientCache`},
+		{name: "windows unclean falls back", goos: "windows", appData: `C:\Users\student\..\other`, want: `C:\Users\student\AppData\Roaming\Qoder\SharedClientCache`},
+		{name: "linux valid xdg", goos: "linux", xdg: "/safe/xdg", want: "/safe/xdg/Lingma/SharedClientCache"},
+		{name: "linux empty falls back", goos: "linux", want: filepath.Join(home, ".config", "Lingma", "SharedClientCache")},
+		{name: "linux relative falls back", goos: "linux", xdg: "relative/xdg", want: filepath.Join(home, ".config", "Lingma", "SharedClientCache")},
+		{name: "linux unclean falls back", goos: "linux", xdg: "/safe/../unsafe", want: filepath.Join(home, ".config", "Lingma", "SharedClientCache")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testHome := home
+			product := "Lingma"
+			if tt.goos == "windows" {
+				testHome = `C:\Users\student`
+				product = "Qoder"
+			}
+			got := sharedClientRoots(tt.goos, product, testHome, tt.appData, tt.xdg)
+			if !reflect.DeepEqual(got, []string{tt.want}) {
+				t.Fatalf("roots=%#v want=%q", got, tt.want)
+			}
+		})
+	}
+	if got := sharedClientRoots("linux", "Lingma", "relative/home", "", "relative/xdg"); len(got) != 0 {
+		t.Fatalf("unsafe home produced roots: %#v", got)
+	}
+}
+
+func TestSaturatingSessionCountDoesNotOverflow(t *testing.T) {
+	if got := saturatingIncrement(math.MaxInt); got != math.MaxInt {
+		t.Fatalf("overflowed count to %d", got)
+	}
+}
 
 func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 	supported := map[string]bool{

@@ -231,6 +231,19 @@ func TestProductionRegistryKeepsCodeFlickerRootsPositionalAndProductsIsolated(t 
 	}
 }
 
+func TestConfiguredRootsPreservesExplicitAndFailsSafelyWithoutDefault(t *testing.T) {
+	explicit := []string{"/explicit/root"}
+	if got := configuredRoots(map[string][]string{"qoder-ide": explicit}, "qoder-ide", []string{"/default"}); !reflect.DeepEqual(got, explicit) {
+		t.Fatalf("explicit roots=%#v", got)
+	}
+	if got := configuredRoots(nil, "qoder-ide", []string{"/default"}); !reflect.DeepEqual(got, []string{"/default"}) {
+		t.Fatalf("default roots=%#v", got)
+	}
+	if got := configuredRoots(nil, "qoder-ide", nil); !reflect.DeepEqual(got, []string{""}) {
+		t.Fatalf("missing safe default must disable adapter probing: %#v", got)
+	}
+}
+
 func TestSafeScanOutputMergesEveryRuntimeStateWithoutLeakingErrors(t *testing.T) {
 	definitions := []catalog.Definition{
 		{Product: "ready-one", DisplayName: "Ready", Supported: true, Enabled: true, Status: source.SourceReady,
@@ -271,6 +284,27 @@ func TestSafeScanOutputMergesEveryRuntimeStateWithoutLeakingErrors(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestSafeScanOutputFailsClosedWhenRuntimeSourceStatusIsMissing(t *testing.T) {
+	definition := catalog.Definition{Product: "codex", DisplayName: "Codex", Supported: true, Enabled: true,
+		Status: source.SourceReady, Verification: source.VerificationMachine,
+		Capabilities: []source.Capability{source.CapabilityMessages}}
+	scan := source.ScanResult{Sessions: []source.Session{{
+		ID: "private-session", Product: "codex",
+		Scope: source.ScopeRef{Type: source.ScopeProject, Root: "/private/project", Label: "project"},
+	}}}
+	output, err := safeScanOutput(scan, []catalog.Definition{definition}, bytes.Repeat([]byte{8}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Sources) != 1 || output.Sources[0].State != string(source.SourceNotFound) ||
+		output.Sources[0].Selectable || output.Sources[0].SessionCount != 1 {
+		t.Fatalf("source failed open: %#v", output.Sources)
+	}
+	if len(output.Scopes) != 1 || output.Scopes[0].Selectable {
+		t.Fatalf("scope failed open: %#v", output.Scopes)
 	}
 }
 

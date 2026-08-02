@@ -80,8 +80,10 @@ func productionDependencies() dependencies {
 				kimi.New(roots["kimi-cli"]...), kimicode.New(roots["kimi-code"]...),
 				myflicker.New(roots["myflicker"]...), openclaw.New(roots["openclaw"]...),
 				opencode.New(roots["opencode"]...), qoder.NewCLI(roots["qoder-cli"]...),
-				qoder.NewIDE(roots["qoder-ide"]...), qwen.New(roots["qwen-code"]...),
-				lingma.NewCLI(roots["tongyi-lingma-cli"]...), lingma.NewIDE(roots["tongyi-lingma-ide"]...),
+				qoder.NewIDE(configuredRoots(roots, "qoder-ide", catalog.DefaultSharedClientRoots("Qoder"))...),
+				qwen.New(roots["qwen-code"]...),
+				lingma.NewCLI(configuredRoots(roots, "tongyi-lingma-cli", catalog.DefaultSharedClientRoots("Lingma"))...),
+				lingma.NewIDE(configuredRoots(roots, "tongyi-lingma-ide", catalog.DefaultSharedClientRoots("Lingma"))...),
 				copilot.New(roots["vscode-copilot"]...), workbuddy.New(roots["workbuddy"]...),
 			)
 		},
@@ -98,6 +100,18 @@ func productionDependencies() dependencies {
 			return server.Shutdown(ctx)
 		},
 	}
+}
+
+func configuredRoots(configured map[string][]string, product string, defaults []string) []string {
+	if roots := configured[product]; len(roots) > 0 {
+		return roots
+	}
+	if len(defaults) == 0 {
+		// One explicit invalid root disables the adapter's own environment-based
+		// fallback and produces a bounded configuration error without filesystem I/O.
+		return []string{""}
+	}
+	return defaults
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps dependencies) int {
@@ -317,10 +331,7 @@ func safeScanOutput(scan source.ScanResult, definitions []catalog.Definition, se
 			Status: status, Selectable: selectable,
 		})
 	}
-	sessionCounts := make(map[string]int, len(definitions))
-	for _, session := range scan.Sessions {
-		sessionCounts[session.Product]++
-	}
+	sessionCounts := catalog.CountSessions(scan.Sessions)
 	for _, definition := range definitions {
 		var runtimeStatus *source.SourceStatus
 		if status, exists := scan.Sources[definition.Product]; exists {

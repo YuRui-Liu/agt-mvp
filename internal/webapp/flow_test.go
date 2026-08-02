@@ -372,6 +372,28 @@ func TestScopesMergeRuntimeSourceStateAndExposeOnlySafeMetadata(t *testing.T) {
 	}
 }
 
+func TestScopesFailClosedWhenCatalogReadySourceHasNoRuntimeStatus(t *testing.T) {
+	registry := source.NewRegistry(stateAdapter{product: "other-source", state: source.SourceReady, session: true})
+	app := newTestApp()
+	app.Registry = registry
+	app.Exporter = upload.NewStreamExporter(registry, upload.Client{Name: "kuai", Version: "test", Platform: "test"}, upload.Limits{})
+	app.Catalog = []catalog.Definition{{
+		Product: "codex", DisplayName: "Codex", Supported: true, Enabled: true,
+		Status: source.SourceReady, Verification: source.VerificationMachine,
+		Capabilities: []source.Capability{source.CapabilityMessages},
+	}}
+	response := call(t, Handler(app), http.MethodGet, "/api/scopes", "", "")
+	var result struct {
+		Sources []sourceView `json:"sources"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Sources) != 1 {
+		t.Fatalf("response=%d %s", response.Code, response.Body.String())
+	}
+	if got := result.Sources[0]; got.State != source.SourceNotFound || got.Selectable || got.SessionCount != 0 {
+		t.Fatalf("catalog source failed open: %#v", got)
+	}
+}
+
 func TestBootstrapContainsModeButNoSecrets(t *testing.T) {
 	response := call(t, Handler(newTestApp()), http.MethodGet, "/", "", "")
 	if response.Code != http.StatusOK {

@@ -3,9 +3,11 @@ package catalog
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
 )
@@ -72,10 +74,10 @@ var products = []Definition{
 	{Product: "openclaw", DisplayName: "OpenClaw", EnvVar: "OPENCLAW_DIR", DefaultDirs: []string{".openclaw/agents"}, Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndTools},
 	{Product: "opencode", DisplayName: "OpenCode", Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndTools},
 	{Product: "qoder-cli", DisplayName: "Qoder CLI", DefaultDirs: []string{".qoder"}, Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndReasoning},
-	{Product: "qoder-ide", DisplayName: "Qoder IDE", DefaultDirs: sharedClientDefaultDirs("Qoder"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
+	{Product: "qoder-ide", DisplayName: "Qoder IDE", DefaultDirs: DefaultSharedClientRoots("Qoder"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
 	{Product: "qwen-code", DisplayName: "Qwen Code", EnvVar: "QWEN_PROJECTS_DIR", DefaultDirs: []string{".qwen/projects"}, Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndTools},
-	{Product: "tongyi-lingma-cli", DisplayName: "通义灵码 CLI", DefaultDirs: sharedClientDefaultDirs("Lingma"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
-	{Product: "tongyi-lingma-ide", DisplayName: "通义灵码 IDE", DefaultDirs: sharedClientDefaultDirs("Lingma"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
+	{Product: "tongyi-lingma-cli", DisplayName: "通义灵码 CLI", DefaultDirs: DefaultSharedClientRoots("Lingma"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
+	{Product: "tongyi-lingma-ide", DisplayName: "通义灵码 IDE", DefaultDirs: DefaultSharedClientRoots("Lingma"), Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesOnly},
 	{Product: "vscode-copilot", DisplayName: "GitHub Copilot for VS Code", Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndTools},
 	{Product: "workbuddy", DisplayName: "WorkBuddy", EnvVar: "WORKBUDDY_PROJECTS_DIR", DefaultDirs: []string{".workbuddy-ai/projects", ".workbuddy/projects"}, Supported: true, Enabled: true, Status: Ready, Verification: source.VerificationMachine, Capabilities: messagesAndTools},
 	{Product: "trae", DisplayName: "TRAE", Status: DetectedUnsupported, Verification: source.VerificationExport, Reason: "official_export_required"},
@@ -86,21 +88,77 @@ var products = []Definition{
 	{Product: "kiro", DisplayName: "Kiro", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_verified_session_schema"},
 }
 
-func sharedClientDefaultDirs(product string) []string {
-	switch runtime.GOOS {
-	case "darwin":
-		return []string{filepath.Join("Library", "Application Support", product, "SharedClientCache")}
-	case "windows":
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			return []string{filepath.Join(appData, product, "SharedClientCache")}
-		}
+// DefaultSharedClientRoots returns only absolute, clean platform roots. Invalid
+// APPDATA/XDG_CONFIG_HOME values are ignored instead of being passed to an
+// adapter as a configuration error.
+func DefaultSharedClientRoots(product string) []string {
+	home, _ := os.UserHomeDir()
+	return sharedClientRoots(runtime.GOOS, product, home, os.Getenv("APPDATA"), os.Getenv("XDG_CONFIG_HOME"))
+}
+
+func sharedClientRoots(goos, product, home, appData, xdg string) []string {
+	if product != "Lingma" && product != "Qoder" {
 		return []string{}
-	default:
-		if config := os.Getenv("XDG_CONFIG_HOME"); config != "" {
-			return []string{filepath.Join(config, product, "SharedClientCache")}
-		}
-		return []string{filepath.Join(".config", product, "SharedClientCache")}
 	}
+	switch goos {
+	case "darwin":
+		if !cleanAbsolutePath(goos, home) {
+			return []string{}
+		}
+		return []string{joinPlatformPath(goos, home, "Library", "Application Support", product, "SharedClientCache")}
+	case "windows":
+		base := appData
+		if !cleanAbsolutePath(goos, base) {
+			if !cleanAbsolutePath(goos, home) {
+				return []string{}
+			}
+			base = joinPlatformPath(goos, home, "AppData", "Roaming")
+		}
+		return []string{joinPlatformPath(goos, base, product, "SharedClientCache")}
+	default:
+		base := xdg
+		if !cleanAbsolutePath(goos, base) {
+			if !cleanAbsolutePath(goos, home) {
+				return []string{}
+			}
+			base = joinPlatformPath(goos, home, ".config")
+		}
+		return []string{joinPlatformPath(goos, base, product, "SharedClientCache")}
+	}
+}
+
+func cleanAbsolutePath(goos, value string) bool {
+	if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+		return false
+	}
+	if goos != "windows" {
+		return path.IsAbs(value) && path.Clean(value) == value
+	}
+	normalized := strings.ReplaceAll(value, `\`, "/")
+	driveAbsolute := len(normalized) >= 3 && ((normalized[0] >= 'A' && normalized[0] <= 'Z') ||
+		(normalized[0] >= 'a' && normalized[0] <= 'z')) && normalized[1] == ':' && normalized[2] == '/'
+	if driveAbsolute {
+		return path.Clean(normalized) == normalized
+	}
+	if !strings.HasPrefix(normalized, "//") {
+		return false
+	}
+	tail := strings.TrimPrefix(normalized, "//")
+	return len(strings.Split(tail, "/")) >= 2 && path.Clean(tail) == tail
+}
+
+func joinPlatformPath(goos string, parts ...string) string {
+	if goos == "windows" {
+		if len(parts) == 0 {
+			return ""
+		}
+		joined := strings.TrimRight(strings.ReplaceAll(parts[0], `\`, "/"), "/")
+		for _, part := range parts[1:] {
+			joined += "/" + strings.Trim(strings.ReplaceAll(part, `\`, "/"), "/")
+		}
+		return strings.ReplaceAll(joined, "/", `\`)
+	}
+	return path.Join(parts...)
 }
 
 func Definitions() []Definition { return Detect(nil) }
@@ -143,8 +201,9 @@ func Resolve(definition Definition, runtimeStatus *source.SourceStatus, sessionC
 	state := definition.Status
 	code := ""
 	if runtimeStatus != nil {
-		state = safeState(runtimeStatus.State)
-		code = safeCode(runtimeStatus.Code, state)
+		state, code = normalizeStateCode(runtimeStatus.State, runtimeStatus.Code)
+	} else if definition.Supported && definition.Enabled && definition.Status == source.SourceReady {
+		state = source.SourceNotFound
 	}
 	return ResolvedSource{
 		Product: definition.Product, DisplayName: definition.DisplayName,
@@ -156,29 +215,42 @@ func Resolve(definition Definition, runtimeStatus *source.SourceStatus, sessionC
 	}
 }
 
-func safeState(state source.SourceState) source.SourceState {
+func normalizeStateCode(state source.SourceState, code string) (source.SourceState, string) {
 	switch state {
-	case source.SourceReady, source.SourceNotFound, source.SourceExportRequired,
-		source.SourceFormatUnsupported, source.SourceReadError, source.SourceDetectedUnsupported:
-		return state
+	case source.SourceReady, source.SourceNotFound, source.SourceDetectedUnsupported:
+		return state, ""
+	case source.SourceFormatUnsupported:
+		return state, "format_unsupported"
+	case source.SourceExportRequired:
+		return state, "export_required"
+	case source.SourceReadError:
+		switch code {
+		case "invalid_product", "duplicate_product", "invalid_session", "read_failed":
+			return state, code
+		default:
+			return state, "read_failed"
+		}
 	default:
-		return source.SourceReadError
+		return source.SourceReadError, "read_failed"
 	}
 }
 
-func safeCode(code string, state source.SourceState) string {
-	switch code {
-	case "", "invalid_product", "duplicate_product", "invalid_session", "format_unsupported", "export_required", "read_failed":
-		return code
+// CountSessions returns per-product counts with saturating increments.
+func CountSessions(sessions []source.Session) map[string]int {
+	counts := make(map[string]int)
+	for _, session := range sessions {
+		counts[session.Product] = saturatingIncrement(counts[session.Product])
 	}
-	switch state {
-	case source.SourceFormatUnsupported:
-		return "format_unsupported"
-	case source.SourceExportRequired:
-		return "export_required"
-	case source.SourceReadError:
-		return "read_failed"
-	default:
-		return ""
+	return counts
+}
+
+func saturatingIncrement(value int) int {
+	maximum := int(^uint(0) >> 1)
+	if value >= maximum {
+		return maximum
 	}
+	if value < 0 {
+		return 1
+	}
+	return value + 1
 }

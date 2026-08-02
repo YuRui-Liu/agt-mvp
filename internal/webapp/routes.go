@@ -333,10 +333,7 @@ func (h *appHandler) scopes(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, view)
 	}
-	sessionCounts := make(map[string]int, len(scan.Sources))
-	for _, session := range scan.Sessions {
-		sessionCounts[session.Product]++
-	}
+	sessionCounts := catalog.CountSessions(scan.Sessions)
 	sourceViews := make([]sourceView, 0, len(h.app.Catalog))
 	for _, definition := range h.app.Catalog {
 		var runtimeStatus *source.SourceStatus
