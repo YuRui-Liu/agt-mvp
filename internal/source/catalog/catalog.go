@@ -54,6 +54,8 @@ var products = []Definition{
 	{Product: "qoder", DisplayName: "Qoder", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_verified_session_schema"},
 	{Product: "qoder-work", DisplayName: "QoderWork", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_distinct_local_format"},
 	{Product: "codebuddy", DisplayName: "CodeBuddy", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_verified_session_schema"},
+	{Product: "codebuddy-ide", DisplayName: "CodeBuddy IDE", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_verified_transcript_body"},
+	{Product: "kiro", DisplayName: "Kiro", Status: DetectedUnsupported, Verification: source.VerificationUnsupported, Reason: "no_verified_session_schema"},
 }
 
 func Definitions() []Definition { return Detect(nil) }
@@ -75,7 +77,7 @@ func Detect(configured map[string][]string) []Definition {
 			if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
 				continue
 			}
-			info, err := os.Stat(root)
+			info, err := os.Lstat(root)
 			if err == nil && info.IsDir() {
 				out[i].Dirs = append(out[i].Dirs, root)
 				out[i].Detected = true

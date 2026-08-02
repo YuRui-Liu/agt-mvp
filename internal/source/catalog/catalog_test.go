@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
@@ -21,6 +22,7 @@ func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 		"kimi-work": "no_verified_session_schema", "kimi-code": "no_verified_session_schema",
 		"tongyi-lingma": "no_verified_session_schema", "qoder": "no_verified_session_schema",
 		"qoder-work": "no_distinct_local_format", "codebuddy": "no_verified_session_schema",
+		"kiro": "no_verified_session_schema", "codebuddy-ide": "no_verified_transcript_body",
 	}
 
 	for _, definition := range Definitions() {
@@ -45,6 +47,70 @@ func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 		if definition.Capabilities == nil || len(definition.Capabilities) != 0 {
 			t.Errorf("unsupported %s capabilities = %#v, want an empty list", definition.Product, definition.Capabilities)
 		}
+	}
+}
+
+func TestDefinitionsHaveUniqueProducts(t *testing.T) {
+	want := map[string]struct{}{
+		"claude-code": {}, "codex": {}, "cursor": {}, "opencode": {},
+		"vscode-copilot": {}, "codeflicker": {}, "myflicker": {},
+		"openclaw": {}, "hermes-agent": {}, "workbuddy": {},
+		"trae": {}, "trae-work": {}, "kimi-cli": {}, "kimi-work": {},
+		"kimi-code": {}, "qwen-code": {}, "tongyi-lingma": {},
+		"qoder": {}, "qoder-work": {}, "codebuddy": {}, "codebuddy-ide": {},
+		"kiro": {},
+	}
+	seen := make(map[string]struct{})
+	for _, definition := range Definitions() {
+		if definition.Product == "" {
+			t.Fatal("catalog contains an empty product identifier")
+		}
+		if _, duplicate := seen[definition.Product]; duplicate {
+			t.Fatalf("duplicate product definition: %q", definition.Product)
+		}
+		seen[definition.Product] = struct{}{}
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("catalog product set=%v, want %v", seen, want)
+	}
+}
+
+func TestUnsupportedProductsExposeNoScannerConfiguration(t *testing.T) {
+	definitions := Definitions()
+	for i := range definitions {
+		definition := definitions[i]
+		if definition.Status != DetectedUnsupported {
+			continue
+		}
+		if definition.Supported || definition.Enabled || definition.Detected ||
+			definition.EnvVar != "" || len(definition.DefaultDirs) != 0 || len(definition.Dirs) != 0 ||
+			len(definition.Capabilities) != 0 {
+			t.Fatalf("unsupported product exposes scanner configuration: %#v", definition)
+		}
+	}
+}
+
+func TestTRAERequiresOfficialExport(t *testing.T) {
+	definition := find(Definitions(), "trae")
+	if definition == nil {
+		t.Fatal("missing TRAE definition")
+	}
+	if definition.Status != DetectedUnsupported ||
+		definition.Verification != source.VerificationExport ||
+		definition.Reason != "official_export_required" {
+		t.Fatalf("TRAE metadata=%#v", definition)
+	}
+}
+
+func TestKiroNeverAdvertisesReady(t *testing.T) {
+	definition := find(Definitions(), "kiro")
+	if definition == nil {
+		t.Fatal("missing Kiro definition")
+	}
+	if definition.Status == Ready || definition.Supported || definition.Enabled ||
+		definition.Verification != source.VerificationUnsupported ||
+		definition.Reason != "no_verified_session_schema" {
+		t.Fatalf("Kiro metadata=%#v", definition)
 	}
 }
 
@@ -94,13 +160,24 @@ func TestExplicitRootOnlyChecksDirectoryExistence(t *testing.T) {
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "secret.jsonl"), []byte("not-json"), 0o000); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "state.vscdb"), []byte("SQLCipher lure: must not be opened"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "snapshots"), 0o000); err != nil {
 		t.Fatal(err)
 	}
 	got := Detect(map[string][]string{"trae": {root}})
 	d := find(got, "trae")
-	if d == nil || d.Enabled || !d.Detected || len(d.Dirs) != 1 || d.Status != DetectedUnsupported {
+	if d == nil || d.Enabled || !d.Detected || len(d.Dirs) != 1 || d.Status != DetectedUnsupported ||
+		d.Verification != source.VerificationExport || d.Reason != "official_export_required" {
 		t.Fatalf("definition=%#v", d)
+	}
+}
+
+func TestTRAEIsNotDetectedWithoutExplicitConfiguration(t *testing.T) {
+	definition := find(Detect(nil), "trae")
+	if definition == nil || definition.Detected || len(definition.Dirs) != 0 {
+		t.Fatalf("TRAE must not probe default or home paths: %#v", definition)
 	}
 }
 
@@ -110,14 +187,39 @@ func TestExplicitRootRejectsMissingRelativeAndUncleanPaths(t *testing.T) {
 	if err := os.Mkdir(existing, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	regularFile := filepath.Join(base, "not-a-directory")
+	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	got := Detect(map[string][]string{"trae": {
+		"",
 		"relative/path",
 		filepath.Join(base, "missing"),
 		existing + string(os.PathSeparator) + ".",
+		regularFile,
 	}})
 	d := find(got, "trae")
 	if d == nil || d.Detected || len(d.Dirs) != 0 {
 		t.Fatalf("unsafe roots accepted: %#v", d)
+	}
+}
+
+func TestExplicitRootRejectsDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows may require additional privileges")
+	}
+	base := t.TempDir()
+	target := filepath.Join(base, "target")
+	link := filepath.Join(base, "link")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	definition := find(Detect(map[string][]string{"trae": {link}}), "trae")
+	if definition == nil || definition.Detected || len(definition.Dirs) != 0 {
+		t.Fatalf("symlink root accepted: %#v", definition)
 	}
 }
 
