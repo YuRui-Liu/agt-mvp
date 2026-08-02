@@ -34,6 +34,15 @@ case "$UPLOAD_PLATFORM" in
   *) echo "kuai: unsupported UPLOAD_PLATFORM: $UPLOAD_PLATFORM" >&2; exit 1 ;;
 esac
 
+case "$goos:$SIGN:$NOTARIZE" in
+  darwin:true:true|darwin:true:false|darwin:false:false|windows:true:false|windows:false:false|linux:false:false) ;;
+  darwin:false:true) echo "kuai: macOS notarization requires signing" >&2; exit 1 ;;
+  windows:*:true) echo "kuai: Windows does not support NOTARIZE=true" >&2; exit 1 ;;
+  linux:true:*) echo "kuai: Linux does not support SIGN=true" >&2; exit 1 ;;
+  linux:*:true) echo "kuai: Linux does not support NOTARIZE=true" >&2; exit 1 ;;
+  *) echo "kuai: invalid signing policy" >&2; exit 1 ;;
+esac
+
 version=$UPLOAD_PACKAGE_VERSION
 case "$version" in
   ''|*[!A-Za-z0-9._+-]*) echo "kuai: invalid build version" >&2; exit 1 ;;
@@ -53,14 +62,32 @@ if [ -L "$dist" ] || { [ -e "$dist" ] && [ ! -d "$dist" ]; }; then
 fi
 mkdir -p "$dist"
 
-stage=$(mktemp -d "$root/.kci.stage.XXXXXX")
-cleanup() { rm -rf "$stage"; }
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
-
 suffix=
 [ "$goos" != windows ] || suffix=.exe
 artifact_name="kuai-$goos-$goarch$suffix"
+targets="$dist/targets"
+if [ -L "$targets" ] || { [ -e "$targets" ] && [ ! -d "$targets" ]; }; then
+  echo "kuai: dist/targets must be a real directory" >&2
+  exit 1
+fi
+mkdir -p "$targets"
+
+stage=$(mktemp -d "$targets/.$artifact_name.stage.XXXXXX")
+backup_root=
+old_moved=0
+target_dir="$targets/$artifact_name"
+cleanup() {
+  [ -z "$stage" ] || rm -rf "$stage"
+  if [ "$old_moved" -eq 1 ] && [ -n "$backup_root" ] &&
+    [ -d "$backup_root/previous" ] && [ ! -e "$target_dir" ]; then
+    mv "$backup_root/previous" "$target_dir" || true
+    old_moved=0
+  fi
+  [ -z "$backup_root" ] || rm -rf "$backup_root"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
 artifact="$stage/$artifact_name"
 
 KUAI_BUILD_OUTPUT="$artifact" KUAI_VERSION="$version" \
@@ -78,22 +105,67 @@ if [ "$SIGN" = true ] && [ "$goos" = darwin ]; then
 
   if [ "$NOTARIZE" = true ]; then
     : "${APPLE_NOTARY_PROFILE:?kuai: APPLE_NOTARY_PROFILE not set}"
+    command -v jq >/dev/null 2>&1 || {
+      echo "kuai: jq is required for notarization response validation" >&2
+      exit 1
+    }
+    notary_timeout=${APPLE_NOTARY_TIMEOUT:-20m}
+    notary_timeout_value=${notary_timeout%?}
+    notary_timeout_unit=${notary_timeout#"$notary_timeout_value"}
+    case "$notary_timeout_value" in
+      ''|0|*[!0-9]*)
+        echo "kuai: APPLE_NOTARY_TIMEOUT must be a positive duration such as 20m" >&2
+        exit 1
+        ;;
+    esac
+    case "$notary_timeout_unit" in
+      s|m|h) ;;
+      *) echo "kuai: APPLE_NOTARY_TIMEOUT must end in s, m, or h" >&2; exit 1 ;;
+    esac
     archive="$stage/$artifact_name.zip"
     ditto -c -k --keepParent "$artifact" "$archive"
-    xcrun notarytool submit "$archive" \
-      --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+    notary_response=$(xcrun notarytool submit "$archive" \
+      --keychain-profile "$APPLE_NOTARY_PROFILE" --wait \
+      --timeout "$notary_timeout" --output-format json)
+    notary_status=$(printf '%s' "$notary_response" | jq -er \
+      '.status | select(type == "string")') || {
+      echo "kuai: notarization returned no unique status" >&2
+      exit 1
+    }
+    [ "$notary_status" = Accepted ] || {
+      echo "kuai: notarization was not accepted: $notary_status" >&2
+      exit 1
+    }
     rm -f "$archive"
-    # A raw Mach-O is not a stapler target. notarytool acceptance is retained
-    # in Apple's service; codesign verification above protects local bytes.
+    codesign --verify --strict --verbose=2 "$artifact"
   fi
 elif [ "$SIGN" = true ] && [ "$goos" = windows ]; then
   : "${WINDOWS_SIGNING_PUBLISHER:?kuai: WINDOWS_SIGNING_PUBLISHER not set}"
+  normalize_subject() {
+    printf '%s' "$1" | tr '\r\n' '  ' | awk '{$1=$1; print}'
+  }
+  expected_publisher=$(normalize_subject "$WINDOWS_SIGNING_PUBLISHER")
+  [ -n "$expected_publisher" ] || {
+    echo "kuai: WINDOWS_SIGNING_PUBLISHER must not be blank" >&2
+    exit 1
+  }
   command -v jq >/dev/null 2>&1 || {
     echo "kuai: jq is required for Windows signing" >&2
     exit 1
   }
   command -v signtool >/dev/null 2>&1 || {
     echo "kuai: signtool is required for Windows signature verification" >&2
+    exit 1
+  }
+  powershell_bin=
+  for candidate in powershell.exe pwsh powershell; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      powershell_bin=$candidate
+      break
+    fi
+  done
+  [ -n "$powershell_bin" ] || {
+    echo "kuai: PowerShell is required for signer subject verification" >&2
     exit 1
   }
 
@@ -134,8 +206,19 @@ elif [ "$SIGN" = true ] && [ "$goos" = windows ]; then
     echo "kuai: Authenticode verification failed" >&2
     exit 1
   }
-  printf '%s\n' "$verification" | grep -F -- "$WINDOWS_SIGNING_PUBLISHER" >/dev/null || {
-    echo "kuai: signed artifact publisher did not match expectation" >&2
+  signed_for_powershell=$signed
+  if command -v cygpath >/dev/null 2>&1; then
+    signed_for_powershell=$(cygpath -w "$signed")
+  fi
+  publisher_raw=$(KUAI_SIGNED_PATH="$signed_for_powershell" "$powershell_bin" \
+    -NoProfile -NonInteractive -Command \
+    '$signature = Get-AuthenticodeSignature -LiteralPath $env:KUAI_SIGNED_PATH; if ($signature.Status -ne "Valid" -or $null -eq $signature.SignerCertificate) { exit 2 }; [Console]::Out.Write($signature.SignerCertificate.Subject)') || {
+    echo "kuai: could not read a valid Authenticode signer certificate" >&2
+    exit 1
+  }
+  publisher=$(normalize_subject "$publisher_raw")
+  [ -n "$publisher" ] && [ "$publisher" = "$expected_publisher" ] || {
+    echo "kuai: leaf signer subject did not exactly match expectation" >&2
     exit 1
   }
   mv "$signed" "$artifact"
@@ -150,13 +233,44 @@ fi
   fi
 )
 
-# Re-check immediately before publishing from the isolated stage. mv replaces
-# an existing file or symlink entry; it never follows an artifact symlink.
-if [ -L "$dist" ] || [ ! -d "$dist" ]; then
-  echo "kuai: dist changed during build" >&2
+# The artifact and checksum are one transaction unit. Replacing their parent
+# directory prevents a reader from observing a mixed old/new pair.
+if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -L "$targets" ] || [ ! -d "$targets" ]; then
+  echo "kuai: release directories changed during build" >&2
   exit 1
 fi
-mv "$artifact" "$dist/$artifact_name"
-mv "$stage/$artifact_name.sha256" "$dist/$artifact_name.sha256"
 
-echo "kuai: built $dist/$artifact_name (version $version, sign=$SIGN, notarize=$NOTARIZE)"
+if [ -e "$target_dir" ] || [ -L "$target_dir" ]; then
+  [ -d "$target_dir" ] && [ ! -L "$target_dir" ] || {
+    echo "kuai: target pair path must be a real directory" >&2
+    exit 1
+  }
+  for existing in "$target_dir/$artifact_name" "$target_dir/$artifact_name.sha256"; do
+    [ -f "$existing" ] && [ ! -L "$existing" ] || {
+      echo "kuai: existing target pair contains a non-regular entry" >&2
+      exit 1
+    }
+  done
+  [ "$(find "$target_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" -eq 2 ] || {
+    echo "kuai: existing target pair contains unexpected entries" >&2
+    exit 1
+  }
+  backup_root=$(mktemp -d "$targets/.$artifact_name.backup.XXXXXX")
+  mv "$target_dir" "$backup_root/previous"
+  old_moved=1
+fi
+
+if ! mv "$stage" "$target_dir"; then
+  if [ "$old_moved" -eq 1 ] && mv "$backup_root/previous" "$target_dir"; then
+    old_moved=0
+  fi
+  exit 1
+fi
+stage=
+if [ "$old_moved" -eq 1 ]; then
+  rm -rf "$backup_root"
+  backup_root=
+  old_moved=0
+fi
+
+echo "kuai: built $target_dir/$artifact_name (version $version, sign=$SIGN, notarize=$NOTARIZE)"

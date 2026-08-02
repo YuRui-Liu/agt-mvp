@@ -183,6 +183,9 @@ class DocumentationTests(unittest.TestCase):
             "WINDOWS_SIGNING_PUBLISHER",
             "scripts/assemble-kuai-checksums.sh",
             "SIGN 与 NOTARIZE 只接受 true 或 false",
+            "pair 目录",
+            "重新计算六个产物的 SHA-256",
+            "只接受 `Accepted`",
         ):
             self.assertIn(phrase, self.readme)
         self.assertNotIn("APPLE_APP_SPECIFIC_PASSWORD", self.readme)

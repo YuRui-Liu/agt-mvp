@@ -168,24 +168,24 @@ go version -m ./dist/kuai-darwin-arm64
 | Linux ARM | Linux ARM64 物理机池 | `kuai-linux-arm64` | 无需签名 |
 | Linux x64 | Linux x64 物理机池 | `kuai-linux-amd64` | 无需签名 |
 
-`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在仓库内的隔离 staging 目录生成和签名，验证完成后才移动到真实的 `dist` 目录；`dist` 符号链接会被拒绝。
+`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在 `dist/targets` 下的隔离 staging 中生成和签名，再把二进制与 `.sha256` 作为一个 pair 目录原子发布到 `dist/targets/<artifact>/`；替换失败会恢复旧 pair，不会留下新旧混合状态。`dist`、`targets`、目标 pair 或其文件为符号链接或非预期类型时均会拒绝。
 
 本地可模拟天琴环境变量验证：
 
 ```bash
 UPLOAD_PLATFORM=darwin UPLOAD_ARCH=arm64 UPLOAD_PACKAGE_VERSION=1.0.0 \
   bash ./kci-pipeline-build.sh false false
-./dist/kuai-darwin-arm64 status
+./dist/targets/kuai-darwin-arm64/kuai-darwin-arm64 status
 ```
 
-两个位置参数分别是是否签名与是否公证，默认均为 `true`；SIGN 与 NOTARIZE 只接受 true 或 false，其他值会失败。正式 macOS 流水线使用 `true true`，并预先在构建机钥匙串创建 notarytool profile，再通过 `APPLE_NOTARY_PROFILE` 传入 profile 名；密码不作为命令行参数传递。裸 Mach-O 不执行 stapler，公证提交成功后仍会再次执行严格 codesign 验证。可通过 `APPLE_SIGNING_IDENTITY` 覆盖默认签名身份。
+两个位置参数分别是是否签名与是否公证，默认均为 `true`；SIGN 与 NOTARIZE 只接受 true 或 false，其他值会失败。参数组合按平台 fail-closed：macOS 只有签名后才能公证；Windows 必须 `NOTARIZE=false`；Linux 必须使用 `false false`。正式 macOS 流水线使用 `true true`，并预先在构建机钥匙串创建 notarytool profile，再通过 `APPLE_NOTARY_PROFILE` 传入 profile 名；密码不作为命令行参数传递。`APPLE_NOTARY_TIMEOUT` 是带 `s`、`m` 或 `h` 的正数，默认 `20m`。notarytool 使用 JSON 输出，状态只接受 `Accepted`；提交前后各执行一次严格 codesign 验证。裸 Mach-O 不执行 stapler。可通过 `APPLE_SIGNING_IDENTITY` 覆盖默认签名身份。
 
-正式 Windows 流水线使用 `true false`，并通过 `WINDOWS_SIGNING_PUBLISHER` 指定期望的证书发布者。远程签名下载完成后必须通过 `signtool verify /pa /all /v`，且输出包含该发布者，才会覆盖 staging 中的未签名文件。签名服务的未知状态立即失败。Linux 流水线显式使用 `false false`。签名后不得再修改二进制字节，否则签名失效。
+正式 Windows 流水线使用 `true false`，并通过非空的 `WINDOWS_SIGNING_PUBLISHER` 指定期望的完整 leaf `SignerCertificate.Subject`，例如 `CN=Qrite Technology Limited`。远程签名下载完成后先通过 `signtool verify /pa /all /v`，再由 PowerShell 结构化读取 leaf subject；规范化空白后必须与期望值精确相等，时间戳证书或证书链中的文本不能代替 leaf 匹配。签名服务的未知状态立即失败。Linux 流水线显式使用 `false false`。签名后不得再修改二进制字节，否则签名失效。
 
-每条流水线只产出自己平台的 `dist/kuai-<os>-<arch>[.exe]` 与配套 `.sha256` 分片。发布汇总任务必须收齐精确六个平台分片，再使用校验脚本生成 `install.sh` 所需的唯一 `SHA256SUMS`；脚本拒绝缺失、陈旧、重复、非规范文件名和非 64 位十六进制摘要：
+每条流水线产出自己的 `dist/targets/<artifact>/` pair 目录。发布汇总任务从六条流水线收集 pair 内容到一个全新的真实目录，例如 `release-inputs`，再生成 `install.sh` 所需的唯一 `SHA256SUMS`。汇总脚本要求同目录存在精确六个规范分片及对应六个普通、非 symlink 产物；它会重新计算六个产物的 SHA-256 并与分片精确匹配，拒绝缺失、陈旧、伪造、重复、非规范摘要以及非普通输出目标：
 
 ```bash
-./scripts/assemble-kuai-checksums.sh ./dist ./dist/SHA256SUMS
+./scripts/assemble-kuai-checksums.sh ./release-inputs ./release-inputs/SHA256SUMS
 ```
 
 产物上传 KCDN 后，安装时通过 `KUAI_RELEASE_URL` 指向对应目录；该变量默认指向 GitHub Release，必须是 HTTPS：
