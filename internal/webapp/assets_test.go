@@ -23,16 +23,18 @@ func TestSubmissionFlowAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, js, css := string(index), string(script), string(styles)
-	for _, want := range []string{`id="scopeList"`, `id="topWorkflow"`, `id="selectionWorkflow"`, `id="consent"`, `aria-live="polite"`} {
+	for _, want := range []string{`id="scopeList"`, `id="topWorkflow"`, `id="sourceStatusPanel"`, `id="selectionWorkflow"`, `id="consent"`, `aria-live="polite"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("index missing %q", want)
 		}
 	}
 	topWorkflow := strings.Index(page, `id="topWorkflow"`)
+	sourceStatusPanel := strings.Index(page, `id="sourceStatusPanel"`)
 	scopeTitle := strings.Index(page, `id="scopeTitle"`)
 	scopeList := strings.Index(page, `id="scopeList"`)
-	if topWorkflow < 0 || scopeTitle < 0 || scopeList < 0 || !(topWorkflow < scopeTitle && scopeTitle < scopeList) {
-		t.Fatal("topWorkflow must precede scopeTitle and scopeList")
+	if topWorkflow < 0 || sourceStatusPanel < 0 || scopeTitle < 0 || scopeList < 0 ||
+		!(topWorkflow < sourceStatusPanel && sourceStatusPanel < scopeTitle && scopeTitle < scopeList) {
+		t.Fatal("DOM order must be topWorkflow, sourceStatusPanel, scopeTitle, scopeList")
 	}
 	if strings.Contains(css, ".top-workflow{position:sticky") ||
 		strings.Contains(css, ".top-workflow{position:fixed") {

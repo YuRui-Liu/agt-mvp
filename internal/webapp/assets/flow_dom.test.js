@@ -270,3 +270,31 @@ test("success receipt consumes only the server receipt fields", () => {
   assert.equal(document.getElementById("successID").textContent, receiptID);
   assert.equal(document.getElementById("successID").attributes.length, 1);
 });
+
+test("source status renders as non-interactive groups with collapsed not-found details", () => {
+  const dom = new JSDOM(`<!doctype html><body>
+    <section id="sourceStatusPanel">
+      <p id="sourceStatusSummary"></p>
+      <section id="sourceReadyGroup"><div id="sourceReadyList"></div></section>
+      <section id="sourceActionGroup"><div id="sourceActionList"></div></section>
+      <details id="sourceNotFoundGroup"><summary><span id="sourceNotFoundSummary"></span></summary><div id="sourceNotFoundList"></div></details>
+    </section>
+  </body>`);
+  const {document} = dom.window;
+  const secret = "/Users/private/session-secret";
+  logic.renderSources(document, [
+    {product: "codex", display_name: "Codex", state: "ready", selectable: true,
+      verification: "machine", capabilities: ["messages", "tools"], error: secret},
+    {product: "trae", display_name: "TRAE", state: "export_required",
+      reason: "official_export_required", code: secret},
+    {product: "missing", display_name: "未安装 Agent", state: "not_found", path: secret},
+  ]);
+
+  const panel = document.getElementById("sourceStatusPanel");
+  assert.equal(panel.querySelectorAll("button, input, select, textarea, a[href]").length, 0);
+  assert.equal(document.getElementById("sourceNotFoundGroup").open, false);
+  assert.match(document.getElementById("sourceNotFoundList").textContent, /未安装 Agent/);
+  assert.match(document.getElementById("sourceReadyList").textContent, /Codex.*已可评估/s);
+  assert.match(document.getElementById("sourceActionList").textContent, /TRAE.*需要官方导出/s);
+  assert.doesNotMatch(panel.textContent, /private|session-secret/);
+});

@@ -5,6 +5,7 @@ const UPLOAD_DRAFT_KEY = "kuaiUploadDraft";
 const flowLogic = globalThis.KuaiFlowLogic;
 const initialState = {
   scopes: [],
+  sources: [],
   selectedScope: null,
   preparation: null,
   auth: null,
@@ -51,8 +52,19 @@ function scopeType(value) {
     session_collection: "Session Collection"}[value] || "Assessment Scope";
 }
 
+function agentName(product, names) {
+  return (Object.hasOwn(names, product) && names[product]) ||
+    (typeof product === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(product)
+    ? product : "Agent 未知");
+}
+
+function renderSources() {
+  return flowLogic.renderSources(document, state.sources);
+}
+
 function renderScopes() {
   const list = byID("scopeList");
+  const agentNames = flowLogic.sourceDisplayNames(state.sources);
   const workflow = byID("selectionWorkflow");
   if (workflow && list.contains(workflow)) byID("scopePanel").append(workflow);
   list.replaceChildren();
@@ -61,11 +73,13 @@ function renderScopes() {
     const card = document.createElement("article");
     card.className = `scope-card${state.selectedScope && state.selectedScope.key === scope.key ? " selected" : ""}${scope.selectable ? "" : " unsupported"}`;
     card.dataset.scopeKey = scope.key;
-    const button = document.createElement("button");
-    button.type = "button";
+    const button = scope.selectable === true ? document.createElement("button") : document.createElement("div");
+    if (scope.selectable === true) {
+      button.type = "button";
+      button.disabled = state.pending;
+      button.setAttribute("aria-pressed", state.selectedScope && state.selectedScope.key === scope.key ? "true" : "false");
+    }
     button.className = "scope-choice";
-    button.disabled = !scope.selectable || state.pending;
-    button.setAttribute("aria-pressed", state.selectedScope && state.selectedScope.key === scope.key ? "true" : "false");
     const marker = document.createElement("span");
     marker.className = "radio-mark";
     const copy = document.createElement("span");
@@ -73,7 +87,7 @@ function renderScopes() {
     const title = document.createElement("strong");
     title.textContent = scope.label || "未命名范围";
     const meta = document.createElement("span");
-    meta.textContent = `${scopeType(scope.type)} · ${(scope.agents || []).join("、") || "Agent 未知"}`;
+    meta.textContent = `${scopeType(scope.type)} · ${(scope.agents || []).map((product) => agentName(product, agentNames)).join("、") || "Agent 未知"}`;
     const detail = document.createElement("span");
     detail.textContent = flowLogic.formatScopeDetails({
       session_count: scope.session_count,
@@ -85,12 +99,14 @@ function renderScopes() {
     capability.textContent = scope.selectable ? `能力：${(scope.capabilities || []).join(" · ") || "消息"}` : "已检测，格式尚未验证";
     copy.append(title, meta, detail, capability);
     button.append(marker, copy);
-    flowLogic.bindScopeSelection(button, scope, () => state.selectedScope,
-      (selected) => { state.selectedScope = selected; }, (selected) => {
-        byID("selectedScopeName").textContent = `${scopeType(selected.type)} · ${selected.label}`;
-        byID("prepareScope").disabled = false;
-        renderScopes();
-      });
+    if (scope.selectable === true) {
+      flowLogic.bindScopeSelection(button, scope, () => state.selectedScope,
+        (selected) => { state.selectedScope = selected; }, (selected) => {
+          byID("selectedScopeName").textContent = `${scopeType(selected.type)} · ${selected.label}`;
+          byID("prepareScope").disabled = false;
+          renderScopes();
+        });
+    }
     card.append(button);
     list.append(card);
   });
@@ -103,10 +119,12 @@ async function loadScopes() {
   try {
     const {body} = await api("/api/scopes");
     state.scopes = Array.isArray(body.scopes) ? body.scopes : [];
+    state.sources = Array.isArray(body.sources) ? body.sources : [];
     if (state.uploadDraft) {
       const restored = flowLogic.restorePreparationState(state, state.scopes, sessionStorage, UPLOAD_DRAFT_KEY);
       if (!restored) flowLogic.hidePreparedWorkflows(document);
     }
+    renderSources();
     renderScopes();
     setStatus(state.scopes.length ? "请选择一个可评估范围；页面不会默认选择。" : "未发现可评估范围。");
   } catch (error) { showError(error.message); setStatus("扫描未完成。"); }

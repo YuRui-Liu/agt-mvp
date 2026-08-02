@@ -54,6 +54,27 @@
             <button id="startAnalysis" type="button" disabled>确认并安全上传</button>
           </section>
         </div>
+        <section id="sourceStatusPanel" class="source-status-panel" aria-labelledby="sourceStatusTitle">
+          <header class="source-status-header">
+            <div>
+              <p class="step">LOCAL AGENTS</p>
+              <h2 id="sourceStatusTitle">本地 Agent 状态</h2>
+            </div>
+            <p id="sourceStatusSummary" aria-live="polite">正在确认可评估来源…</p>
+          </header>
+          <section id="sourceReadyGroup" class="source-group" hidden aria-labelledby="sourceReadyTitle">
+            <h3 id="sourceReadyTitle">可评估</h3>
+            <div id="sourceReadyList" class="source-list"></div>
+          </section>
+          <section id="sourceActionGroup" class="source-group" hidden aria-labelledby="sourceActionTitle">
+            <h3 id="sourceActionTitle">需要处理</h3>
+            <div id="sourceActionList" class="source-list"></div>
+          </section>
+          <details id="sourceNotFoundGroup" class="source-not-found" hidden>
+            <summary><span id="sourceNotFoundSummary">未检测到会话的来源</span></summary>
+            <div id="sourceNotFoundList" class="source-list"></div>
+          </details>
+        </section>
         <div class="section-label" id="scopeTitle">检测到的 Assessment Scope</div>
         <div id="scopeList" class="scope-list"></div>
         <div id="emptyScopes" class="empty" hidden>没有发现可评估的会话范围。</div>

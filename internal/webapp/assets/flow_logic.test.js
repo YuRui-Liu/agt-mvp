@@ -74,3 +74,80 @@ test("minimal DOM harness executes selection", () => {
   assert.equal(rendered, 1);
 
 });
+
+test("source view model fails closed and never exposes raw diagnostic fields", () => {
+  const secret = "/Users/private/session-id-secret";
+  const cases = [
+    [{state: "ready", selectable: true}, "available", "已可评估"],
+    [{state: "ready", selectable: false}, "attention", "未发现可评估会话"],
+    [{state: "not_found"}, "not_found", "未检测到本地会话"],
+    [{state: "export_required"}, "attention", "需要官方导出"],
+    [{state: "format_unsupported"}, "attention", "检测到暂不支持的会话格式"],
+    [{state: "read_error"}, "attention", "读取失败，请重试"],
+    [{state: "detected_unsupported"}, "attention", "已检测，暂不可评估"],
+    [{state: "brand-new-state", status: "ready", selectable: true}, "attention", "暂不可评估"],
+  ];
+
+  for (const [source, group, statusLabel] of cases) {
+    const view = logic.sourceViewModel({
+      product: "safe-product",
+      display_name: "安全 Agent",
+      code: secret,
+      error: secret,
+      path: secret,
+      sessionID: secret,
+      reason: secret,
+      ...source,
+    });
+    assert.equal(view.group, group);
+    assert.equal(view.statusLabel, statusLabel);
+    assert.doesNotMatch(JSON.stringify(view), /private|session-id-secret|brand-new-state/);
+  }
+});
+
+test("source view model translates only allowlisted reason verification and capabilities", () => {
+  const reasons = new Map([
+    ["official_export_required", "需要通过产品官方导出后再提交"],
+    ["no_verified_session_schema", "尚未验证可靠的本地会话结构"],
+    ["no_verified_transcript_body", "尚未验证可评估的会话正文"],
+    ["no_distinct_local_format", "尚未发现可区分的本地会话格式"],
+  ]);
+  for (const [reason, expected] of reasons) {
+    assert.equal(logic.sourceViewModel({state: "detected_unsupported", reason}).reasonLabel, expected);
+  }
+  assert.equal(logic.sourceViewModel({state: "read_error", reason: "private_reason"}).reasonLabel, "");
+
+  const view = logic.sourceViewModel({
+    state: "ready", selectable: true, verification: "machine_verified",
+    capabilities: ["messages", "private-capability", "tools", "reasoning"],
+  });
+  assert.equal(view.verificationLabel, "本机结构已验证");
+  assert.deepEqual(view.capabilityLabels, ["消息", "工具调用", "推理过程"]);
+  assert.equal(logic.sourceViewModel({verification: "fixture_verified"}).verificationLabel, "固定样例已验证");
+  assert.equal(logic.sourceViewModel({verification: "export_required"}).verificationLabel, "需要官方导出验证");
+  assert.equal(logic.sourceViewModel({verification: "unsupported"}).verificationLabel, "暂无可靠本地格式");
+  assert.equal(logic.sourceViewModel({state: "ready", verification: "private-verification"}).verificationLabel, "");
+});
+
+test("source grouping is deterministic and display names are mapped by safe product keys", () => {
+  const sources = [
+    {product: "codex", display_name: "Codex", state: "ready", selectable: true},
+    {product: "trae", display_name: "TRAE", state: "export_required"},
+    {product: "missing", display_name: "未安装 Agent", state: "not_found"},
+  ];
+  const grouped = logic.groupSourceViews(sources);
+  assert.deepEqual(grouped.available.map(item => item.name), ["Codex"]);
+  assert.deepEqual(grouped.attention.map(item => item.name), ["TRAE"]);
+  assert.deepEqual(grouped.notFound.map(item => item.name), ["未安装 Agent"]);
+  assert.deepEqual(logic.sourceDisplayNames(sources), {
+    codex: "Codex", trae: "TRAE", missing: "未安装 Agent",
+  });
+});
+
+test("malformed source entries fail closed without interrupting the source overview", () => {
+  assert.doesNotThrow(() => logic.groupSourceViews([null, 42, "private-state"]));
+  const grouped = logic.groupSourceViews([null]);
+  assert.equal(grouped.attention[0].statusLabel, "暂不可评估");
+  assert.equal(grouped.attention[0].name, "未知 Agent");
+  assert.deepEqual(logic.sourceDisplayNames([null, {product: "__proto__", display_name: "unsafe"}]), {});
+});
