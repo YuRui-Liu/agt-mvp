@@ -34,7 +34,7 @@ func TestDiscoverOpenAndStrictFormat(t *testing.T) {
 		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
 	s := got[0]
-	if s.ID != "workbuddy:demo:session-a" || s.MessageCount != 4 || s.MalformedCount != 1 || s.Scope.Root != "/workspace/demo" {
+	if s.ID != fallbackSessionID("demo", "session-a") || s.MessageCount != 4 || s.MalformedCount != 1 || s.Scope.Root != "/workspace/demo" {
 		t.Fatalf("session=%#v", s)
 	}
 	r, err := a.Open(context.Background(), s)
@@ -81,7 +81,7 @@ func TestMultipleExplicitRootsDeduplicateUpstreamSessionID(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
-	if got[0].ID != "workbuddy:shared-session" {
+	if got[0].ID != upstreamSessionID("shared-session") {
 		t.Fatalf("id=%q", got[0].ID)
 	}
 }
@@ -108,7 +108,11 @@ func TestDefaultRootsPreferWorkBuddyAIAndExplicitRootsStayIsolated(t *testing.T)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
-	if got[0].OpaqueRef != filepath.Join(current, "current.jsonl") {
+	canonicalCurrent, err := filepath.EvalSymlinks(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].OpaqueRef != filepath.Join(canonicalCurrent, "current.jsonl") {
 		t.Fatalf("opaque=%q", got[0].OpaqueRef)
 	}
 
@@ -127,6 +131,55 @@ func TestRejectsSymlinkRoot(t *testing.T) {
 	}
 	if _, err := New(link).Discover(context.Background()); err == nil {
 		t.Fatal("symlink root accepted")
+	}
+}
+
+func TestRejectsSymlinkedRootAncestor(t *testing.T) {
+	target := t.TempDir()
+	root := filepath.Join(target, "projects")
+	dir := filepath.Join(root, "encoded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(`{"type":"message","sessionId":"s","role":"user","content":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	container := t.TempDir()
+	linkedAncestor := filepath.Join(container, "linked")
+	if err := os.Symlink(target, linkedAncestor); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if got, err := New(filepath.Join(linkedAncestor, "projects")).Discover(context.Background()); err == nil || len(got) != 0 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+}
+
+func TestOpenRejectsReplacedRootDirectory(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "projects")
+	install := func() {
+		dir := filepath.Join(root, "encoded")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := []byte(`{"type":"message","sessionId":"s","role":"user","content":"same bytes","timestamp":"2026-01-01T00:00:00Z"}` + "\n")
+		if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	install()
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if err := os.Rename(root, filepath.Join(base, "original-projects")); err != nil {
+		t.Fatal(err)
+	}
+	install()
+	if r, err := a.Open(context.Background(), got[0]); err == nil {
+		r.Close()
+		t.Fatal("replacement root accepted")
 	}
 }
 
@@ -247,7 +300,7 @@ func TestCapabilitiesReflectObservedEvents(t *testing.T) {
 	}
 	for _, s := range got {
 		want := []source.Capability{source.CapabilityMessages}
-		if s.ID == "workbuddy:with-tool" {
+		if s.ID == upstreamSessionID("with-tool") {
 			want = append(want, source.CapabilityTools)
 		}
 		if !reflect.DeepEqual(s.Capabilities, want) {
@@ -300,9 +353,63 @@ func TestDuplicateParentInLaterRootStillLinksUniqueChild(t *testing.T) {
 		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
 	for _, s := range got {
-		if s.ID == "workbuddy:unique-child" && s.ParentID != "workbuddy:canonical-parent" {
+		if s.ID == upstreamSessionID("unique-child") && s.ParentID != upstreamSessionID("canonical-parent") {
 			t.Fatalf("child=%#v", s)
 		}
+	}
+}
+
+func TestSessionIDDomainsPreventUpstreamFallbackCollisions(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "p")
+	if err := os.MkdirAll(filepath.Join(project, "parent", "subagents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, body string) {
+		if err := os.WriteFile(path, []byte(body+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(project, "x.jsonl"), `{"type":"message","role":"user","content":"fallback"}`)
+	write(filepath.Join(project, "upstream.jsonl"), `{"type":"message","sessionId":"p:x","role":"user","content":"upstream"}`)
+	write(filepath.Join(project, "parent.jsonl"), `{"type":"message","role":"user","content":"parent"}`)
+	write(filepath.Join(project, "parent", "subagents", "child.jsonl"), `{"type":"message","role":"user","content":"child"}`)
+	write(filepath.Join(project, "sub-upstream.jsonl"), `{"type":"message","sessionId":"p:parent:subagent:child","role":"user","content":"upstream child collision"}`)
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 5 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	ids := map[string]bool{}
+	for _, s := range got {
+		if ids[s.ID] {
+			t.Fatalf("duplicate id %q", s.ID)
+		}
+		ids[s.ID] = true
+	}
+	var child source.Session
+	for _, s := range got {
+		if strings.Contains(s.OpaqueRef, filepath.Join("subagents", "child.jsonl")) {
+			child = s
+		}
+	}
+	if child.ID == "" || child.ParentID == "" || child.ID == child.ParentID {
+		t.Fatalf("child=%#v", child)
+	}
+}
+
+func TestRejectsOversizedUpstreamSessionID(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "encoded")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"message","sessionId":"` + strings.Repeat("x", 513) + `","role":"user","content":"invalid"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "oversized.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Discover(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
 }
 
@@ -321,7 +428,7 @@ func TestInvalidRecordCannotChooseIdentityOrScope(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
 	}
-	if got[0].ID != "workbuddy:real" || got[0].Scope.Root != "/trusted/project" || got[0].MalformedCount != 1 {
+	if got[0].ID != upstreamSessionID("real") || got[0].Scope.Root != "/trusted/project" || got[0].MalformedCount != 1 {
 		t.Fatalf("session=%#v", got[0])
 	}
 }
@@ -434,11 +541,11 @@ func TestProjectsAndSubagentsKeepDistinctStableIdentities(t *testing.T) {
 		}
 		seen[s.ID] = true
 	}
-	if !seen["workbuddy:project-a:same"] || !seen["workbuddy:project-b:same"] || !seen["workbuddy:project-a:parent-a:subagent:child-a"] {
+	if !seen[fallbackSessionID("project-a", "same")] || !seen[fallbackSessionID("project-b", "same")] || !seen[fallbackSubagentID("project-a", "parent-a", "child-a")] {
 		t.Fatalf("ids=%#v", seen)
 	}
 	for _, s := range got {
-		if s.ID == "workbuddy:project-a:parent-a:subagent:child-a" && s.ParentID != "" {
+		if s.ID == fallbackSubagentID("project-a", "parent-a", "child-a") && s.ParentID != "" {
 			t.Fatalf("orphan parent forged: %#v", s)
 		}
 	}
@@ -462,7 +569,7 @@ func TestSubagentLinksCanonicalDiscoveredParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range got {
-		if s.ID == "workbuddy:project-a:parent-a:subagent:child" && s.ParentID != "workbuddy:project-a:parent-a" {
+		if s.ID == fallbackSubagentID("project-a", "parent-a", "child") && s.ParentID != fallbackSessionID("project-a", "parent-a") {
 			t.Fatalf("child=%#v", s)
 		}
 	}

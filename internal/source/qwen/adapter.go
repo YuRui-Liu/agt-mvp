@@ -22,9 +22,14 @@ import (
 
 const maxLineBytes = 1 << 20
 const maxSessionBytes = 4 << 20
+const maxSessionRecords = 4096
+const maxSessionEvents = 8192
+
+type pathIdentity struct{ directories []os.FileInfo }
 
 type authorization struct {
-	id, digest, metadata string
+	id, digest, metadata, root string
+	pathIdentity               pathIdentity
 }
 type Adapter struct {
 	root      string
@@ -52,10 +57,90 @@ func New(roots ...string) *Adapter {
 			root = filepath.Join(home, ".qwen", "projects")
 		}
 	}
-	return &Adapter{root: root, known: map[string]authorization{}}
+	canonical, err := canonicalizeRoot(root)
+	return &Adapter{root: canonical, configErr: err, known: map[string]authorization{}}
 }
 func (*Adapter) Product() string                   { return "qwen-code" }
 func (*Adapter) Capabilities() []source.Capability { return []source.Capability{"messages", "tools"} }
+
+func canonicalizeRoot(root string) (string, error) {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return "", errors.New("qwen-code: root must be absolute")
+	}
+	volume := filepath.VolumeName(root)
+	remainder := strings.TrimPrefix(root, volume+string(filepath.Separator))
+	parts := strings.Split(remainder, string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	start := 0
+	if len(parts) > 0 && parts[0] != "" {
+		first := filepath.Join(current, parts[0])
+		resolved, err := filepath.EvalSymlinks(first)
+		if err == nil {
+			current = resolved
+			start = 1
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	for i := start; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		next := filepath.Join(current, parts[i])
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			for ; i < len(parts); i++ {
+				current = filepath.Join(current, parts[i])
+			}
+			return filepath.Clean(current), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("qwen-code: symlink root ancestor rejected")
+		}
+		current = next
+	}
+	return filepath.Clean(current), nil
+}
+
+func capturePathIdentity(root, path string) (pathIdentity, bool) {
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return pathIdentity{}, false
+	}
+	dirs := []string{root}
+	current := root
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			dirs = append(dirs, current)
+		}
+	}
+	identity := pathIdentity{directories: make([]os.FileInfo, 0, len(dirs))}
+	for _, dir := range dirs {
+		info, err := os.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return pathIdentity{}, false
+		}
+		identity.directories = append(identity.directories, info)
+	}
+	return identity, true
+}
+
+func samePathIdentity(left, right pathIdentity) bool {
+	if len(left.directories) != len(right.directories) {
+		return false
+	}
+	for i := range left.directories {
+		if !os.SameFile(left.directories[i], right.directories[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 type record struct {
 	Type, SessionID, CWD, Timestamp, Model string
@@ -84,6 +169,13 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	}
 	if a.configErr != nil {
 		return nil, a.configErr
+	}
+	validated, validateErr := canonicalizeRoot(a.root)
+	if validateErr != nil || validated != a.root {
+		if validateErr != nil {
+			return nil, validateErr
+		}
+		return nil, errors.New("qwen-code: root identity changed")
 	}
 	agents, err := os.ReadDir(a.root)
 	if os.IsNotExist(err) {
@@ -117,7 +209,10 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		s, auth, _, ok := a.snapshot(path)
+		s, auth, _, ok := a.snapshot(ctx, path)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !ok || ids[s.ID] {
 			continue
 		}
@@ -136,7 +231,7 @@ func (a *Adapter) replaceKnown(next map[string]authorization) {
 	a.known = next
 	a.mu.Unlock()
 }
-func (a *Adapter) snapshot(path string) (source.Session, authorization, []byte, bool) {
+func (a *Adapter) snapshot(ctx context.Context, path string) (source.Session, authorization, []byte, bool) {
 	f, err := safeopen.Open(a.root, path, maxSessionBytes)
 	if err != nil {
 		return source.Session{}, authorization{}, nil, false
@@ -148,7 +243,7 @@ func (a *Adapter) snapshot(path string) (source.Session, authorization, []byte, 
 		return source.Session{}, authorization{}, nil, false
 	}
 	project := filepath.Base(filepath.Dir(filepath.Dir(path)))
-	header, events, messages, malformed, start, end, ok := parse(data)
+	header, events, messages, malformed, start, end, ok := parse(ctx, data)
 	stem := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	if !ok || stem == "" || header.SessionID != stem || strings.ContainsAny(stem, `/\\:`) {
 		return source.Session{}, authorization{}, nil, false
@@ -171,17 +266,24 @@ func (a *Adapter) snapshot(path string) (source.Session, authorization, []byte, 
 	if end.IsZero() {
 		end = info.ModTime()
 	}
-	capabilities := a.Capabilities()
+	capabilities := []source.Capability{source.CapabilityMessages}
+	if qwenHasTools(events) {
+		capabilities = append(capabilities, source.CapabilityTools)
+	}
 	if qwenHasReasoning(events) {
 		capabilities = append(capabilities, source.CapabilityReasoning)
 	}
 	s := source.Session{ID: "qwen-code:" + project + ":" + stem, Product: "qwen-code", FormatVersion: "chat-jsonl-v1", AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: start, EndedAt: end, MessageCount: messages, MalformedCount: malformed, OpaqueRef: path}
 	contentSum := sha256.Sum256(data)
 	s.SnapshotID = fmt.Sprintf("%x", contentSum[:])
-	auth := authorization{id: s.ID, digest: s.SnapshotID, metadata: sessionMetadata(s)}
+	identityPath, identityOK := capturePathIdentity(a.root, path)
+	if !identityOK {
+		return source.Session{}, authorization{}, nil, false
+	}
+	auth := authorization{id: s.ID, digest: s.SnapshotID, metadata: sessionMetadata(s), root: a.root, pathIdentity: identityPath}
 	return s, auth, append([]byte(nil), output.Bytes()...), true
 }
-func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) {
+func parse(ctx context.Context, data []byte) (record, []event, int, int, time.Time, time.Time, bool) {
 	var header record
 	var out []event
 	messages, malformed := 0, 0
@@ -191,7 +293,15 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 	completed := map[string]bool{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 4096), maxLineBytes+1)
+	records := 0
 	for sc.Scan() {
+		if ctx.Err() != nil {
+			return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
+		}
+		records++
+		if records > maxSessionRecords {
+			return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
+		}
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
@@ -212,7 +322,7 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 			malformed++
 			continue
 		}
-		events, textBearing, recognized, invalid := qwenMessageEvents(role, r.Message.Parts, r.Message.Content, r.Timestamp)
+		events, textBearing, recognized, invalid := qwenMessageEvents(ctx, role, r.Message.Parts, r.Message.Content, r.Timestamp)
 		if invalid {
 			malformed++
 			continue
@@ -220,20 +330,25 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 		if !recognized {
 			continue
 		}
-		nextPending, nextCompleted, validPairs := validateToolPairs(events, pending, completed)
-		if !validPairs {
-			malformed++
-			continue
+		if len(out)+len(events) > maxSessionEvents {
+			return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
 		}
-		if header.SessionID == "" {
+		newHeader := header.SessionID == ""
+		if newHeader {
 			if r.Type != "user" || r.SessionID == "" {
 				malformed++
 				continue
 			}
-			header = r
 		} else if r.SessionID != header.SessionID {
 			malformed++
 			continue
+		}
+		if !validateToolPairs(events, pending, completed) {
+			malformed++
+			continue
+		}
+		if newHeader {
+			header = r
 		}
 		if r.CWD != "" {
 			if !filepath.IsAbs(r.CWD) || filepath.Clean(r.CWD) != r.CWD || (cwd != "" && cwd != r.CWD) {
@@ -243,13 +358,15 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 			}
 		}
 		trackTime(r.Timestamp, &start, &end)
-		pending, completed = nextPending, nextCompleted
 		out = append(out, events...)
 		if r.Type == "assistant" || textBearing {
 			messages++
 		}
 	}
 	if sc.Err() != nil {
+		return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
+	}
+	if ctx.Err() != nil {
 		return record{}, nil, 0, malformed, time.Time{}, time.Time{}, false
 	}
 	if !cwdTrusted || cwd == "" {
@@ -260,32 +377,35 @@ func parse(data []byte) (record, []event, int, int, time.Time, time.Time, bool) 
 	return header, out, messages, malformed, start, end, header.SessionID != "" && len(out) > 0
 }
 
-func validateToolPairs(events []event, pending map[string]string, completed map[string]bool) (map[string]string, map[string]bool, bool) {
-	nextPending := make(map[string]string, len(pending))
-	for id, name := range pending {
-		nextPending[id] = name
-	}
-	nextCompleted := make(map[string]bool, len(completed))
-	for id, done := range completed {
-		nextCompleted[id] = done
-	}
+func validateToolPairs(events []event, pending map[string]string, completed map[string]bool) bool {
+	adds := map[string]string{}
+	resolves := map[string]bool{}
 	for _, e := range events {
 		switch e.Type {
 		case "tool_use":
-			if nextCompleted[e.CallID] || nextPending[e.CallID] != "" {
-				return nil, nil, false
+			if completed[e.CallID] || pending[e.CallID] != "" || adds[e.CallID] != "" {
+				return false
 			}
-			nextPending[e.CallID] = e.Name
+			adds[e.CallID] = e.Name
 		case "tool_result":
-			name, exists := nextPending[e.CallID]
-			if !exists || nextCompleted[e.CallID] || (e.Name != "" && e.Name != name) {
-				return nil, nil, false
+			name, exists := pending[e.CallID]
+			if !exists {
+				name, exists = adds[e.CallID]
 			}
-			delete(nextPending, e.CallID)
-			nextCompleted[e.CallID] = true
+			if !exists || completed[e.CallID] || resolves[e.CallID] || (e.Name != "" && e.Name != name) {
+				return false
+			}
+			resolves[e.CallID] = true
 		}
 	}
-	return nextPending, nextCompleted, true
+	for id, name := range adds {
+		pending[id] = name
+	}
+	for id := range resolves {
+		delete(pending, id)
+		completed[id] = true
+	}
+	return true
 }
 
 func metadataType(typ string) bool {
@@ -296,10 +416,13 @@ func metadataType(typ string) bool {
 	return typ != "user" && typ != "assistant"
 }
 
-func qwenMessageEvents(role string, partsRaw, contentRaw any, ts string) ([]event, bool, bool, bool) {
+func qwenMessageEvents(ctx context.Context, role string, partsRaw, contentRaw any, ts string) ([]event, bool, bool, bool) {
 	var out []event
 	textBearing, recognized := false, false
 	for _, rawCollection := range []any{partsRaw, contentRaw} {
+		if ctx.Err() != nil {
+			return nil, false, true, true
+		}
 		if rawCollection == nil {
 			continue
 		}
@@ -311,6 +434,9 @@ func qwenMessageEvents(role string, partsRaw, contentRaw any, ts string) ([]even
 			return nil, false, true, true
 		}
 		for _, raw := range blocks {
+			if ctx.Err() != nil {
+				return nil, false, true, true
+			}
 			block, ok := raw.(map[string]any)
 			if !ok {
 				return nil, false, true, true
@@ -426,6 +552,15 @@ func qwenHasReasoning(events []event) bool {
 	return false
 }
 
+func qwenHasTools(events []event) bool {
+	for _, e := range events {
+		if e.Type == "tool_use" || e.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
 func sessionMetadata(s source.Session) string {
 	data, _ := json.Marshal(s)
 	sum := sha256.Sum256(data)
@@ -456,8 +591,15 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID || auth.metadata != sessionMetadata(s) {
 		return nil, errors.New("qwen-code: unknown session reference")
 	}
-	fresh, freshAuth, output, valid := a.snapshot(s.OpaqueRef)
-	if !valid || fresh.ID != s.ID || freshAuth.digest != auth.digest {
+	currentIdentity, identityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	if !identityOK || !samePathIdentity(auth.pathIdentity, currentIdentity) {
+		return nil, errors.New("qwen-code: source path changed since discovery")
+	}
+	fresh, freshAuth, output, valid := a.snapshot(ctx, s.OpaqueRef)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !valid || fresh.ID != s.ID || freshAuth.digest != auth.digest || !samePathIdentity(auth.pathIdentity, freshAuth.pathIdentity) {
 		return nil, errors.New("qwen-code: source changed since discovery")
 	}
 	return io.NopCloser(bytes.NewReader(output)), nil

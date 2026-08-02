@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +23,13 @@ import (
 
 const maxLineBytes = 1 << 20
 const maxSessionBytes = 4 << 20
+const maxUpstreamSessionIDBytes = 512
+
+type pathIdentity struct{ directories []os.FileInfo }
 
 type authorization struct {
 	id, digest, root, metadata string
+	pathIdentity               pathIdentity
 }
 
 type Adapter struct {
@@ -57,19 +62,97 @@ func validatedRoots(roots []string) ([]string, error) {
 		if root == "" || !filepath.IsAbs(root) {
 			return nil, errors.New("workbuddy: roots must be absolute")
 		}
-		root = filepath.Clean(root)
+		var err error
+		root, err = canonicalizeRoot(root)
+		if err != nil {
+			return nil, err
+		}
 		if seen[root] {
 			continue
-		}
-		if info, err := os.Lstat(root); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return nil, errors.New("workbuddy: symlink root rejected")
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, err
 		}
 		seen[root] = true
 		out = append(out, root)
 	}
 	return out, nil
+}
+
+func canonicalizeRoot(root string) (string, error) {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return "", errors.New("workbuddy: roots must be absolute")
+	}
+	volume := filepath.VolumeName(root)
+	remainder := strings.TrimPrefix(root, volume+string(filepath.Separator))
+	parts := strings.Split(remainder, string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	start := 0
+	if len(parts) > 0 && parts[0] != "" {
+		first := filepath.Join(current, parts[0])
+		resolved, err := filepath.EvalSymlinks(first)
+		if err == nil {
+			current = resolved
+			start = 1
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	for i := start; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		next := filepath.Join(current, parts[i])
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			for ; i < len(parts); i++ {
+				current = filepath.Join(current, parts[i])
+			}
+			return filepath.Clean(current), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("workbuddy: symlink root ancestor rejected")
+		}
+		current = next
+	}
+	return filepath.Clean(current), nil
+}
+
+func capturePathIdentity(root, path string) (pathIdentity, bool) {
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return pathIdentity{}, false
+	}
+	dirs := []string{root}
+	current := root
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			dirs = append(dirs, current)
+		}
+	}
+	identity := pathIdentity{directories: make([]os.FileInfo, 0, len(dirs))}
+	for _, dir := range dirs {
+		info, err := os.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return pathIdentity{}, false
+		}
+		identity.directories = append(identity.directories, info)
+	}
+	return identity, true
+}
+
+func samePathIdentity(left, right pathIdentity) bool {
+	if len(left.directories) != len(right.directories) {
+		return false
+	}
+	for i := range left.directories {
+		if !os.SameFile(left.directories[i], right.directories[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (*Adapter) Product() string                   { return "workbuddy" }
@@ -129,6 +212,13 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	for _, root := range a.roots {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		validated, validateErr := canonicalizeRoot(root)
+		if validateErr != nil || validated != root {
+			if validateErr != nil {
+				return nil, validateErr
+			}
+			return nil, errors.New("workbuddy: root identity changed")
 		}
 		projects, err := os.ReadDir(root)
 		if os.IsNotExist(err) {
@@ -280,12 +370,12 @@ func inspect(root, path string) (source.Session, authorization, bool) {
 	if stem == "" || strings.ContainsAny(stem, `/\:`) {
 		return source.Session{}, authorization{}, false
 	}
-	id := "workbuddy:" + p.sessionID
+	id := upstreamSessionID(p.sessionID)
 	if p.sessionID == "" {
-		id = "workbuddy:" + project + ":" + stem
+		id = fallbackSessionID(project, stem)
 	}
 	if len(parts) == 4 && p.sessionID == "" {
-		id = "workbuddy:" + project + ":" + parts[1] + ":subagent:" + stem
+		id = fallbackSubagentID(project, parts[1], stem)
 	}
 	identity := project
 	identitySum := sha256.Sum256([]byte(identity))
@@ -309,7 +399,20 @@ func inspect(root, path string) (source.Session, authorization, bool) {
 	s := source.Session{ID: id, Product: "workbuddy", FormatVersion: "jsonl-v1", AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: p.start, EndedAt: p.end, MessageCount: p.messages, MalformedCount: p.malformed, Usage: p.usage, OpaqueRef: path}
 	sum := sha256.Sum256(data)
 	s.SnapshotID = fmt.Sprintf("%x", sum[:])
-	return s, authorization{id: s.ID, digest: s.SnapshotID, root: root, metadata: sessionMetadata(s)}, true
+	identityPath, ok := capturePathIdentity(root, path)
+	if !ok {
+		return source.Session{}, authorization{}, false
+	}
+	return s, authorization{id: s.ID, digest: s.SnapshotID, root: root, metadata: sessionMetadata(s), pathIdentity: identityPath}, true
+}
+
+func idPart(value string) string            { return strconv.Itoa(len(value)) + ":" + value }
+func upstreamSessionID(value string) string { return "workbuddy:u:" + idPart(value) }
+func fallbackSessionID(project, stem string) string {
+	return "workbuddy:f:" + idPart(project) + ":" + idPart(stem)
+}
+func fallbackSubagentID(project, parent, stem string) string {
+	return "workbuddy:s:" + idPart(project) + ":" + idPart(parent) + ":" + idPart(stem)
 }
 
 func sessionMetadata(s source.Session) string {
@@ -397,6 +500,10 @@ func parse(data []byte) (parsed, bool) {
 			continue
 		}
 		if r.SessionID != "" {
+			if len(r.SessionID) > maxUpstreamSessionIDBytes {
+				p.malformed++
+				continue
+			}
 			if p.sessionID == "" {
 				p.sessionID = r.SessionID
 			} else if p.sessionID != r.SessionID {
@@ -632,6 +739,10 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID || auth.metadata != sessionMetadata(s) {
 		return nil, errors.New("workbuddy: unknown session reference")
 	}
+	currentIdentity, identityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	if !identityOK || !samePathIdentity(auth.pathIdentity, currentIdentity) {
+		return nil, errors.New("workbuddy: source path changed since discovery")
+	}
 	data, _, valid := readSession(auth.root, s.OpaqueRef)
 	if !valid {
 		return nil, errors.New("workbuddy: source changed since discovery")
@@ -639,6 +750,10 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	sum := sha256.Sum256(data)
 	if fmt.Sprintf("%x", sum[:]) != auth.digest {
 		return nil, errors.New("workbuddy: source changed since discovery")
+	}
+	postIdentity, postIdentityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	if !postIdentityOK || !samePathIdentity(auth.pathIdentity, postIdentity) {
+		return nil, errors.New("workbuddy: source path changed during open")
 	}
 	p, valid := parse(data)
 	if !valid {
