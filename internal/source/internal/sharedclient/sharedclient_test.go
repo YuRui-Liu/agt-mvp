@@ -896,6 +896,104 @@ func TestBodyQueriesGuardAggregateRowBytes(t *testing.T) {
 	}
 }
 
+func TestBodyAggregatePayloadBoundarySuppressesWholeRowBeforeDriver(t *testing.T) {
+	const limit int64 = 12
+	for _, table := range []string{"record", "message"} {
+		for _, plusOne := range []bool{false, true} {
+			name := "exact"
+			if plusOne {
+				name = "plus one"
+			}
+			t.Run(table+"/"+name, func(t *testing.T) {
+				root := t.TempDir()
+				path := filepath.Join(root, "local.db")
+				database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+				defer database.Close()
+				insertFixtureConversation(t, database, LingmaIDEV1)
+
+				var spec querySpec
+				var arguments []any
+				var valueIndexes []int
+				if table == "record" {
+					reasoning := "rrrr"
+					if plusOne {
+						reasoning += "r"
+					}
+					if _, err := database.Exec(`UPDATE chat_record SET question='qqqq',answer='aaaa',reasoning_content=?;`, reasoning); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := database.Exec(`UPDATE chat_message SET content=NULL,tool_result=NULL`); err != nil {
+						t.Fatal(err)
+					}
+					spec = recordQuery
+					arguments = []any{maxSQLiteMetadataCellBytes, maxSQLiteMetadataCellBytes, limit, limit, limit, limit, limit, limit, 2}
+					valueIndexes = []int{8, 11, 14}
+				} else {
+					toolResult := "tttttt"
+					if plusOne {
+						toolResult += "t"
+					}
+					if _, err := database.Exec(`UPDATE chat_message SET content='cccccc',tool_result=?`, toolResult); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := database.Exec(`UPDATE chat_record SET question=NULL,answer=NULL,reasoning_content=NULL`); err != nil {
+						t.Fatal(err)
+					}
+					spec = messageQuery
+					arguments = []any{maxSQLiteMetadataCellBytes, maxSQLiteMetadataCellBytes, maxSQLiteMetadataCellBytes, maxSQLiteMetadataCellBytes, limit, limit, limit, limit, 2}
+					valueIndexes = []int{14, 17}
+				}
+
+				rows, err := database.Query(spec.statement, arguments...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !rows.Next() {
+					rows.Close()
+					t.Fatalf("no guarded row: %v", rows.Err())
+				}
+				decoder, err := scanStorage(rows, len(spec.columns))
+				rows.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, index := range valueIndexes {
+					if plusOne && decoder.values[index] != nil {
+						t.Fatalf("driver received oversize body at index %d: %T", index, decoder.values[index])
+					}
+					if !plusOne {
+						if _, ok := decoder.values[index].(string); !ok {
+							t.Fatalf("driver exact body at index %d=%T", index, decoder.values[index])
+						}
+					}
+				}
+
+				limits := generousDatabaseLimits()
+				limits.MaxPayloadBytes = limit
+				err = WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, limits, func(reader ChatReader) error {
+					conversation, err := reader.ReadConversation(context.Background(), "session-1")
+					if err != nil {
+						return err
+					}
+					if table == "record" && byteLength(conversation.Records[0].Question, conversation.Records[0].Answer, conversation.Records[0].ReasoningContent) != limit {
+						t.Fatalf("record=%#v", conversation.Records[0])
+					}
+					if table == "message" && byteLength(conversation.Messages[0].Content, conversation.Messages[0].ToolResult) != limit {
+						t.Fatalf("message=%#v", conversation.Messages[0])
+					}
+					return nil
+				})
+				if !plusOne && err != nil {
+					t.Fatal(err)
+				}
+				if plusOne && !errors.Is(err, ErrBudgetExceeded) {
+					t.Fatalf("error=%v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestMetadataCellLimitsAreExactAcrossEveryTable(t *testing.T) {
 	for _, test := range []struct {
 		name, update, readID string
