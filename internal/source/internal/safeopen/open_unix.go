@@ -7,25 +7,64 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func openRelative(root, relative string) (*os.File, error) {
-	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
+type boundRootState struct{ file *os.File }
+
+func bindRoot(root string) (boundRootState, Identity, error) {
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return boundRootState{}, Identity{}, err
+	}
+	current := os.NewFile(uintptr(fd), string(filepath.Separator))
+	parts := strings.Split(strings.TrimPrefix(root, string(filepath.Separator)), string(filepath.Separator))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		nextFD, err := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
+		if err != nil {
+			current.Close()
+			return boundRootState{}, Identity{}, err
+		}
+		next := os.NewFile(uintptr(nextFD), filepath.Join(current.Name(), part))
+		current.Close()
+		current = next
+	}
+	identity, err := unixFileIdentity(current)
+	if err != nil {
+		current.Close()
+		return boundRootState{}, Identity{}, err
+	}
+	return boundRootState{file: current}, identity, nil
+}
+
+func closeBoundRoot(state *boundRootState) error { return state.file.Close() }
+
+func duplicateRoot(state *boundRootState) (*os.File, error) {
+	fd, err := unix.Dup(int(state.file.Fd()))
 	if err != nil {
 		return nil, err
 	}
-	current := os.NewFile(uintptr(rootFD), root)
-	info, err := current.Stat()
-	if err != nil || !info.IsDir() {
-		current.Close()
-		return nil, errors.New("safeopen: root is not a directory")
+	unix.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), state.file.Name()), nil
+}
+
+func openFromBound(state *boundRootState, relative string, finalDirectory bool) (*os.File, error) {
+	current, err := duplicateRoot(state)
+	if err != nil {
+		return nil, err
 	}
-	parts := splitRelative(relative)
+	if relative == "." {
+		return current, nil
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
 	for index, part := range parts {
 		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
-		if index != len(parts)-1 {
+		if index < len(parts)-1 || finalDirectory {
 			flags |= unix.O_DIRECTORY
 		}
 		fd, err := unix.Openat(int(current.Fd()), part, flags, 0)
@@ -36,13 +75,60 @@ func openRelative(root, relative string) (*os.File, error) {
 		next := os.NewFile(uintptr(fd), filepath.Join(current.Name(), part))
 		current.Close()
 		current = next
-		if afterOpenComponent != nil && index != len(parts)-1 {
-			afterOpenComponent(index)
-		}
 	}
 	return current, nil
 }
 
-func splitRelative(relative string) []string {
-	return strings.Split(relative, string(filepath.Separator))
+func readDirBound(state *boundRootState, relative string) ([]os.DirEntry, error) {
+	dir, err := openFromBound(state, relative, true)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	return dir.ReadDir(-1)
+}
+
+func openFileBound(state *boundRootState, relative string) (*os.File, error) {
+	return openFromBound(state, relative, false)
+}
+
+func pathIdentityBound(state *boundRootState, relative string, root Identity) ([]Identity, error) {
+	identities := []Identity{root}
+	if relative == "." {
+		return identities, nil
+	}
+	current, err := duplicateRoot(state)
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		fd, err := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
+		if err != nil {
+			current.Close()
+			return nil, err
+		}
+		next := os.NewFile(uintptr(fd), filepath.Join(current.Name(), part))
+		current.Close()
+		current = next
+		identity, err := unixFileIdentity(current)
+		if err != nil {
+			current.Close()
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	current.Close()
+	return identities, nil
+}
+
+func unixFileIdentity(file *os.File) (Identity, error) {
+	info, err := file.Stat()
+	if err != nil || !info.IsDir() {
+		return Identity{}, errors.New("safeopen: invalid directory")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return Identity{}, errors.New("safeopen: directory identity unavailable")
+	}
+	return Identity{Volume: uint64(stat.Dev), File: uint64(stat.Ino)}, nil
 }

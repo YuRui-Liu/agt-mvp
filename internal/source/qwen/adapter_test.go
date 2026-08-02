@@ -141,6 +141,40 @@ func TestOpenRejectsReplacedRootDirectory(t *testing.T) {
 		t.Fatal("replacement root accepted")
 	}
 }
+
+func TestDiscoverBoundRootRejectsAncestorSwapBeforeReadDir(t *testing.T) {
+	base := t.TempDir()
+	ancestor := filepath.Join(base, "ancestor")
+	root := filepath.Join(ancestor, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	external := filepath.Join(outside, "projects", "encoded", "chats")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"sessionId":"external","type":"user","message":{"role":"user","parts":[{"text":"must not authorize"}]}}` + "\n")
+	if err := os.WriteFile(filepath.Join(external, "external.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(root)
+	a.afterBind = func() {
+		if err := os.Rename(ancestor, filepath.Join(base, "original-ancestor")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, ancestor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := a.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("authorized external sessions=%#v", got)
+	}
+}
 func TestVersionedFixture(t *testing.T) {
 	data, err := os.ReadFile("../testdata/qwen/v1.jsonl")
 	if err != nil {

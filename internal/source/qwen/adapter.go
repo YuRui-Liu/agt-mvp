@@ -25,11 +25,13 @@ const maxSessionBytes = 4 << 20
 const maxSessionRecords = 4096
 const maxSessionEvents = 8192
 
-type pathIdentity struct{ directories []os.FileInfo }
+type pathIdentity struct{ directories []safeopen.Identity }
 
 type authorization struct {
 	id, digest, metadata, root string
 	pathIdentity               pathIdentity
+	rootIdentity               safeopen.Identity
+	relative                   string
 }
 type Adapter struct {
 	root      string
@@ -37,6 +39,7 @@ type Adapter struct {
 	scanMu    sync.Mutex
 	mu        sync.RWMutex
 	known     map[string]authorization
+	afterBind func()
 }
 
 func New(roots ...string) *Adapter {
@@ -106,28 +109,12 @@ func canonicalizeRoot(root string) (string, error) {
 	return filepath.Clean(current), nil
 }
 
-func capturePathIdentity(root, path string) (pathIdentity, bool) {
-	rel, err := filepath.Rel(root, filepath.Dir(path))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+func capturePathIdentity(bound *safeopen.BoundRoot, relative string) (pathIdentity, bool) {
+	identities, err := bound.PathIdentity(filepath.Dir(relative))
+	if err != nil {
 		return pathIdentity{}, false
 	}
-	dirs := []string{root}
-	current := root
-	if rel != "." {
-		for _, part := range strings.Split(rel, string(filepath.Separator)) {
-			current = filepath.Join(current, part)
-			dirs = append(dirs, current)
-		}
-	}
-	identity := pathIdentity{directories: make([]os.FileInfo, 0, len(dirs))}
-	for _, dir := range dirs {
-		info, err := os.Lstat(dir)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return pathIdentity{}, false
-		}
-		identity.directories = append(identity.directories, info)
-	}
-	return identity, true
+	return pathIdentity{directories: identities}, true
 }
 
 func samePathIdentity(left, right pathIdentity) bool {
@@ -135,7 +122,7 @@ func samePathIdentity(left, right pathIdentity) bool {
 		return false
 	}
 	for i := range left.directories {
-		if !os.SameFile(left.directories[i], right.directories[i]) {
+		if left.directories[i] != right.directories[i] {
 			return false
 		}
 	}
@@ -177,7 +164,7 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		}
 		return nil, errors.New("qwen-code: root identity changed")
 	}
-	agents, err := os.ReadDir(a.root)
+	bound, err := safeopen.Bind(a.root)
 	if os.IsNotExist(err) {
 		a.replaceKnown(nil)
 		return nil, nil
@@ -185,31 +172,41 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
+	defer bound.Close()
+	if a.afterBind != nil {
+		a.afterBind()
+	}
+	agents, err := bound.ReadDir(".")
+	if err != nil {
+		return nil, err
+	}
+	type candidate struct{ path, relative string }
+	var paths []candidate
 	for _, agent := range agents {
 		if !agent.IsDir() || agent.Type()&os.ModeSymlink != 0 {
 			continue
 		}
-		dir := filepath.Join(a.root, agent.Name(), "chats")
-		files, err := os.ReadDir(dir)
+		dirRel := filepath.Join(agent.Name(), "chats")
+		files, err := bound.ReadDir(dirRel)
 		if err != nil {
 			continue
 		}
 		for _, f := range files {
 			if f.Type().IsRegular() && strings.HasSuffix(f.Name(), ".jsonl") {
-				paths = append(paths, filepath.Join(dir, f.Name()))
+				rel := filepath.Join(dirRel, f.Name())
+				paths = append(paths, candidate{filepath.Join(a.root, rel), rel})
 			}
 		}
 	}
-	sort.Strings(paths)
+	sort.Slice(paths, func(i, j int) bool { return paths[i].path < paths[j].path })
 	var out []source.Session
 	next := map[string]authorization{}
 	ids := map[string]bool{}
-	for _, path := range paths {
+	for _, candidate := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		s, auth, _, ok := a.snapshot(ctx, path)
+		s, auth, _, ok := a.snapshot(ctx, bound, candidate.path, candidate.relative)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -218,7 +215,7 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		}
 		ids[s.ID] = true
 		out = append(out, s)
-		next[path] = auth
+		next[candidate.path] = auth
 	}
 	a.replaceKnown(next)
 	return out, nil
@@ -231,8 +228,8 @@ func (a *Adapter) replaceKnown(next map[string]authorization) {
 	a.known = next
 	a.mu.Unlock()
 }
-func (a *Adapter) snapshot(ctx context.Context, path string) (source.Session, authorization, []byte, bool) {
-	f, err := safeopen.Open(a.root, path, maxSessionBytes)
+func (a *Adapter) snapshot(ctx context.Context, bound *safeopen.BoundRoot, path, relative string) (source.Session, authorization, []byte, bool) {
+	f, err := bound.Open(relative, maxSessionBytes)
 	if err != nil {
 		return source.Session{}, authorization{}, nil, false
 	}
@@ -276,11 +273,11 @@ func (a *Adapter) snapshot(ctx context.Context, path string) (source.Session, au
 	s := source.Session{ID: "qwen-code:" + project + ":" + stem, Product: "qwen-code", FormatVersion: "chat-jsonl-v1", AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: start, EndedAt: end, MessageCount: messages, MalformedCount: malformed, OpaqueRef: path}
 	contentSum := sha256.Sum256(data)
 	s.SnapshotID = fmt.Sprintf("%x", contentSum[:])
-	identityPath, identityOK := capturePathIdentity(a.root, path)
+	identityPath, identityOK := capturePathIdentity(bound, relative)
 	if !identityOK {
 		return source.Session{}, authorization{}, nil, false
 	}
-	auth := authorization{id: s.ID, digest: s.SnapshotID, metadata: sessionMetadata(s), root: a.root, pathIdentity: identityPath}
+	auth := authorization{id: s.ID, digest: s.SnapshotID, metadata: sessionMetadata(s), root: a.root, pathIdentity: identityPath, rootIdentity: bound.Identity(), relative: relative}
 	return s, auth, append([]byte(nil), output.Bytes()...), true
 }
 func parse(ctx context.Context, data []byte) (record, []event, int, int, time.Time, time.Time, bool) {
@@ -591,11 +588,19 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID || auth.metadata != sessionMetadata(s) {
 		return nil, errors.New("qwen-code: unknown session reference")
 	}
-	currentIdentity, identityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	bound, bindErr := safeopen.Bind(auth.root)
+	if bindErr != nil {
+		return nil, errors.New("qwen-code: source root changed since discovery")
+	}
+	defer bound.Close()
+	if bound.Identity() != auth.rootIdentity {
+		return nil, errors.New("qwen-code: source root changed since discovery")
+	}
+	currentIdentity, identityOK := capturePathIdentity(bound, auth.relative)
 	if !identityOK || !samePathIdentity(auth.pathIdentity, currentIdentity) {
 		return nil, errors.New("qwen-code: source path changed since discovery")
 	}
-	fresh, freshAuth, output, valid := a.snapshot(ctx, s.OpaqueRef)
+	fresh, freshAuth, output, valid := a.snapshot(ctx, bound, s.OpaqueRef, auth.relative)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

@@ -25,11 +25,13 @@ const maxLineBytes = 1 << 20
 const maxSessionBytes = 4 << 20
 const maxUpstreamSessionIDBytes = 512
 
-type pathIdentity struct{ directories []os.FileInfo }
+type pathIdentity struct{ directories []safeopen.Identity }
 
 type authorization struct {
 	id, digest, root, metadata string
 	pathIdentity               pathIdentity
+	rootIdentity               safeopen.Identity
+	relative                   string
 }
 
 type Adapter struct {
@@ -38,6 +40,7 @@ type Adapter struct {
 	scanMu    sync.Mutex
 	mu        sync.RWMutex
 	known     map[string]authorization
+	afterBind func(string)
 }
 
 func New(roots ...string) *Adapter {
@@ -119,28 +122,12 @@ func canonicalizeRoot(root string) (string, error) {
 	return filepath.Clean(current), nil
 }
 
-func capturePathIdentity(root, path string) (pathIdentity, bool) {
-	rel, err := filepath.Rel(root, filepath.Dir(path))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+func capturePathIdentity(bound *safeopen.BoundRoot, relative string) (pathIdentity, bool) {
+	identities, err := bound.PathIdentity(filepath.Dir(relative))
+	if err != nil {
 		return pathIdentity{}, false
 	}
-	dirs := []string{root}
-	current := root
-	if rel != "." {
-		for _, part := range strings.Split(rel, string(filepath.Separator)) {
-			current = filepath.Join(current, part)
-			dirs = append(dirs, current)
-		}
-	}
-	identity := pathIdentity{directories: make([]os.FileInfo, 0, len(dirs))}
-	for _, dir := range dirs {
-		info, err := os.Lstat(dir)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return pathIdentity{}, false
-		}
-		identity.directories = append(identity.directories, info)
-	}
-	return identity, true
+	return pathIdentity{directories: identities}, true
 }
 
 func samePathIdentity(left, right pathIdentity) bool {
@@ -148,7 +135,7 @@ func samePathIdentity(left, right pathIdentity) bool {
 		return false
 	}
 	for i := range left.directories {
-		if !os.SameFile(left.directories[i], right.directories[i]) {
+		if left.directories[i] != right.directories[i] {
 			return false
 		}
 	}
@@ -207,7 +194,10 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		return nil, a.configErr
 	}
 
-	type candidate struct{ root, path string }
+	type candidate struct {
+		root, path, relative string
+		bound                *safeopen.BoundRoot
+	}
 	var paths []candidate
 	for _, root := range a.roots {
 		if err := ctx.Err(); err != nil {
@@ -220,10 +210,18 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			}
 			return nil, errors.New("workbuddy: root identity changed")
 		}
-		projects, err := os.ReadDir(root)
+		bound, err := safeopen.Bind(root)
 		if os.IsNotExist(err) {
 			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		defer bound.Close()
+		if a.afterBind != nil {
+			a.afterBind(root)
+		}
+		projects, err := bound.ReadDir(".")
 		if err != nil {
 			return nil, err
 		}
@@ -231,31 +229,29 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			if !validProjectDir(project) {
 				continue
 			}
-			dir := filepath.Join(root, project.Name())
-			entries, err := os.ReadDir(dir)
+			dirRel := project.Name()
+			entries, err := bound.ReadDir(dirRel)
 			if err != nil {
 				continue
 			}
 			for _, entry := range entries {
 				if regularJSONL(entry) {
-					paths = append(paths, candidate{root, filepath.Join(dir, entry.Name())})
+					rel := filepath.Join(dirRel, entry.Name())
+					paths = append(paths, candidate{root, filepath.Join(root, rel), rel, bound})
 					continue
 				}
 				if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 					continue
 				}
-				subdir := filepath.Join(dir, entry.Name(), "subagents")
-				info, err := os.Lstat(subdir)
-				if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-					continue
-				}
-				subs, err := os.ReadDir(subdir)
+				subRel := filepath.Join(dirRel, entry.Name(), "subagents")
+				subs, err := bound.ReadDir(subRel)
 				if err != nil {
 					continue
 				}
 				for _, sub := range subs {
 					if regularJSONL(sub) {
-						paths = append(paths, candidate{root, filepath.Join(subdir, sub.Name())})
+						rel := filepath.Join(subRel, sub.Name())
+						paths = append(paths, candidate{root, filepath.Join(root, rel), rel, bound})
 					}
 				}
 			}
@@ -278,7 +274,7 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		s, auth, ok := inspect(candidate.root, candidate.path)
+		s, auth, ok := inspect(candidate.bound, candidate.root, candidate.path, candidate.relative)
 		if !ok {
 			continue
 		}
@@ -348,8 +344,8 @@ func (a *Adapter) replaceKnown(next map[string]authorization) {
 	a.mu.Unlock()
 }
 
-func inspect(root, path string) (source.Session, authorization, bool) {
-	data, info, ok := readSession(root, path)
+func inspect(bound *safeopen.BoundRoot, root, path, relative string) (source.Session, authorization, bool) {
+	data, info, ok := readSession(bound, relative)
 	if !ok {
 		return source.Session{}, authorization{}, false
 	}
@@ -399,11 +395,11 @@ func inspect(root, path string) (source.Session, authorization, bool) {
 	s := source.Session{ID: id, Product: "workbuddy", FormatVersion: "jsonl-v1", AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: p.start, EndedAt: p.end, MessageCount: p.messages, MalformedCount: p.malformed, Usage: p.usage, OpaqueRef: path}
 	sum := sha256.Sum256(data)
 	s.SnapshotID = fmt.Sprintf("%x", sum[:])
-	identityPath, ok := capturePathIdentity(root, path)
+	identityPath, ok := capturePathIdentity(bound, relative)
 	if !ok {
 		return source.Session{}, authorization{}, false
 	}
-	return s, authorization{id: s.ID, digest: s.SnapshotID, root: root, metadata: sessionMetadata(s), pathIdentity: identityPath}, true
+	return s, authorization{id: s.ID, digest: s.SnapshotID, root: root, metadata: sessionMetadata(s), pathIdentity: identityPath, rootIdentity: bound.Identity(), relative: relative}, true
 }
 
 func idPart(value string) string            { return strconv.Itoa(len(value)) + ":" + value }
@@ -421,8 +417,8 @@ func sessionMetadata(s source.Session) string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-func readSession(root, path string) ([]byte, os.FileInfo, bool) {
-	f, err := safeopen.Open(root, path, maxSessionBytes)
+func readSession(bound *safeopen.BoundRoot, relative string) ([]byte, os.FileInfo, bool) {
+	f, err := bound.Open(relative, maxSessionBytes)
 	if err != nil {
 		return nil, nil, false
 	}
@@ -739,11 +735,19 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if !ok || auth.id != s.ID || auth.digest != s.SnapshotID || auth.metadata != sessionMetadata(s) {
 		return nil, errors.New("workbuddy: unknown session reference")
 	}
-	currentIdentity, identityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	bound, bindErr := safeopen.Bind(auth.root)
+	if bindErr != nil {
+		return nil, errors.New("workbuddy: source root changed since discovery")
+	}
+	defer bound.Close()
+	if bound.Identity() != auth.rootIdentity {
+		return nil, errors.New("workbuddy: source root changed since discovery")
+	}
+	currentIdentity, identityOK := capturePathIdentity(bound, auth.relative)
 	if !identityOK || !samePathIdentity(auth.pathIdentity, currentIdentity) {
 		return nil, errors.New("workbuddy: source path changed since discovery")
 	}
-	data, _, valid := readSession(auth.root, s.OpaqueRef)
+	data, _, valid := readSession(bound, auth.relative)
 	if !valid {
 		return nil, errors.New("workbuddy: source changed since discovery")
 	}
@@ -751,7 +755,7 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if fmt.Sprintf("%x", sum[:]) != auth.digest {
 		return nil, errors.New("workbuddy: source changed since discovery")
 	}
-	postIdentity, postIdentityOK := capturePathIdentity(auth.root, s.OpaqueRef)
+	postIdentity, postIdentityOK := capturePathIdentity(bound, auth.relative)
 	if !postIdentityOK || !samePathIdentity(auth.pathIdentity, postIdentity) {
 		return nil, errors.New("workbuddy: source path changed during open")
 	}
