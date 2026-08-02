@@ -122,13 +122,6 @@ func canonicalizeRoot(root string) (string, error) {
 	}
 	return original, nil
 }
-func capturePathIdentity(bound *safeopen.BoundRoot, relative string) (pathIdentity, bool) {
-	identities, err := bound.PathIdentity(filepath.Dir(relative))
-	if err != nil {
-		return pathIdentity{}, false
-	}
-	return pathIdentity{directories: identities}, true
-}
 func samePathIdentity(left, right pathIdentity) bool {
 	if len(left.directories) != len(right.directories) {
 		return false
@@ -172,7 +165,7 @@ type extensionIdentifier struct {
 }
 
 func hasCopilotProvenance(session sess) bool {
-	if session.Responder != "GitHub Copilot" || len(session.Requests) == 0 || len(session.Requests) > maxSessionRecords {
+	if (session.Responder != "" && session.Responder != "GitHub Copilot") || len(session.Requests) == 0 || len(session.Requests) > maxSessionRecords {
 		return false
 	}
 	for _, request := range session.Requests {
@@ -245,14 +238,13 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if a.afterBind != nil {
 			a.afterBind(root)
 		}
-		workspaces, err := bound.ReadDir("workspaceStorage")
+		workspaces, err := bound.ReadDirLimit("workspaceStorage", maxWorkspaceDirs)
 		if err != nil {
 			bound.Close()
+			if errors.Is(err, safeopen.ErrDirectoryLimit) {
+				return nil, errScanLimit
+			}
 			continue
-		}
-		if len(workspaces) > maxWorkspaceDirs {
-			bound.Close()
-			return nil, errScanLimit
 		}
 		for _, workspace := range workspaces {
 			if err := ctx.Err(); err != nil {
@@ -264,15 +256,16 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			}
 			for _, sessionDir := range []string{"chatSessions", "chatEditingSessions"} {
 				dirRel := filepath.Join("workspaceStorage", workspace.Name(), sessionDir)
-				entries, err := bound.ReadDir(dirRel)
+				remaining := maxSessionFiles - entriesScanned
+				entries, err := bound.ReadDirLimit(dirRel, remaining)
 				if err != nil {
+					if errors.Is(err, safeopen.ErrDirectoryLimit) {
+						bound.Close()
+						return nil, errScanLimit
+					}
 					continue
 				}
 				entriesScanned += len(entries)
-				if len(entries) > maxSessionFiles || entriesScanned > maxSessionFiles {
-					bound.Close()
-					return nil, errScanLimit
-				}
 				for _, entry := range entries {
 					if err := ctx.Err(); err != nil {
 						bound.Close()
@@ -329,17 +322,28 @@ func (a *Adapter) replaceKnown(next map[string]authorization) {
 	a.known = next
 	a.mu.Unlock()
 }
-func readBound(bound *safeopen.BoundRoot, relative string) ([]byte, error) {
-	f, e := bound.Open(relative, maxSessionBytes)
-	if e != nil {
-		return nil, e
+func openBound(bound *safeopen.BoundRoot, relative string) (*os.File, pathIdentity, error) {
+	f, identities, err := bound.OpenWithPathIdentity(relative, maxSessionBytes)
+	if err != nil {
+		return nil, pathIdentity{}, err
 	}
-	defer f.Close()
+	return f, pathIdentity{directories: identities}, nil
+}
+func readOpened(f *os.File) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(f, maxSessionBytes+1))
 	if err != nil || len(data) > int(maxSessionBytes) {
 		return nil, errChangedSource
 	}
 	return data, nil
+}
+func readBound(bound *safeopen.BoundRoot, relative string) ([]byte, pathIdentity, error) {
+	f, identities, err := openBound(bound, relative)
+	if err != nil {
+		return nil, pathIdentity{}, err
+	}
+	defer f.Close()
+	data, err := readOpened(f)
+	return data, identities, err
 }
 func duplicateRank(p string) int {
 	r := 0
@@ -352,7 +356,7 @@ func duplicateRank(p string) int {
 	return r
 }
 func (a *Adapter) inspect(ctx context.Context, bound *safeopen.BoundRoot, root, p, relative string) (source.Session, authorization, bool) {
-	data, e := readBound(bound, relative)
+	data, identityPath, e := readBound(bound, relative)
 	if e != nil {
 		return source.Session{}, authorization{}, false
 	}
@@ -398,10 +402,6 @@ func (a *Adapter) inspect(ctx context.Context, bound *safeopen.BoundRoot, root, 
 		capabilities = append(capabilities, source.CapabilityReasoning)
 	}
 	session := source.Session{ID: "vscode-copilot:" + s.SessionID, Product: "vscode-copilot", FormatVersion: fmt.Sprintf("v%d", s.Version), AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: time.UnixMilli(s.CreationDate), EndedAt: time.UnixMilli(s.LastMessageDate), MessageCount: count, MalformedCount: mal, SnapshotID: digest, OpaqueRef: p}
-	identityPath, ok := capturePathIdentity(bound, relative)
-	if !ok {
-		return source.Session{}, authorization{}, false
-	}
 	auth := authorization{id: session.ID, digest: digest, metadata: sessionMetadata(session), root: root, pathIdentity: identityPath, rootIdentity: bound.Identity(), relative: relative}
 	return session, auth, true
 }
@@ -428,7 +428,7 @@ func workspaceScope(bound *safeopen.BoundRoot, dir, id string) source.ScopeRef {
 	return source.ScopeRef{Type: source.ScopeConversationGroup, Root: fmt.Sprintf("%x", sum[:12]), Label: "VS Code Copilot sessions"}
 }
 func readJSON(bound *safeopen.BoundRoot, p string, v any) (int64, error) {
-	b, e := readBound(bound, p)
+	b, _, e := readBound(bound, p)
 	if e != nil {
 		return 0, e
 	}
@@ -754,11 +754,15 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	if bound.Identity() != auth.rootIdentity {
 		return nil, errChangedSource
 	}
-	identityPath, identityOK := capturePathIdentity(bound, auth.relative)
-	if !identityOK || !samePathIdentity(identityPath, auth.pathIdentity) {
+	f, identityPath, err := openBound(bound, auth.relative)
+	if err != nil {
 		return nil, errChangedSource
 	}
-	b, err := readBound(bound, auth.relative)
+	defer f.Close()
+	if !samePathIdentity(identityPath, auth.pathIdentity) {
+		return nil, errChangedSource
+	}
+	b, err := readOpened(f)
 	if err != nil {
 		return nil, errChangedSource
 	}

@@ -26,7 +26,7 @@ func TestDiscoverRequiresVerifiedCopilotProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	verified := `{"version":3,"sessionId":"verified","responderUsername":"GitHub Copilot","requests":[{"requestId":"r1","message":{"text":"synthetic user message"},"agent":{"id":"github.copilot.default","name":"GitHubCopilot","extensionId":{"value":"GitHub.copilot-chat","_lower":"github.copilot-chat"},"extensionPublisherId":"GitHub"},"response":[{"kind":"markdownContent","value":"synthetic assistant message"}]}]}`
-	generic := `{"version":3,"sessionId":"generic","responderUsername":"VS Code Chat","requests":[{"requestId":"r2","message":{"text":"synthetic generic message"},"response":[{"kind":"markdownContent","value":"synthetic generic response"}]}]}`
+	generic := `{"version":3,"sessionId":"generic","responderUsername":"VS Code Chat","requests":[{"requestId":"r2","message":{"text":"synthetic generic message"},` + syntheticAgent + `,"response":[{"kind":"markdownContent","value":"synthetic generic response"}]}]}`
 	if err := os.WriteFile(filepath.Join(dir, "verified.json"), []byte(verified), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestDiscoverRequiresVerifiedCopilotProvenance(t *testing.T) {
 	}
 }
 
-func TestCopilotProvenanceRejectsAmbiguousUnknownAndMixedSessions(t *testing.T) {
+func TestCopilotProvenanceRequiresAgentTripleAndConsistentResponder(t *testing.T) {
 	validAgent := chatAgent{ID: "github.copilot.default", ExtensionID: extensionIdentifier{Value: "GitHub.copilot-chat", Lower: "github.copilot-chat"}, ExtensionPublisherID: "GitHub"}
 	tests := []struct {
 		name   string
@@ -52,7 +52,8 @@ func TestCopilotProvenanceRejectsAmbiguousUnknownAndMixedSessions(t *testing.T) 
 	}{
 		{name: "verified default", want: true},
 		{name: "verified edits agent", mutate: func(s *sess) { s.Requests[0].Agent.ID = "github.copilot.editsAgent" }, want: true},
-		{name: "missing responder", mutate: func(s *sess) { s.Responder = "" }},
+		{name: "missing responder", mutate: func(s *sess) { s.Responder = "" }, want: true},
+		{name: "conflicting responder", mutate: func(s *sess) { s.Responder = "VS Code Chat" }},
 		{name: "missing agent", mutate: func(s *sess) { s.Requests[0].Agent = chatAgent{} }},
 		{name: "unknown participant", mutate: func(s *sess) { s.Requests[0].Agent.ID = "third.party.agent" }},
 		{name: "unknown extension", mutate: func(s *sess) { s.Requests[0].Agent.ExtensionID.Value = "example.copilot-chat" }},
@@ -71,6 +72,26 @@ func TestCopilotProvenanceRejectsAmbiguousUnknownAndMixedSessions(t *testing.T) 
 				t.Fatalf("verified=%v want=%v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDiscoverAcceptsVerifiedAgentWithoutResponder(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "workspaceStorage", "hash", "chatSessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"version":3,"sessionId":"no-responder","requests":[{"requestId":"r1","message":{"text":"synthetic user message"},` + syntheticAgent + `,"response":[{"kind":"markdownContent","value":"synthetic assistant message"}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "no-responder.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := New(root).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "vscode-copilot:no-responder" {
+		t.Fatalf("sessions=%d accepted=%v", len(got), len(got) == 1 && got[0].ID == "vscode-copilot:no-responder")
 	}
 }
 

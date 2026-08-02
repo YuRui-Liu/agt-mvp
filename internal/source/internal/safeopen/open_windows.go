@@ -4,6 +4,7 @@ package safeopen
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,34 @@ func readDirBound(state *boundRootState, relative string) ([]os.DirEntry, error)
 	}
 	file := os.NewFile(uintptr(handle), name)
 	defer file.Close()
-	return file.ReadDir(-1)
+	var entries []os.DirEntry
+	for {
+		batch, err := file.ReadDir(256)
+		entries = append(entries, batch...)
+		if errors.Is(err, io.EOF) {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func readDirLimitBound(state *boundRootState, relative string, limit int) ([]os.DirEntry, error) {
+	handle, name, err := windowsOpenBound(state, relative, true)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), name)
+	defer file.Close()
+	entries, err := file.ReadDir(limit + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > limit {
+		return nil, ErrDirectoryLimit
+	}
+	return entries, nil
 }
 
 func openFileBound(state *boundRootState, relative string) (*os.File, error) {
@@ -135,6 +163,36 @@ func openFileBound(state *boundRootState, relative string) (*os.File, error) {
 		return nil, err
 	}
 	return os.NewFile(uintptr(handle), name), nil
+}
+
+func openFileWithPathIdentityBound(state *boundRootState, relative string, root Identity) (*os.File, []Identity, error) {
+	identities := []Identity{root}
+	current, err := duplicateWindowsHandle(state.handle)
+	if err != nil {
+		return nil, nil, err
+	}
+	name := state.name
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index, part := range parts {
+		directory := index < len(parts)-1
+		next, err := windowsOpenAt(current, part, directory)
+		if err != nil {
+			windows.CloseHandle(current)
+			return nil, nil, err
+		}
+		windows.CloseHandle(current)
+		current = next
+		name = filepath.Join(name, part)
+		if directory {
+			identity, err := windowsHandleIdentity(current)
+			if err != nil {
+				windows.CloseHandle(current)
+				return nil, nil, err
+			}
+			identities = append(identities, identity)
+		}
+	}
+	return os.NewFile(uintptr(current), name), identities, nil
 }
 
 func pathIdentityBound(state *boundRootState, relative string, root Identity) ([]Identity, error) {

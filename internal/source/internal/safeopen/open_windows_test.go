@@ -3,10 +3,14 @@
 package safeopen
 
 import (
+	"os"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
+
+var _ func(*boundRootState, string, int) ([]os.DirEntry, error) = readDirLimitBound
+var _ func(*boundRootState, string, Identity) (*os.File, []Identity, error) = openFileWithPathIdentityBound
 
 func TestWindowsOpenOptionsAreSynchronous(t *testing.T) {
 	for _, directory := range []bool{false, true} {

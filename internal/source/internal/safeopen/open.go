@@ -8,6 +8,12 @@ import (
 	"sync"
 )
 
+// ErrDirectoryLimit reports that a bounded directory read found more entries
+// than the caller allowed. It deliberately contains no filesystem path.
+var ErrDirectoryLimit = errors.New("safeopen: directory entry limit exceeded")
+
+var errInvalidDirectoryLimit = errors.New("safeopen: invalid directory entry limit")
+
 // Identity is a stable filesystem object identity. Its representation is
 // platform-neutral so adapters can retain it without retaining open handles.
 type Identity struct{ Volume, File uint64 }
@@ -62,6 +68,24 @@ func (b *BoundRoot) ReadDir(relative string) ([]os.DirEntry, error) {
 	return readDirBound(&b.state, relative)
 }
 
+// ReadDirLimit reads at most limit+1 entries from a directory. If the extra
+// entry exists, it returns ErrDirectoryLimit without returning partial data.
+func (b *BoundRoot) ReadDirLimit(relative string, limit int) ([]os.DirEntry, error) {
+	relative, err := validRelative(relative)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 0 || limit == int(^uint(0)>>1) {
+		return nil, errInvalidDirectoryLimit
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
+		return nil, errors.New("safeopen: bound root closed")
+	}
+	return readDirLimitBound(&b.state, relative, limit)
+}
+
 func (b *BoundRoot) Open(relative string, maxBytes int64) (*os.File, error) {
 	relative, err := validRelative(relative)
 	if err != nil || relative == "." {
@@ -82,6 +106,31 @@ func (b *BoundRoot) Open(relative string, maxBytes int64) (*os.File, error) {
 		return nil, errors.New("safeopen: invalid source file")
 	}
 	return file, nil
+}
+
+// OpenWithPathIdentity traverses relative once from the bound root, collecting
+// the identity of the root and each parent directory from the same handles
+// used to open the returned file.
+func (b *BoundRoot) OpenWithPathIdentity(relative string, maxBytes int64) (*os.File, []Identity, error) {
+	relative, err := validRelative(relative)
+	if err != nil || relative == "." {
+		return nil, nil, errors.New("safeopen: invalid relative file")
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
+		return nil, nil, errors.New("safeopen: bound root closed")
+	}
+	file, identities, err := openFileWithPathIdentityBound(&b.state, relative, b.identity)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+		file.Close()
+		return nil, nil, errors.New("safeopen: invalid source file")
+	}
+	return file, identities, nil
 }
 
 // PathIdentity returns the bound identities for root and every directory in

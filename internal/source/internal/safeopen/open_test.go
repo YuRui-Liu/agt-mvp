@@ -1,12 +1,98 @@
 package safeopen
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
+
+func TestReadDirLimitRejectsDirectoryOverLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 4097; i++ {
+		name := filepath.Join(root, fmt.Sprintf("entry-%04d", i))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bound, err := Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	entries, err := bound.ReadDirLimit(".", 4096)
+	if err != ErrDirectoryLimit {
+		t.Fatalf("err=%v", err)
+	}
+	if entries != nil {
+		t.Fatalf("returned %d entries on limit error", len(entries))
+	}
+}
+
+func TestReadDirLimitAcceptsExactLimit(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bound, err := Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	entries, err := bound.ReadDirLimit(".", 2)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestOpenWithPathIdentityRemainsBoundToOriginalTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics differ on Windows")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "session.json"), []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	file, identities, err := bound.OpenWithPathIdentity(filepath.Join("parent", "session.json"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := os.Rename(parent, filepath.Join(root, "original-parent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "session.json"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalIdentities, err := bound.PathIdentity("original-parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(identities, originalIdentities) {
+		t.Fatalf("identities=%v original=%v", identities, originalIdentities)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != "safe" {
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+}
 
 func TestBindRejectsSymlinkedRootAncestor(t *testing.T) {
 	if runtime.GOOS == "windows" {

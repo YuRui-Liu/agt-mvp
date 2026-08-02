@@ -4,6 +4,7 @@ package safeopen
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,11 +86,70 @@ func readDirBound(state *boundRootState, relative string) ([]os.DirEntry, error)
 		return nil, err
 	}
 	defer dir.Close()
-	return dir.ReadDir(-1)
+	var entries []os.DirEntry
+	for {
+		batch, err := dir.ReadDir(256)
+		entries = append(entries, batch...)
+		if errors.Is(err, io.EOF) {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func readDirLimitBound(state *boundRootState, relative string, limit int) ([]os.DirEntry, error) {
+	dir, err := openFromBound(state, relative, true)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(limit + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > limit {
+		return nil, ErrDirectoryLimit
+	}
+	return entries, nil
 }
 
 func openFileBound(state *boundRootState, relative string) (*os.File, error) {
 	return openFromBound(state, relative, false)
+}
+
+func openFileWithPathIdentityBound(state *boundRootState, relative string, root Identity) (*os.File, []Identity, error) {
+	identities := []Identity{root}
+	current, err := duplicateRoot(state)
+	if err != nil {
+		return nil, nil, err
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index, part := range parts {
+		directory := index < len(parts)-1
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		if directory {
+			flags |= unix.O_DIRECTORY
+		}
+		fd, err := unix.Openat(int(current.Fd()), part, flags, 0)
+		if err != nil {
+			current.Close()
+			return nil, nil, err
+		}
+		next := os.NewFile(uintptr(fd), filepath.Join(current.Name(), part))
+		current.Close()
+		current = next
+		if directory {
+			identity, err := unixFileIdentity(current)
+			if err != nil {
+				current.Close()
+				return nil, nil, err
+			}
+			identities = append(identities, identity)
+		}
+	}
+	return current, identities, nil
 }
 
 func pathIdentityBound(state *boundRootState, relative string, root Identity) ([]Identity, error) {
