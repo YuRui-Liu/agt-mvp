@@ -240,7 +240,7 @@ func TestCLIScanByteBudgetChargesUnsupportedCandidateAfterHealthy(t *testing.T) 
 	}
 }
 
-func TestCLIScanByteBudgetChargesOversizeCandidate(t *testing.T) {
+func TestCLIOversizePrecheckDoesNotSpendUnperformedReadBytes(t *testing.T) {
 	root := t.TempDir()
 	oversizePath := installCLI(t, root, "-synthetic-course-project", "task-a-oversize", []byte("{}\n"))
 	if err := os.Truncate(oversizePath, maxCLIFileBytes+1); err != nil {
@@ -250,8 +250,8 @@ func TestCLIScanByteBudgetChargesOversizeCandidate(t *testing.T) {
 	installCLI(t, root, "-synthetic-course-project", "task-z", healthy)
 	adapter := NewCLI(root)
 	adapter.scanLimits.maxTotalBytes = maxCLIFileBytes + 1 + int64(len(healthy)) - 1
-	if sessions, err := adapter.Discover(context.Background()); err == nil || sessions != nil {
-		t.Fatalf("oversize candidate was free: sessions=%#v err=%v", sessions, err)
+	if sessions, err := adapter.Discover(context.Background()); err != nil || len(sessions) != 1 {
+		t.Fatalf("healthy candidate lost after static oversize rejection: sessions=%#v err=%v", sessions, err)
 	}
 }
 
@@ -604,6 +604,121 @@ func TestMissingRootsReturnNoSessionsAndCancellationWins(t *testing.T) {
 type staticAdapter struct {
 	product  string
 	sessions []source.Session
+}
+
+type cappedChunkReader struct {
+	data     []byte
+	chunk    int
+	requests []int
+	err      error
+}
+
+func (reader *cappedChunkReader) Read(buffer []byte) (int, error) {
+	reader.requests = append(reader.requests, len(buffer))
+	if len(reader.data) == 0 {
+		if reader.err != nil {
+			err := reader.err
+			reader.err = nil
+			return 0, err
+		}
+		return 0, io.EOF
+	}
+	limit := len(buffer)
+	if reader.chunk > 0 && limit > reader.chunk {
+		limit = reader.chunk
+	}
+	if limit > len(reader.data) {
+		limit = len(reader.data)
+	}
+	copy(buffer, reader.data[:limit])
+	reader.data = reader.data[limit:]
+	if len(reader.data) == 0 && reader.err != nil {
+		err := reader.err
+		reader.err = nil
+		return limit, err
+	}
+	return limit, nil
+}
+
+func TestCLIBudgetReaderExactAcrossReadsAndEOF(t *testing.T) {
+	underlying := &cappedChunkReader{data: []byte("abc"), chunk: 1}
+	budget := &cliByteBudget{maximum: 3}
+	reader := &cliBudgetReader{ctx: context.Background(), reader: underlying, budget: budget}
+	var output bytes.Buffer
+	buffer := make([]byte, 2)
+	for {
+		n, err := reader.Read(buffer)
+		output.Write(buffer[:n])
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output.String() != "abc" || budget.used != 3 {
+		t.Fatalf("output=%q used=%d", output.String(), budget.used)
+	}
+}
+
+func TestCLIBudgetReaderProbesOnlyOneExtraByte(t *testing.T) {
+	underlying := &cappedChunkReader{data: []byte("abcdef")}
+	budget := &cliByteBudget{maximum: 3}
+	reader := &cliBudgetReader{ctx: context.Background(), reader: underlying, budget: budget}
+	buffer := make([]byte, 1024)
+	n, err := reader.Read(buffer)
+	if !errors.Is(err, errCLIScanByteBudget) || n != 0 {
+		t.Fatalf("n=%d err=%v output=%q", n, err, buffer[:n])
+	}
+	if len(underlying.requests) != 1 || underlying.requests[0] != 4 || budget.used != 3 {
+		t.Fatalf("requests=%v used=%d", underlying.requests, budget.used)
+	}
+}
+
+func TestCLIBudgetReaderChargesBytesReturnedWithReadError(t *testing.T) {
+	wantErr := errors.New("fixture read error")
+	underlying := &cappedChunkReader{data: []byte("ab"), err: wantErr}
+	budget := &cliByteBudget{maximum: 10}
+	reader := &cliBudgetReader{ctx: context.Background(), reader: underlying, budget: budget}
+	buffer := make([]byte, 8)
+	n, err := reader.Read(buffer)
+	if n != 2 || !errors.Is(err, wantErr) || budget.used != 2 {
+		t.Fatalf("n=%d err=%v used=%d", n, err, budget.used)
+	}
+}
+
+func TestCLIBudgetReaderCancellationAvoidsUnderlyingRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	underlying := &cappedChunkReader{data: []byte("abc")}
+	reader := &cliBudgetReader{ctx: ctx, reader: underlying, budget: &cliByteBudget{maximum: 3}}
+	if n, err := reader.Read(make([]byte, 3)); n != 0 || !errors.Is(err, context.Canceled) || len(underlying.requests) != 0 {
+		t.Fatalf("n=%d err=%v requests=%v", n, err, underlying.requests)
+	}
+}
+
+func TestCLIScanBudgetCountsGrowthAfterStat(t *testing.T) {
+	root := t.TempDir()
+	fixture := readCLIFixture(t)
+	path := installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
+	adapter := NewCLI(root)
+	adapter.scanLimits.maxTotalBytes = int64(len(fixture))
+	adapter.afterCandidateStat = func() {
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("x")); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sessions, err := adapter.Discover(context.Background()); err == nil || sessions != nil {
+		t.Fatalf("post-stat growth escaped budget: sessions=%#v err=%v", sessions, err)
+	}
 }
 
 func (a staticAdapter) Product() string                                    { return a.product }
