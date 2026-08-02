@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -393,6 +395,80 @@ func TestGeminiSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
 	}
 }
 
+func TestGeminiRootedMapKeysAreDistinctDeterministicAndCollisionSafe(t *testing.T) {
+	input := map[string]any{
+		`\alpha`: map[string]any{`\nested`: "one"},
+		`\beta`:  "two",
+	}
+	firstRaw, ok := sanitizePayload(context.Background(), input)
+	if !ok {
+		t.Fatal("distinct rooted keys rejected")
+	}
+	secondRaw, ok := sanitizePayload(context.Background(), input)
+	if !ok {
+		t.Fatal("repeat sanitization rejected")
+	}
+	first, second := firstRaw.(map[string]any), secondRaw.(map[string]any)
+	if len(first) != 2 || !reflect.DeepEqual(first, second) {
+		t.Fatalf("sanitized maps differ: %#v %#v", first, second)
+	}
+	for key, value := range first {
+		if strings.Contains(key, `\alpha`) || strings.Contains(key, `\beta`) {
+			t.Fatalf("rooted key leaked: %q", key)
+		}
+		if nested, ok := value.(map[string]any); ok {
+			for nestedKey := range nested {
+				if strings.Contains(nestedKey, `\nested`) {
+					t.Fatalf("nested rooted key leaked: %q", nestedKey)
+				}
+			}
+		}
+	}
+	original := `\alpha`
+	target := "[redacted-path-key:" + digestPrefix(original, 16) + "]"
+	if _, ok := sanitizePayload(context.Background(), map[string]any{original: "one", target: "literal"}); ok {
+		t.Fatal("target-key collision accepted")
+	}
+}
+
+func TestGeminiOpenIsStableWithMultipleRootedKeys(t *testing.T) {
+	root := t.TempDir()
+	body, err := json.Marshal(map[string]any{
+		"sessionId": "stable",
+		"messages": []any{
+			map[string]any{"id": "user", "type": "user", "content": "question"},
+			map[string]any{"id": "assistant", "type": "gemini", "toolCalls": []any{
+				map[string]any{"id": "call-1", "name": "lookup", "args": map[string]any{`\alpha`: "one", `\beta`: map[string]any{`\nested`: "two"}}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installGemini(t, root, "project", "session-stable.json", body)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	read := func() string {
+		r, err := a.Open(context.Background(), got[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	first, second := read(), read()
+	if first != second || strings.Contains(first, `\\alpha`) || strings.Contains(first, `\\beta`) || strings.Contains(first, `\\nested`) {
+		t.Fatalf("unstable or private output: %q %q", first, second)
+	}
+}
+
 func TestGeminiTraversalHelpersHonorCancellation(t *testing.T) {
 	deep := make([]any, 1024)
 	for i := range deep {
@@ -473,6 +549,54 @@ func TestGeminiProjectMapCancellationPropagates(t *testing.T) {
 	if sessions, err := New(root).Discover(discoverCtx); !errors.Is(err, context.Canceled) || len(sessions) != 0 {
 		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
+}
+
+func TestGeminiRejectsTooManyRootsBeforeScan(t *testing.T) {
+	roots := make([]string, maxRoots+1)
+	for i := range roots {
+		roots[i] = filepath.Join(t.TempDir(), "missing")
+	}
+	if sessions, err := New(roots...).Discover(context.Background()); err == nil || len(sessions) != 0 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestGeminiManyRootsUnderLowFDLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX ulimit")
+	}
+	if os.Getenv("GEMINI_LOW_FD_CHILD") == "1" {
+		before := openFDCount(t)
+		if sessions, err := New(filepath.SplitList(os.Getenv("GEMINI_LOW_FD_ROOTS"))...).Discover(context.Background()); err != nil || len(sessions) != 0 {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		after := openFDCount(t)
+		if after > before+2 {
+			t.Fatalf("file descriptors leaked: before=%d after=%d", before, after)
+		}
+		return
+	}
+	roots := make([]string, maxRoots-16)
+	for i := range roots {
+		roots[i] = t.TempDir()
+		if err := os.Mkdir(filepath.Join(roots[i], "tmp"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("/bin/sh", "-c", `ulimit -n 32; exec "$TEST_BINARY" -test.run '^TestGeminiManyRootsUnderLowFDLimit$'`)
+	cmd.Env = append(os.Environ(), "GEMINI_LOW_FD_CHILD=1", "GEMINI_LOW_FD_ROOTS="+strings.Join(roots, string(os.PathListSeparator)), "TEST_BINARY="+os.Args[0])
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("low-fd child failed: %v: %s", err, output)
+	}
+}
+
+func openFDCount(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Skipf("fd accounting unavailable: %v", err)
+	}
+	return len(entries)
 }
 
 func TestGeminiDeduplicatesCaseAliasesByRootIdentity(t *testing.T) {

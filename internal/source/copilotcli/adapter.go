@@ -32,6 +32,7 @@ const (
 	maxGlobalEntries    = 4096
 	maxJSONDepth        = 64
 	maxUpstreamIDBytes  = 512
+	maxRoots            = 64
 )
 
 type pathIdentity struct{ directories []safeopen.Identity }
@@ -74,6 +75,9 @@ func (*Adapter) Capabilities() []source.Capability {
 }
 
 func validatedRoots(roots []string) ([]string, error) {
+	if len(roots) > maxRoots {
+		return nil, errors.New("copilot-cli: root scan limit")
+	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
@@ -134,6 +138,7 @@ func canonicalizeRoot(root string) (string, error) {
 type candidate struct {
 	root, path, relative, rawID, format string
 	bound                               *safeopen.BoundRoot
+	rootIdentity                        safeopen.Identity
 }
 
 func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
@@ -168,51 +173,58 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			bound.Close()
 			continue
 		}
-		boundIdentities[bound.Identity()] = true
-		defer bound.Close()
+		rootIdentity := bound.Identity()
+		boundIdentities[rootIdentity] = true
 		if a.afterBind != nil {
 			a.afterBind(root)
 		}
 		entries, err := bound.ReadDirLimit("session-state", maxDirectoryEntries)
 		if os.IsNotExist(err) {
+			bound.Close()
 			continue
 		}
 		if err != nil {
+			bound.Close()
 			return nil, directoryError(err)
 		}
 		globalVisited += len(entries)
 		if globalVisited > maxGlobalEntries {
+			bound.Close()
 			return nil, errors.New("copilot-cli: directory limit")
 		}
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
+				bound.Close()
 				return nil, err
 			}
 			if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".jsonl") {
-				rawID := strings.TrimSuffix(entry.Name(), ".jsonl")
+				rawID := strings.ToLower(strings.TrimSuffix(entry.Name(), ".jsonl"))
 				if !validSessionName(rawID) {
 					continue
 				}
 				rel := filepath.Join("session-state", entry.Name())
 				key := root + "\x00" + rawID
 				if _, exists := chosen[key]; !exists {
-					chosen[key] = candidate{root: root, path: filepath.Join(root, rel), relative: rel, rawID: rawID, format: "flat-v1", bound: bound}
+					chosen[key] = candidate{root: root, path: filepath.Join(root, rel), relative: rel, rawID: rawID, format: "flat-v1", rootIdentity: rootIdentity}
 				}
 				continue
 			}
 			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !validSessionName(entry.Name()) {
 				continue
 			}
+			rawID := strings.ToLower(entry.Name())
 			dirRel := filepath.Join("session-state", entry.Name())
 			children, err := bound.ReadDirLimit(dirRel, maxDirectoryEntries)
 			if err != nil {
 				if errors.Is(err, safeopen.ErrDirectoryLimit) {
+					bound.Close()
 					return nil, errors.New("copilot-cli: directory limit")
 				}
 				continue
 			}
 			globalVisited += len(children)
 			if globalVisited > maxGlobalEntries {
+				bound.Close()
 				return nil, errors.New("copilot-cli: directory limit")
 			}
 			for _, child := range children {
@@ -220,10 +232,11 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 					continue
 				}
 				rel := filepath.Join(dirRel, "events.jsonl")
-				key := root + "\x00" + entry.Name()
-				chosen[key] = candidate{root: root, path: filepath.Join(root, rel), relative: rel, rawID: entry.Name(), format: "directory-v2", bound: bound}
+				key := root + "\x00" + rawID
+				chosen[key] = candidate{root: root, path: filepath.Join(root, rel), relative: rel, rawID: rawID, format: "directory-v2", rootIdentity: rootIdentity}
 			}
 		}
+		bound.Close()
 	}
 	candidates := make([]candidate, 0, len(chosen))
 	for _, item := range chosen {
@@ -244,7 +257,17 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		bound, err := safeopen.Bind(item.root)
+		if err != nil {
+			continue
+		}
+		if bound.Identity() != item.rootIdentity {
+			bound.Close()
+			continue
+		}
+		item.bound = bound
 		session, auth, _, ok := a.snapshot(ctx, item)
+		bound.Close()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -339,6 +362,8 @@ func (a *Adapter) snapshot(ctx context.Context, item candidate) (source.Session,
 	parsed, ok := parse(ctx, data)
 	if parsed.sessionID == "" {
 		parsed.sessionID = item.rawID
+	} else if validSessionName(parsed.sessionID) {
+		parsed.sessionID = strings.ToLower(parsed.sessionID)
 	}
 	if !ok || len(parsed.events) == 0 || len(parsed.sessionID) > maxUpstreamIDBytes || strings.ContainsAny(parsed.sessionID, "\x00\r\n") {
 		return source.Session{}, authorization{}, nil, false
@@ -703,11 +728,20 @@ func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
 		return out, true
 	case map[string]any:
 		out := make(map[string]any, len(typed))
-		for key, child := range typed {
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, original := range keys {
+			key := original
 			if isAbsoluteString(key) {
-				key = "[redacted-path-key]"
+				key = "[redacted-path-key:" + digestPrefix(original, 16) + "]"
 			}
-			clean, ok := sanitizePayloadGuarded(guard, child)
+			if _, exists := out[key]; exists {
+				return nil, false
+			}
+			clean, ok := sanitizePayloadGuarded(guard, typed[original])
 			if !ok {
 				return nil, false
 			}
@@ -878,6 +912,7 @@ func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadClos
 		format = "directory-v2"
 		rawID = filepath.Base(filepath.Dir(auth.relative))
 	}
+	rawID = strings.ToLower(rawID)
 	item := candidate{root: auth.root, path: auth.path, relative: auth.relative, rawID: rawID, format: format, bound: bound}
 	fresh, freshAuth, output, valid := a.snapshot(ctx, item)
 	if err := ctx.Err(); err != nil {

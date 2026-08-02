@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -79,7 +81,7 @@ func copilotEvents(t *testing.T, a *Adapter, s source.Session) []map[string]any 
 func TestFlatDirectoryPriorityAndCapabilities(t *testing.T) {
 	root := t.TempDir()
 	flat := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
-	dir := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2.jsonl")
+	dir := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2/events.jsonl")
 	installFlat(t, root, uuidShared, flat)
 	installDirectory(t, root, uuidShared, dir)
 	installFlat(t, root, uuidFlat, flat)
@@ -113,7 +115,7 @@ func TestFlatDirectoryPriorityAndCapabilities(t *testing.T) {
 func TestDirectoryPriorityIndependentOfCreationOrder(t *testing.T) {
 	root := t.TempDir()
 	flat := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
-	directory := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2.jsonl")
+	directory := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2/events.jsonl")
 	installDirectory(t, root, uuidShared, directory)
 	installFlat(t, root, uuidShared, flat)
 	got, err := New(root).Discover(context.Background())
@@ -122,6 +124,49 @@ func TestDirectoryPriorityIndependentOfCreationOrder(t *testing.T) {
 	}
 	if got[0].FormatVersion != "directory-v2" {
 		t.Fatalf("format=%q", got[0].FormatVersion)
+	}
+}
+
+func TestUUIDCaseNormalizesPriorityAndStableID(t *testing.T) {
+	flat := adaptertest.ReadFixture(t, "../testdata/copilotcli/flat-v1.jsonl")
+	directory := adaptertest.ReadFixture(t, "../testdata/copilotcli/directory-v2/events.jsonl")
+	for _, directoryFirst := range []bool{false, true} {
+		root := t.TempDir()
+		if directoryFirst {
+			installDirectory(t, root, strings.ToLower(uuidComposite), directory)
+			installFlat(t, root, strings.ToUpper(uuidComposite), flat)
+		} else {
+			installFlat(t, root, strings.ToUpper(uuidComposite), flat)
+			installDirectory(t, root, strings.ToLower(uuidComposite), directory)
+		}
+		got, err := New(root).Discover(context.Background())
+		if err != nil || len(got) != 1 || got[0].FormatVersion != "directory-v2" {
+			t.Fatalf("directoryFirst=%v sessions=%#v err=%v", directoryFirst, got, err)
+		}
+	}
+
+	root := t.TempDir()
+	upperPath := installFlat(t, root, strings.ToUpper(uuidComposite), flat)
+	a := New(root)
+	first, err := a.Discover(context.Background())
+	if err != nil || len(first) != 1 {
+		t.Fatalf("upper sessions=%#v err=%v", first, err)
+	}
+	reader, err := a.Open(context.Background(), first[0])
+	if err != nil {
+		t.Fatalf("open uppercase UUID session: %v", err)
+	}
+	reader.Close()
+	lowerPath := filepath.Join(filepath.Dir(upperPath), strings.ToLower(uuidComposite)+".jsonl")
+	if err := os.Rename(upperPath, lowerPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(root).Discover(context.Background())
+	if err != nil || len(second) != 1 {
+		t.Fatalf("lower sessions=%#v err=%v", second, err)
+	}
+	if first[0].ID != second[0].ID {
+		t.Fatalf("UUID case changed ID: %q != %q", first[0].ID, second[0].ID)
 	}
 }
 
@@ -450,6 +495,73 @@ func TestCopilotSanitizesWindowsRootedPayloadKeysAndValues(t *testing.T) {
 	}
 }
 
+func TestCopilotRootedMapKeysAreDistinctDeterministicAndCollisionSafe(t *testing.T) {
+	input := map[string]any{
+		`\alpha`: map[string]any{`\nested`: "one"},
+		`\beta`:  "two",
+	}
+	firstRaw, ok := sanitizePayload(context.Background(), input)
+	if !ok {
+		t.Fatal("distinct rooted keys rejected")
+	}
+	secondRaw, ok := sanitizePayload(context.Background(), input)
+	if !ok {
+		t.Fatal("repeat sanitization rejected")
+	}
+	first, second := firstRaw.(map[string]any), secondRaw.(map[string]any)
+	if len(first) != 2 || !reflect.DeepEqual(first, second) {
+		t.Fatalf("sanitized maps differ: %#v %#v", first, second)
+	}
+	for key, value := range first {
+		if strings.Contains(key, `\alpha`) || strings.Contains(key, `\beta`) {
+			t.Fatalf("rooted key leaked: %q", key)
+		}
+		if nested, ok := value.(map[string]any); ok {
+			for nestedKey := range nested {
+				if strings.Contains(nestedKey, `\nested`) {
+					t.Fatalf("nested rooted key leaked: %q", nestedKey)
+				}
+			}
+		}
+	}
+	original := `\alpha`
+	target := "[redacted-path-key:" + digestPrefix(original, 16) + "]"
+	if _, ok := sanitizePayload(context.Background(), map[string]any{original: "one", target: "literal"}); ok {
+		t.Fatal("target-key collision accepted")
+	}
+}
+
+func TestCopilotOpenIsStableWithMultipleRootedKeys(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Join([]string{
+		`{"type":"session.start","data":{"sessionId":"11111111-1111-4111-8111-111111111111"}}`,
+		`{"type":"user.message","data":{"content":"question"}}`,
+		`{"type":"assistant.message","data":{"toolRequests":[{"toolCallId":"call-1","name":"lookup","arguments":{"\\alpha":"one","\\beta":{"\\nested":"two"}}}]}}`,
+	}, "\n") + "\n"
+	installFlat(t, root, uuidShared, []byte(body))
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	read := func() string {
+		r, err := a.Open(context.Background(), got[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	first, second := read(), read()
+	if first != second || strings.Contains(first, `\\alpha`) || strings.Contains(first, `\\beta`) || strings.Contains(first, `\\nested`) {
+		t.Fatalf("unstable or private output: %q %q", first, second)
+	}
+}
+
 func TestCopilotTraversalHelpersHonorCancellation(t *testing.T) {
 	deep := make([]any, 1024)
 	for i := range deep {
@@ -508,6 +620,54 @@ func TestCopilotFinalCancellationPreservesKnown(t *testing.T) {
 	if !exists || len(a.known) != 1 || after.id != before.id || after.digest != before.digest || after.metadata != before.metadata {
 		t.Fatal("canceled discovery replaced known snapshot")
 	}
+}
+
+func TestCopilotRejectsTooManyRootsBeforeScan(t *testing.T) {
+	roots := make([]string, maxRoots+1)
+	for i := range roots {
+		roots[i] = filepath.Join(t.TempDir(), "missing")
+	}
+	if sessions, err := New(roots...).Discover(context.Background()); err == nil || len(sessions) != 0 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestCopilotManyRootsUnderLowFDLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX ulimit")
+	}
+	if os.Getenv("COPILOTCLI_LOW_FD_CHILD") == "1" {
+		before := openFDCount(t)
+		if sessions, err := New(filepath.SplitList(os.Getenv("COPILOTCLI_LOW_FD_ROOTS"))...).Discover(context.Background()); err != nil || len(sessions) != 0 {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		after := openFDCount(t)
+		if after > before+2 {
+			t.Fatalf("file descriptors leaked: before=%d after=%d", before, after)
+		}
+		return
+	}
+	roots := make([]string, maxRoots-16)
+	for i := range roots {
+		roots[i] = t.TempDir()
+		if err := os.Mkdir(filepath.Join(roots[i], "session-state"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("/bin/sh", "-c", `ulimit -n 32; exec "$TEST_BINARY" -test.run '^TestCopilotManyRootsUnderLowFDLimit$'`)
+	cmd.Env = append(os.Environ(), "COPILOTCLI_LOW_FD_CHILD=1", "COPILOTCLI_LOW_FD_ROOTS="+strings.Join(roots, string(os.PathListSeparator)), "TEST_BINARY="+os.Args[0])
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("low-fd child failed: %v: %s", err, output)
+	}
+}
+
+func openFDCount(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Skipf("fd accounting unavailable: %v", err)
+	}
+	return len(entries)
 }
 
 func TestCopilotDeduplicatesCaseAliasesByRootIdentity(t *testing.T) {

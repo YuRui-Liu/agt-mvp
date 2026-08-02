@@ -33,6 +33,7 @@ const (
 	maxGlobalEntries    = 4096
 	maxJSONDepth        = 64
 	maxUpstreamIDBytes  = 512
+	maxRoots            = 64
 )
 
 type pathIdentity struct{ directories []safeopen.Identity }
@@ -75,6 +76,9 @@ func (*Adapter) Capabilities() []source.Capability {
 }
 
 func validatedRoots(roots []string) ([]string, error) {
+	if len(roots) > maxRoots {
+		return nil, errors.New("gemini-cli: root scan limit")
+	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
@@ -137,6 +141,7 @@ func canonicalizeRoot(root string) (string, error) {
 type candidate struct {
 	root, path, relative, project string
 	bound                         *safeopen.BoundRoot
+	rootIdentity                  safeopen.Identity
 	projectLabel                  string
 }
 
@@ -172,28 +177,33 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			bound.Close()
 			continue
 		}
-		boundIdentities[bound.Identity()] = true
-		defer bound.Close()
+		rootIdentity := bound.Identity()
+		boundIdentities[rootIdentity] = true
 		if a.afterBind != nil {
 			a.afterBind(root)
 		}
 		projects, err := bound.ReadDirLimit("tmp", maxDirectoryEntries)
 		if os.IsNotExist(err) {
+			bound.Close()
 			continue
 		}
 		if err != nil {
+			bound.Close()
 			return nil, directoryError(err)
 		}
 		labels, mapErr := readProjectMap(ctx, bound)
 		if mapErr != nil {
+			bound.Close()
 			return nil, mapErr
 		}
 		globalVisited += len(projects)
 		if globalVisited > maxGlobalEntries {
+			bound.Close()
 			return nil, errors.New("gemini-cli: directory limit")
 		}
 		for _, project := range projects {
 			if err := ctx.Err(); err != nil {
+				bound.Close()
 				return nil, err
 			}
 			if !validProjectDirectory(project) {
@@ -203,12 +213,14 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 			files, err := bound.ReadDirLimit(relDir, maxDirectoryEntries)
 			if err != nil {
 				if errors.Is(err, safeopen.ErrDirectoryLimit) {
+					bound.Close()
 					return nil, errors.New("gemini-cli: directory limit")
 				}
 				continue
 			}
 			globalVisited += len(files)
 			if globalVisited > maxGlobalEntries {
+				bound.Close()
 				return nil, errors.New("gemini-cli: directory limit")
 			}
 			for _, file := range files {
@@ -218,10 +230,11 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 				rel := filepath.Join(relDir, file.Name())
 				candidates = append(candidates, candidate{
 					root: root, path: filepath.Join(root, rel), relative: rel,
-					project: project.Name(), projectLabel: labels[project.Name()], bound: bound,
+					project: project.Name(), projectLabel: labels[project.Name()], rootIdentity: rootIdentity,
 				})
 			}
 		}
+		bound.Close()
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left, right := rootIndex(a.roots, candidates[i].root), rootIndex(a.roots, candidates[j].root)
@@ -238,7 +251,17 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		bound, err := safeopen.Bind(item.root)
+		if err != nil {
+			continue
+		}
+		if bound.Identity() != item.rootIdentity {
+			bound.Close()
+			continue
+		}
+		item.bound = bound
 		session, auth, _, ok := a.snapshot(ctx, item)
+		bound.Close()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -925,11 +948,20 @@ func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
 		return out, true
 	case map[string]any:
 		out := make(map[string]any, len(typed))
-		for key, child := range typed {
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, original := range keys {
+			key := original
 			if isAbsoluteString(key) {
-				key = "[redacted-path-key]"
+				key = "[redacted-path-key:" + digestPrefix(original, 16) + "]"
 			}
-			clean, ok := sanitizePayloadGuarded(guard, child)
+			if _, exists := out[key]; exists {
+				return nil, false
+			}
+			clean, ok := sanitizePayloadGuarded(guard, typed[original])
 			if !ok {
 				return nil, false
 			}
