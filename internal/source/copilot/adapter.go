@@ -24,14 +24,36 @@ import (
 
 const maxLineBytes = 1 << 20
 const maxSessionBytes int64 = 4 << 20
+const maxWorkspaceDirs = 4096
+const maxSessionFiles = 4096
+const maxSessionRecords = 4096
+const maxSessionEvents = 8192
+const maxMutationDepth = 64
+
+var errInvalidRoot = errors.New("copilot: invalid root")
+var errScanLimit = errors.New("copilot: scan limit exceeded")
+var errInvalidReference = errors.New("copilot: invalid reference")
+var errUnknownReference = errors.New("copilot: unknown reference")
+var errChangedSource = errors.New("copilot: source changed")
+var errStaleReference = errors.New("copilot: stale reference")
+
+type pathIdentity struct{ directories []safeopen.Identity }
 
 type Adapter struct {
-	roots  []string
-	scanMu sync.Mutex
-	mu     sync.RWMutex
-	known  map[string]authorization
+	roots        []string
+	configErr    error
+	scanMu       sync.Mutex
+	mu           sync.RWMutex
+	known        map[string]authorization
+	afterBind    func(string)
+	beforeCommit func()
 }
-type authorization struct{ id, digest string }
+type authorization struct {
+	id, digest, metadata, root string
+	pathIdentity               pathIdentity
+	rootIdentity               safeopen.Identity
+	relative                   string
+}
 
 func New(roots ...string) *Adapter {
 	if len(roots) == 0 {
@@ -39,10 +61,84 @@ func New(roots ...string) *Adapter {
 			roots = defaultRoots(h)
 		}
 	}
-	return &Adapter{roots: roots, known: map[string]authorization{}}
+	clean, err := validatedRoots(roots)
+	return &Adapter{roots: clean, configErr: err, known: map[string]authorization{}}
 }
 func defaultRoots(h string) []string {
 	return []string{filepath.Join(h, "Library", "Application Support", "Code", "User"), filepath.Join(h, "Library", "Application Support", "Code - Insiders", "User"), filepath.Join(h, "Library", "Application Support", "VSCodium", "User"), filepath.Join(h, ".config", "Code", "User"), filepath.Join(h, ".config", "Code - Insiders", "User"), filepath.Join(h, ".config", "VSCodium", "User"), filepath.Join(h, "AppData", "Roaming", "Code", "User"), filepath.Join(h, "AppData", "Roaming", "Code - Insiders", "User"), filepath.Join(h, "AppData", "Roaming", "VSCodium", "User")}
+}
+func validatedRoots(roots []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		canonical, err := canonicalizeRoot(root)
+		if err != nil {
+			return nil, errInvalidRoot
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
+		}
+	}
+	return out, nil
+}
+func canonicalizeRoot(root string) (string, error) {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return "", errInvalidRoot
+	}
+	original := root
+	volume := filepath.VolumeName(root)
+	remainder := strings.TrimPrefix(root, volume+string(filepath.Separator))
+	parts := strings.Split(remainder, string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	start := 0
+	if len(parts) > 0 && parts[0] != "" {
+		first := filepath.Join(current, parts[0])
+		resolved, err := filepath.EvalSymlinks(first)
+		if err == nil {
+			current = resolved
+			start = 1
+		} else if !os.IsNotExist(err) {
+			return "", errInvalidRoot
+		}
+	}
+	for i := start; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		next := filepath.Join(current, parts[i])
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			for ; i < len(parts); i++ {
+				current = filepath.Join(current, parts[i])
+			}
+			return original, nil
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return "", errInvalidRoot
+		}
+		current = next
+	}
+	return original, nil
+}
+func capturePathIdentity(bound *safeopen.BoundRoot, relative string) (pathIdentity, bool) {
+	identities, err := bound.PathIdentity(filepath.Dir(relative))
+	if err != nil {
+		return pathIdentity{}, false
+	}
+	return pathIdentity{directories: identities}, true
+}
+func samePathIdentity(left, right pathIdentity) bool {
+	if len(left.directories) != len(right.directories) {
+		return false
+	}
+	for i := range left.directories {
+		if left.directories[i] != right.directories[i] {
+			return false
+		}
+	}
+	return true
 }
 func (*Adapter) Product() string                   { return "vscode-copilot" }
 func (*Adapter) Capabilities() []source.Capability { return []source.Capability{"messages", "tools"} }
@@ -50,6 +146,7 @@ func (*Adapter) Capabilities() []source.Capability { return []source.Capability{
 type sess struct {
 	Version         int       `json:"version"`
 	SessionID       string    `json:"sessionId"`
+	Responder       string    `json:"responderUsername"`
 	CreationDate    int64     `json:"creationDate"`
 	LastMessageDate int64     `json:"lastMessageDate"`
 	Requests        []request `json:"requests"`
@@ -62,7 +159,50 @@ type request struct {
 	Response  []json.RawMessage `json:"response"`
 	ModelID   string            `json:"modelId"`
 	Timestamp int64             `json:"timestamp"`
+	Agent     chatAgent         `json:"agent"`
 }
+type chatAgent struct {
+	ID                   string              `json:"id"`
+	ExtensionID          extensionIdentifier `json:"extensionId"`
+	ExtensionPublisherID string              `json:"extensionPublisherId"`
+}
+type extensionIdentifier struct {
+	Value string `json:"value"`
+	Lower string `json:"_lower"`
+}
+
+func hasCopilotProvenance(session sess) bool {
+	if session.Responder != "GitHub Copilot" || len(session.Requests) == 0 || len(session.Requests) > maxSessionRecords {
+		return false
+	}
+	for _, request := range session.Requests {
+		if !copilotParticipant(request.Agent.ID) ||
+			request.Agent.ExtensionID.Value != "GitHub.copilot-chat" ||
+			(request.Agent.ExtensionID.Lower != "" && request.Agent.ExtensionID.Lower != "github.copilot-chat") ||
+			request.Agent.ExtensionPublisherID != "GitHub" {
+			return false
+		}
+	}
+	return true
+}
+
+func copilotParticipant(id string) bool {
+	switch id {
+	case "github.copilot.default",
+		"github.copilot.editingSession",
+		"github.copilot.editingSessionEditor",
+		"github.copilot.editsAgent",
+		"github.copilot.notebook",
+		"github.copilot.notebookEditorAgent",
+		"github.copilot.vscode",
+		"github.copilot.terminal",
+		"github.copilot.terminalPanel":
+		return true
+	default:
+		return false
+	}
+}
+
 type item struct {
 	Kind, Value, ToolID, ToolCallID                       string
 	InvocationMessage, PastTenseMessage, ToolSpecificData json.RawMessage
@@ -72,41 +212,93 @@ type item struct {
 func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	a.scanMu.Lock()
 	defer a.scanMu.Unlock()
+	a.replaceKnown(nil)
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
+	if a.configErr != nil {
+		return nil, a.configErr
+	}
 	type candidate struct {
 		s        source.Session
-		digest   string
+		auth     authorization
 		rank     int
 		conflict bool
 	}
 	by := map[string]candidate{}
+	entriesScanned := 0
 	for _, root := range a.roots {
-		_ = filepath.WalkDir(filepath.Join(root, "workspaceStorage"), func(p string, d os.DirEntry, e error) error {
-			if x := ctx.Err(); x != nil {
-				return x
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		validated, err := canonicalizeRoot(root)
+		if err != nil || validated != root {
+			return nil, errInvalidRoot
+		}
+		bound, err := safeopen.Bind(root)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, errInvalidRoot
+		}
+		if a.afterBind != nil {
+			a.afterBind(root)
+		}
+		workspaces, err := bound.ReadDir("workspaceStorage")
+		if err != nil {
+			bound.Close()
+			continue
+		}
+		if len(workspaces) > maxWorkspaceDirs {
+			bound.Close()
+			return nil, errScanLimit
+		}
+		for _, workspace := range workspaces {
+			if err := ctx.Err(); err != nil {
+				bound.Close()
+				return nil, err
 			}
-			if e != nil || d.IsDir() || !d.Type().IsRegular() {
-				return nil
+			if !workspace.IsDir() || workspace.Type()&os.ModeSymlink != 0 {
+				continue
 			}
-			parent := filepath.Base(filepath.Dir(p))
-			if (parent != "chatSessions" && parent != "chatEditingSessions") || (!strings.HasSuffix(p, ".json") && !strings.HasSuffix(p, ".jsonl")) {
-				return nil
-			}
-			s, digest, ok := a.inspect(root, p)
-			if ok {
-				rank := duplicateRank(p)
-				old, yes := by[s.ID]
-				if !yes || rank < old.rank {
-					by[s.ID] = candidate{s: s, digest: digest, rank: rank}
-				} else if rank == old.rank && old.s.OpaqueRef != p {
-					old.conflict = true
-					by[s.ID] = old
+			for _, sessionDir := range []string{"chatSessions", "chatEditingSessions"} {
+				dirRel := filepath.Join("workspaceStorage", workspace.Name(), sessionDir)
+				entries, err := bound.ReadDir(dirRel)
+				if err != nil {
+					continue
+				}
+				entriesScanned += len(entries)
+				if len(entries) > maxSessionFiles || entriesScanned > maxSessionFiles {
+					bound.Close()
+					return nil, errScanLimit
+				}
+				for _, entry := range entries {
+					if err := ctx.Err(); err != nil {
+						bound.Close()
+						return nil, err
+					}
+					if !entry.Type().IsRegular() || (!strings.HasSuffix(entry.Name(), ".json") && !strings.HasSuffix(entry.Name(), ".jsonl")) {
+						continue
+					}
+					relative := filepath.Join(dirRel, entry.Name())
+					path := filepath.Join(root, relative)
+					s, auth, ok := a.inspect(ctx, bound, root, path, relative)
+					if !ok {
+						continue
+					}
+					rank := duplicateRank(path)
+					old, yes := by[s.ID]
+					if !yes || rank < old.rank {
+						by[s.ID] = candidate{s: s, auth: auth, rank: rank}
+					} else if rank == old.rank && old.s.OpaqueRef != path {
+						old.conflict = true
+						by[s.ID] = old
+					}
 				}
 			}
-			return nil
-		})
+		}
+		bound.Close()
 	}
 	out := []source.Session{}
 	for _, c := range by {
@@ -118,20 +310,36 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	next := map[string]authorization{}
 	for _, s := range out {
 		c := by[s.ID]
-		next[s.OpaqueRef] = authorization{s.ID, c.digest}
+		next[s.OpaqueRef] = c.auth
+	}
+	if a.beforeCommit != nil {
+		a.beforeCommit()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	a.replaceKnown(next)
+	return out, nil
+}
+func (a *Adapter) replaceKnown(next map[string]authorization) {
+	if next == nil {
+		next = map[string]authorization{}
 	}
 	a.mu.Lock()
 	a.known = next
 	a.mu.Unlock()
-	return out, ctx.Err()
 }
-func read(root, p string) ([]byte, error) {
-	f, e := safeopen.Open(root, p, maxSessionBytes)
+func readBound(bound *safeopen.BoundRoot, relative string) ([]byte, error) {
+	f, e := bound.Open(relative, maxSessionBytes)
 	if e != nil {
 		return nil, e
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxSessionBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxSessionBytes+1))
+	if err != nil || len(data) > int(maxSessionBytes) {
+		return nil, errChangedSource
+	}
+	return data, nil
 }
 func duplicateRank(p string) int {
 	r := 0
@@ -143,35 +351,64 @@ func duplicateRank(p string) int {
 	}
 	return r
 }
-func (a *Adapter) inspect(root, p string) (source.Session, string, bool) {
-	data, e := read(root, p)
+func (a *Adapter) inspect(ctx context.Context, bound *safeopen.BoundRoot, root, p, relative string) (source.Session, authorization, bool) {
+	data, e := readBound(bound, relative)
 	if e != nil {
-		return source.Session{}, "", false
+		return source.Session{}, authorization{}, false
 	}
-	s, mal, e := decode(p, data)
-	if e != nil || s.Version != 3 || s.SessionID == "" || strings.ContainsAny(s.SessionID, `/\\#`) || len(s.Requests) == 0 {
-		return source.Session{}, "", false
+	s, mal, e := decode(ctx, p, data)
+	if e != nil || s.Version != 3 || s.SessionID == "" || strings.ContainsAny(s.SessionID, `/\\#`) || !hasCopilotProvenance(s) {
+		return source.Session{}, authorization{}, false
 	}
-	ev, recognizedInvalid := events(s)
+	ev, recognizedInvalid, ok := eventsContext(ctx, s)
+	if !ok {
+		return source.Session{}, authorization{}, false
+	}
 	mal += recognizedInvalid
 	count := 0
+	hasTools := false
+	hasReasoning := false
 	for _, e := range ev {
 		if e["type"] == "message" {
 			count++
 		}
+		if e["type"] == "tool_use" || e["type"] == "tool_result" {
+			hasTools = true
+		}
+		if blocks, ok := e["content"].([]any); ok {
+			for _, block := range blocks {
+				if object, ok := block.(map[string]any); ok && object["type"] == "thinking" {
+					hasReasoning = true
+				}
+			}
+		}
 	}
 	if count == 0 {
-		return source.Session{}, "", false
+		return source.Session{}, authorization{}, false
 	}
-	hashDir := filepath.Dir(filepath.Dir(p))
-	scope := workspaceScope(root, hashDir, s.SessionID)
+	hashRel := filepath.Dir(filepath.Dir(relative))
+	scope := workspaceScope(bound, hashRel, s.SessionID)
 	sum := sha256.Sum256(data)
-	return source.Session{ID: "vscode-copilot:" + s.SessionID, Product: "vscode-copilot", FormatVersion: fmt.Sprintf("v%d", s.Version), AdapterVersion: "1", Capabilities: a.Capabilities(), Scope: scope, StartedAt: time.UnixMilli(s.CreationDate), EndedAt: time.UnixMilli(s.LastMessageDate), MessageCount: count, MalformedCount: mal, OpaqueRef: p}, fmt.Sprintf("%x", sum[:]), true
+	digest := fmt.Sprintf("%x", sum[:])
+	capabilities := []source.Capability{source.CapabilityMessages}
+	if hasTools {
+		capabilities = append(capabilities, source.CapabilityTools)
+	}
+	if hasReasoning {
+		capabilities = append(capabilities, source.CapabilityReasoning)
+	}
+	session := source.Session{ID: "vscode-copilot:" + s.SessionID, Product: "vscode-copilot", FormatVersion: fmt.Sprintf("v%d", s.Version), AdapterVersion: "2", Capabilities: capabilities, Scope: scope, StartedAt: time.UnixMilli(s.CreationDate), EndedAt: time.UnixMilli(s.LastMessageDate), MessageCount: count, MalformedCount: mal, SnapshotID: digest, OpaqueRef: p}
+	identityPath, ok := capturePathIdentity(bound, relative)
+	if !ok {
+		return source.Session{}, authorization{}, false
+	}
+	auth := authorization{id: session.ID, digest: digest, metadata: sessionMetadata(session), root: root, pathIdentity: identityPath, rootIdentity: bound.Identity(), relative: relative}
+	return session, auth, true
 }
-func workspaceScope(root, dir, id string) source.ScopeRef {
+func workspaceScope(bound *safeopen.BoundRoot, dir, id string) source.ScopeRef {
 	var w struct{ Folder, Workspace string }
 	p := filepath.Join(dir, "workspace.json")
-	if _, e := readJSON(root, p, &w); e == nil {
+	if _, e := readJSON(bound, p, &w); e == nil {
 		v := w.Folder
 		if v == "" {
 			v = w.Workspace
@@ -190,29 +427,45 @@ func workspaceScope(root, dir, id string) source.ScopeRef {
 	sum := sha256.Sum256([]byte("vscode-copilot\x00" + id))
 	return source.ScopeRef{Type: source.ScopeConversationGroup, Root: fmt.Sprintf("%x", sum[:12]), Label: "VS Code Copilot sessions"}
 }
-func readJSON(root, p string, v any) (int64, error) {
-	b, e := read(root, p)
+func readJSON(bound *safeopen.BoundRoot, p string, v any) (int64, error) {
+	b, e := readBound(bound, p)
 	if e != nil {
 		return 0, e
 	}
 	return int64(len(b)), json.Unmarshal(b, v)
 }
-func decode(p string, data []byte) (sess, int, error) {
+func sessionMetadata(s source.Session) string {
+	data, _ := json.Marshal(s)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
+}
+func decode(ctx context.Context, p string, data []byte) (sess, int, error) {
+	if err := ctx.Err(); err != nil {
+		return sess{}, 0, err
+	}
 	if strings.HasSuffix(p, ".json") {
 		var s sess
 		e := json.Unmarshal(data, &s)
 		return s, 0, e
 	}
-	return replay(data)
+	return replay(ctx, data)
 }
-func replay(data []byte) (sess, int, error) {
+func replay(ctx context.Context, data []byte) (sess, int, error) {
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 64<<10), maxLineBytes+1)
 	var doc any
 	bad := 0
+	records := 0
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return sess{}, bad, err
+		}
 		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
 			continue
+		}
+		records++
+		if records > maxSessionRecords {
+			return sess{}, bad, errScanLimit
 		}
 		var op struct {
 			Kind int   `json:"kind"`
@@ -257,6 +510,9 @@ func mutate(doc *any, kind int, path []any, val any, index *int) bool {
 	return ok
 }
 func validKeys(keys []any) bool {
+	if len(keys) == 0 || len(keys) > maxMutationDepth {
+		return false
+	}
 	for _, k := range keys {
 		switch v := k.(type) {
 		case string:
@@ -382,9 +638,21 @@ func child(node any, key string) (any, bool) {
 	return nil, false
 }
 func events(s sess) ([]map[string]any, int) {
+	out, bad, _ := eventsContext(context.Background(), s)
+	return out, bad
+}
+func eventsContext(ctx context.Context, s sess) ([]map[string]any, int, bool) {
 	var out []map[string]any
 	bad := 0
+	records := 0
 	for _, r := range s.Requests {
+		if ctx.Err() != nil {
+			return nil, bad, false
+		}
+		records++
+		if records > maxSessionRecords {
+			return nil, bad, false
+		}
 		if r.RequestID == "" {
 			bad++
 			continue
@@ -394,6 +662,13 @@ func events(s sess) ([]map[string]any, int) {
 			out = append(out, map[string]any{"type": "message", "role": "user", "content": r.Message.Text, "timestamp": ts})
 		}
 		for _, raw := range r.Response {
+			records++
+			if records > maxSessionRecords {
+				return nil, bad, false
+			}
+			if ctx.Err() != nil || len(out) >= maxSessionEvents {
+				return nil, bad, false
+			}
 			var x item
 			if json.Unmarshal(raw, &x) != nil {
 				bad++
@@ -426,16 +701,26 @@ func events(s sess) ([]map[string]any, int) {
 				if x.IsComplete && x.Value != "" {
 					out = append(out, map[string]any{"type": "tool_result", "call_id": x.ToolCallID, "result": x.Value, "timestamp": ts})
 				}
-			case "markdownContent", "thinking":
+			case "markdownContent":
 				if strings.TrimSpace(x.Value) != "" {
 					out = append(out, map[string]any{"type": "message", "role": "assistant", "content": x.Value, "timestamp": ts, "model": r.ModelID})
+				} else {
+					bad++
+				}
+			case "thinking":
+				if strings.TrimSpace(x.Value) != "" {
+					content := []any{map[string]any{"type": "thinking", "thinking": x.Value}}
+					out = append(out, map[string]any{"type": "message", "role": "assistant", "content": content, "timestamp": ts, "model": r.ModelID})
 				} else {
 					bad++
 				}
 			}
 		}
 	}
-	return out, bad
+	if len(out) > maxSessionEvents {
+		return nil, bad, false
+	}
+	return out, bad, true
 }
 func rawValue(r json.RawMessage) (any, bool) {
 	var v any
@@ -449,36 +734,54 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 		return nil, e
 	}
 	if s.Product != a.Product() {
-		return nil, errors.New("copilot: invalid reference")
+		return nil, errInvalidReference
 	}
 	a.mu.RLock()
 	auth, ok := a.known[s.OpaqueRef]
 	a.mu.RUnlock()
-	if !ok || auth.id != s.ID {
-		return nil, errors.New("copilot: unknown reference")
+	if !ok || auth.id != s.ID || auth.metadata != sessionMetadata(s) {
+		return nil, errUnknownReference
 	}
-	var root string
-	for _, r := range a.roots {
-		if rel, e := filepath.Rel(r, s.OpaqueRef); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			root = r
-			break
-		}
+	validated, err := canonicalizeRoot(auth.root)
+	if err != nil || validated != auth.root {
+		return nil, errInvalidReference
 	}
-	b, e := read(root, s.OpaqueRef)
-	if e != nil {
-		return nil, e
+	bound, err := safeopen.Bind(auth.root)
+	if err != nil {
+		return nil, errChangedSource
+	}
+	defer bound.Close()
+	if bound.Identity() != auth.rootIdentity {
+		return nil, errChangedSource
+	}
+	identityPath, identityOK := capturePathIdentity(bound, auth.relative)
+	if !identityOK || !samePathIdentity(identityPath, auth.pathIdentity) {
+		return nil, errChangedSource
+	}
+	b, err := readBound(bound, auth.relative)
+	if err != nil {
+		return nil, errChangedSource
 	}
 	sum := sha256.Sum256(b)
 	if fmt.Sprintf("%x", sum[:]) != auth.digest {
-		return nil, errors.New("copilot: source changed since discovery")
+		return nil, errChangedSource
 	}
-	ss, _, e := decode(s.OpaqueRef, b)
-	if e != nil || "vscode-copilot:"+ss.SessionID != s.ID {
-		return nil, errors.New("copilot: stale reference")
+	ss, _, err := decode(ctx, s.OpaqueRef, b)
+	if err != nil || ss.Version != 3 || !hasCopilotProvenance(ss) || "vscode-copilot:"+ss.SessionID != s.ID {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, errStaleReference
 	}
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
-	ev, _ := events(ss)
+	ev, _, valid := eventsContext(ctx, ss)
+	if !valid {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, errStaleReference
+	}
 	for _, x := range ev {
 		if e := ctx.Err(); e != nil {
 			return nil, e
