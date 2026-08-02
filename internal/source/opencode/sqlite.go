@@ -241,6 +241,19 @@ func validateSQLiteSchema(ctx context.Context, tx sqliteQueryer) (sqliteSchema, 
 			}
 			return sqliteSchema{}, errors.New("opencode: unsupported database schema")
 		}
+		primaryKeys := 0
+		for name, column := range columns {
+			if column.primaryKey == 0 {
+				continue
+			}
+			primaryKeys++
+			if name != "id" || column.primaryKey != 1 {
+				return sqliteSchema{}, errors.New("opencode: unsupported database schema")
+			}
+		}
+		if primaryKeys != 1 {
+			return sqliteSchema{}, errors.New("opencode: unsupported database schema")
+		}
 		for name, required := range nativeSQLiteColumns[table] {
 			actual, ok := columns[name]
 			if !ok || actual != required {

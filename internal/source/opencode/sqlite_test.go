@@ -273,6 +273,68 @@ func TestSQLiteRejectsSessionIdentityWithoutPrimaryKey(t *testing.T) {
 	}
 }
 
+func TestSQLiteRejectsCompositeCoreIdentitiesBeforeDataQueries(t *testing.T) {
+	for _, compositeTable := range []string{"project", "session", "message", "part"} {
+		t.Run(compositeTable, func(t *testing.T) {
+			root := t.TempDir()
+			db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			schemas := map[string]string{
+				"project": `CREATE TABLE project (id TEXT PRIMARY KEY,worktree TEXT NOT NULL)`,
+				"session": `CREATE TABLE session (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,parent_id TEXT,directory TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL)`,
+				"message": `CREATE TABLE message (id TEXT PRIMARY KEY,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL)`,
+				"part":    `CREATE TABLE part (id TEXT PRIMARY KEY,message_id TEXT NOT NULL,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL)`,
+			}
+			switch compositeTable {
+			case "project":
+				schemas["project"] = `CREATE TABLE project (id TEXT,tenant TEXT,worktree TEXT NOT NULL,PRIMARY KEY(id,tenant))`
+			case "session":
+				schemas["session"] = `CREATE TABLE session (id TEXT,tenant TEXT,project_id TEXT NOT NULL,parent_id TEXT,directory TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL,PRIMARY KEY(id,tenant))`
+			case "message":
+				schemas["message"] = `CREATE TABLE message (id TEXT,tenant TEXT,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(id,tenant))`
+			case "part":
+				schemas["part"] = `CREATE TABLE part (id TEXT,tenant TEXT,message_id TEXT NOT NULL,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(id,tenant))`
+			}
+			for _, table := range []string{"project", "session", "message", "part"} {
+				if _, err := db.Exec(schemas[table]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if compositeTable == "session" {
+				for _, statement := range []string{
+					`INSERT INTO project VALUES ('p1','/synthetic/one')`,
+					`INSERT INTO project VALUES ('p2','/synthetic/two')`,
+					`INSERT INTO session VALUES ('duplicate','tenant-a','p1',NULL,'/synthetic/one',1,2)`,
+					`INSERT INTO session VALUES ('duplicate','tenant-b','p2',NULL,'/synthetic/two',3,4)`,
+				} {
+					if _, err := db.Exec(statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var specs []sqliteQuerySpec
+			previousObserver := observeSQLiteQuery
+			observeSQLiteQuery = func(spec sqliteQuerySpec) { specs = append(specs, spec) }
+			result, err := source.NewRegistry(New(root)).Scan(context.Background())
+			observeSQLiteQuery = previousObserver
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Sources["opencode"].State != source.SourceFormatUnsupported {
+				t.Fatalf("composite identity state=%s", result.Sources["opencode"].State)
+			}
+			for _, spec := range specs {
+				if spec.kind == sqliteQueryData {
+					t.Fatalf("data query reached for composite identity: %#v", spec)
+				}
+			}
+		})
+	}
+}
+
 func TestSQLiteMalformedMessageAndPartRowsAreIsolated(t *testing.T) {
 	root := t.TempDir()
 	installSQLite(t, root)
