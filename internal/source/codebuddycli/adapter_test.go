@@ -21,6 +21,7 @@ import (
 )
 
 const codeBuddyUUID = "11111111-1111-4111-8111-111111111111"
+const codeBuddyUUID2 = "22222222-2222-4222-8222-222222222222"
 
 func installCodeBuddy(t *testing.T, root, project, id string, data []byte) string {
 	t.Helper()
@@ -107,6 +108,7 @@ func TestCompressCWDAndCollisionFallback(t *testing.T) {
 		"/alpha//beta":        "alpha-beta",
 		`C:\alpha\beta`:       "C-alpha-beta",
 		`\\server\share\dir`:  "server-share-dir",
+		`//server/share/dir`:  "server-share-dir",
 		"---/alpha:::beta---": "alpha-beta",
 	}
 	for input, want := range cases {
@@ -138,6 +140,59 @@ func TestCompressCWDAndCollisionFallback(t *testing.T) {
 	got, err = New(uncRoot).Discover(context.Background())
 	if err != nil || len(got) != 1 || got[0].Scope.Type != source.ScopeProject || got[0].Scope.Label != "dir" {
 		t.Fatalf("UNC sessions=%#v err=%v", got, err)
+	}
+	backslashUNCScopeRoot := got[0].Scope.Root
+
+	forwardUNCRoot := t.TempDir()
+	forwardUNCBody := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}],"cwd":"//server/share/dir"}` + "\n")
+	installCodeBuddy(t, forwardUNCRoot, "server-share-dir", codeBuddyUUID, forwardUNCBody)
+	got, err = New(forwardUNCRoot).Discover(context.Background())
+	if err != nil || len(got) != 1 || got[0].Scope.Type != source.ScopeProject || got[0].Scope.Label != "dir" {
+		t.Fatalf("forward UNC sessions=%#v err=%v", got, err)
+	}
+	if got[0].Scope.Root == "" || got[0].Scope.Root != backslashUNCScopeRoot {
+		t.Fatalf("UNC representations did not normalize stably: %q != %q", got[0].Scope.Root, backslashUNCScopeRoot)
+	}
+
+	for _, invalid := range []string{`//server`, `\\server`, `//server//dir`, `\\server\\dir`} {
+		t.Run("invalid-unc-"+CompressCWD(invalid), func(t *testing.T) {
+			invalidRoot := t.TempDir()
+			body, err := json.Marshal(map[string]any{
+				"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "one"}}, "cwd": invalid,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installCodeBuddy(t, invalidRoot, CompressCWD(invalid), codeBuddyUUID, append(body, '\n'))
+			sessions, err := New(invalidRoot).Discover(context.Background())
+			if err != nil || len(sessions) != 1 || sessions[0].Scope.Type != source.ScopeSessionCollection {
+				t.Fatalf("sessions=%#v err=%v", sessions, err)
+			}
+		})
+	}
+}
+
+func TestCollectionFallbackGroupsProjectWithoutSessionUUID(t *testing.T) {
+	root := t.TempDir()
+	installCodeBuddy(t, root, "same-project", codeBuddyUUID, []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"missing cwd"}]}`+"\n"))
+	conflicting := strings.Join([]string{
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}],"cwd":"/same/project"}`,
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}],"cwd":"/same-project"}`,
+	}, "\n") + "\n"
+	installCodeBuddy(t, root, "same-project", codeBuddyUUID2, []byte(conflicting))
+
+	sessions, err := New(root).Discover(context.Background())
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+	if sessions[0].Scope.Type != source.ScopeSessionCollection || sessions[1].Scope.Type != source.ScopeSessionCollection {
+		t.Fatalf("scopes=%#v %#v", sessions[0].Scope, sessions[1].Scope)
+	}
+	if sessions[0].Scope.Root != sessions[1].Scope.Root {
+		t.Fatalf("collection roots differ: %q != %q", sessions[0].Scope.Root, sessions[1].Scope.Root)
+	}
+	if sessions[0].ID == sessions[1].ID {
+		t.Fatalf("session IDs collide: %q", sessions[0].ID)
 	}
 }
 
@@ -190,6 +245,60 @@ func TestToolPairingIsStrictAtomicAndIncompleteIsSafeError(t *testing.T) {
 	}
 }
 
+func TestToolResultStatusProviderErrorTypesAndAtomicRollback(t *testing.T) {
+	t.Run("provider-error-types", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			provider  any
+			wantError bool
+			wantValid bool
+		}{
+			{name: "missing", provider: nil, wantValid: true},
+			{name: "null", provider: map[string]any{"toolResult": map[string]any{"error": nil}}, wantValid: true},
+			{name: "false", provider: map[string]any{"toolResult": map[string]any{"error": false}}, wantValid: true},
+			{name: "true", provider: map[string]any{"toolResult": map[string]any{"error": true}}, wantError: true, wantValid: true},
+			{name: "empty-string", provider: map[string]any{"toolResult": map[string]any{"error": ""}}, wantValid: true},
+			{name: "string", provider: map[string]any{"toolResult": map[string]any{"error": "failed"}}, wantError: true, wantValid: true},
+			{name: "object", provider: map[string]any{"toolResult": map[string]any{"error": map[string]any{}}}},
+			{name: "number", provider: map[string]any{"toolResult": map[string]any{"error": float64(1)}}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				gotError, gotValid := resultError(tc.provider, "completed")
+				if gotError != tc.wantError || gotValid != tc.wantValid {
+					t.Fatalf("resultError=(%v,%v) want=(%v,%v)", gotError, gotValid, tc.wantError, tc.wantValid)
+				}
+			})
+		}
+		if gotError, gotValid := resultError(nil, "incomplete"); !gotError || !gotValid {
+			t.Fatalf("incomplete resultError=(%v,%v)", gotError, gotValid)
+		}
+	})
+
+	t.Run("recognized-invalid-does-not-resolve-call", func(t *testing.T) {
+		root := t.TempDir()
+		body := strings.Join([]string{
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}`,
+			`{"type":"function_call","callId":"c1","name":"one","arguments":{}}`,
+			`{"type":"function_call_result","callId":"c1","name":"one","status":"success","output":"alias"}`,
+			`{"type":"function_call_result","callId":"c1","name":"one","status":"in_progress","output":"not-result"}`,
+			`{"type":"function_call_result","callId":"c1","name":"one","status":"completed","output":"object","providerData":{"toolResult":{"error":{}}}}`,
+			`{"type":"function_call_result","callId":"c1","name":"one","status":"completed","output":"number","providerData":{"toolResult":{"error":1}}}`,
+			`{"type":"function_call_result","callId":"c1","name":"one","status":"completed","output":"kept"}`,
+		}, "\n") + "\n"
+		installCodeBuddy(t, root, "collection", codeBuddyUUID, []byte(body))
+		a := New(root)
+		sessions, err := a.Discover(context.Background())
+		if err != nil || len(sessions) != 1 || sessions[0].MalformedCount != 4 {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		events := codeBuddyEvents(t, a, sessions[0])
+		if len(events) != 3 || events[2]["type"] != "tool_result" || events[2]["result"] != "kept" {
+			t.Fatalf("events=%#v", events)
+		}
+	})
+}
+
 func TestOnlyDirectUUIDJSONLFilesAreScanned(t *testing.T) {
 	fixture := codeBuddyFixture(t)
 	root := t.TempDir()
@@ -212,6 +321,20 @@ func TestOnlyDirectUUIDJSONLFilesAreScanned(t *testing.T) {
 	got, err := New(root).Discover(context.Background())
 	if err != nil || len(got) != 1 {
 		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+}
+
+func TestReservedProjectDirectoriesAreExcludedCaseInsensitively(t *testing.T) {
+	fixture := codeBuddyFixture(t)
+	for _, project := range []string{"rollback", "ROLLBACK", "Rollback", "meta", "META", "MeTa"} {
+		t.Run(project, func(t *testing.T) {
+			root := t.TempDir()
+			installCodeBuddy(t, root, project, codeBuddyUUID, fixture)
+			sessions, err := New(root).Discover(context.Background())
+			if err != nil || len(sessions) != 0 {
+				t.Fatalf("reserved directory was scanned: sessions=%#v err=%v", sessions, err)
+			}
+		})
 	}
 }
 

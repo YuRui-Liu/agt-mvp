@@ -279,6 +279,54 @@ func TestKimiCodeMalformedUnknownPartialCanceledAndUsageFallback(t *testing.T) {
 	}
 }
 
+func TestKimiCodeKnownRecordMillisAreValidatedAndIsolated(t *testing.T) {
+	t.Run("known-record-time", func(t *testing.T) {
+		body := strings.Join([]string{
+			`{"type":"metadata","protocol_version":"1.4","created_at":1767225600000}`,
+			`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"negative"}]},"time":-1}`,
+			`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"optional time"}]}}`,
+			`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"kept"}]},"time":1767225600000}`,
+			`{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"step"},"time":1.5}`,
+			`{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"step"},"time":1767225601000}`,
+			`{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part","stepUuid":"step","part":{"type":"text","text":"bad"}},"time":"1767225602000"}`,
+			`{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part","stepUuid":"step","part":{"type":"text","text":"answer"}},"time":1767225602000}`,
+			`{"type":"usage.record","usage":{"inputOther":99},"time":9223372036854775808}`,
+			`{"type":"usage.record","usage":{"inputOther":3},"time":1767225603000}`,
+		}, "\n") + "\n"
+		parsed, ok := parseWire(context.Background(), []byte(body))
+		if !ok || parsed.malformed != 4 || len(parsed.events) != 3 || parsed.usage["input_tokens"] != 3 {
+			t.Fatalf("parsed=%#v ok=%v", parsed, ok)
+		}
+		if parsed.events[0].Content != "optional time" || parsed.events[0].Timestamp != "" || parsed.events[1].Content != "kept" || parsed.events[2].Content != "answer" {
+			t.Fatalf("events=%#v", parsed.events)
+		}
+	})
+
+	t.Run("metadata-created-at-required", func(t *testing.T) {
+		body := strings.Join([]string{
+			`{"type":"metadata","protocol_version":"1.4"}`,
+			`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"kept"}]},"time":1767225600000}`,
+		}, "\n") + "\n"
+		parsed, ok := parseWire(context.Background(), []byte(body))
+		if !ok || parsed.malformed != 1 || len(parsed.events) != 1 {
+			t.Fatalf("parsed=%#v ok=%v", parsed, ok)
+		}
+	})
+
+	for _, createdAt := range []string{"null", `"1767225600000"`, "-1", "1.5", "9223372036854775808"} {
+		t.Run("metadata-created-at-"+strings.NewReplacer(`"`, "quote", ".", "dot", "-", "negative").Replace(createdAt), func(t *testing.T) {
+			body := strings.Join([]string{
+				`{"type":"metadata","protocol_version":"1.4","created_at":` + createdAt + `}`,
+				`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"kept"}]},"time":1767225600000}`,
+			}, "\n") + "\n"
+			parsed, ok := parseWire(context.Background(), []byte(body))
+			if !ok || parsed.malformed != 1 || len(parsed.events) != 1 || parsed.events[0].Content != "kept" {
+				t.Fatalf("created_at=%s parsed=%#v ok=%v", createdAt, parsed, ok)
+			}
+		})
+	}
+}
+
 func TestKimiCodeCompositeAuthorization(t *testing.T) {
 	state, wire := kimiFixture(t)
 	root := t.TempDir()

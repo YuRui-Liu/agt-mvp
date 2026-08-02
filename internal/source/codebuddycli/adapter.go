@@ -256,7 +256,7 @@ func validProjectDir(entry os.DirEntry) bool {
 		return false
 	}
 	switch strings.ToLower(entry.Name()) {
-	case "history", "settings", "mcp", "auth", "logs", "log", "cache", "plugins", "blobs", "subagents", "tool-results":
+	case "history", "settings", "mcp", "auth", "logs", "log", "cache", "plugins", "blobs", "subagents", "tool-results", "rollback", "meta":
 		return false
 	default:
 		return true
@@ -561,7 +561,7 @@ func validateToolTransaction(events []event, pending map[string]toolState, compl
 }
 
 func resultError(rawProvider any, status string) (bool, bool) {
-	isError := status == "incomplete" || status == "failed" || status == "error"
+	isError := status == "incomplete"
 	if rawProvider == nil {
 		return isError, true
 	}
@@ -587,13 +587,13 @@ func resultError(rawProvider any, status string) (bool, bool) {
 	case string:
 		return isError || strings.TrimSpace(value) != "", true
 	default:
-		return true, true
+		return false, false
 	}
 }
 
 func validResultStatus(value string) bool {
 	switch value {
-	case "completed", "complete", "success", "incomplete", "failed", "error":
+	case "completed", "incomplete":
 		return true
 	default:
 		return false
@@ -644,6 +644,15 @@ func cleanCWD(value string) (string, bool) {
 	if value == "" || strings.ContainsAny(value, "\x00\r\n") {
 		return "", false
 	}
+	normalized := strings.ReplaceAll(value, `\`, "/")
+	if strings.HasPrefix(normalized, "//") {
+		rest := strings.TrimPrefix(normalized, "//")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" || strings.Contains(rest, "//") || path.Clean("/"+rest) != "/"+rest {
+			return "", false
+		}
+		return "//" + rest, true
+	}
 	if filepath.IsAbs(value) {
 		clean := filepath.Clean(value)
 		return clean, clean == value
@@ -654,14 +663,6 @@ func cleanCWD(value string) (string, bool) {
 			return "", false
 		}
 		return strings.ToUpper(replaced[:1]) + replaced[1:], true
-	}
-	if strings.HasPrefix(value, `\\`) {
-		replaced := strings.ReplaceAll(value, `\`, "/")
-		rest := strings.TrimPrefix(replaced, "//")
-		if rest == "" || strings.Contains(rest, "//") || path.Clean("/"+rest) != "/"+rest || len(strings.Split(rest, "/")) < 2 {
-			return "", false
-		}
-		return "//" + rest, true
 	}
 	return "", false
 }
@@ -726,10 +727,11 @@ func (a *Adapter) snapshot(ctx context.Context, item candidate) (source.Session,
 	}
 	rootIdentity := fmt.Sprintf("%d:%d", item.rootIdentity.Volume, item.rootIdentity.File)
 	identitySeed := rootIdentity + "\x00" + item.project + "\x00" + item.uuid
+	collectionSeed := rootIdentity + "\x00" + item.project
 	id := "codebuddy-cli:" + digestPrefix(identitySeed, 32)
 	scope := source.ScopeRef{
 		Type:  source.ScopeSessionCollection,
-		Root:  "codebuddy-cli:collection:" + digestPrefix(identitySeed, 24),
+		Root:  "codebuddy-cli:collection:" + digestPrefix(collectionSeed, 24),
 		Label: "CodeBuddy CLI sessions",
 	}
 	if parsed.cwdTrusted {

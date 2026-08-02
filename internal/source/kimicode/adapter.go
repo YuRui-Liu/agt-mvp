@@ -515,11 +515,18 @@ func parseWire(ctx context.Context, data []byte) (parsedWire, bool) {
 			if typeName != "metadata" || version != "1.4" {
 				return parsedWire{}, false
 			}
+			if _, ok := requiredMillisTimestamp(record["created_at"]); !ok {
+				parsed.malformed++
+			}
 			continue
 		}
-		timestamp := millisTimestamp(record["time"])
 		switch typeName {
 		case "context.append_message":
+			timestamp, ok := optionalMillisTimestamp(record, "time")
+			if !ok {
+				parsed.malformed++
+				continue
+			}
 			message, ok := record["message"].(map[string]any)
 			if !ok {
 				parsed.malformed++
@@ -544,6 +551,11 @@ func parseWire(ctx context.Context, data []byte) (parsedWire, bool) {
 			parsed.events = append(parsed.events, event{Type: "message", Role: "user", Content: clean, Timestamp: timestamp})
 			parsed.messages++
 		case "context.append_loop_event":
+			timestamp, ok := optionalMillisTimestamp(record, "time")
+			if !ok {
+				parsed.malformed++
+				continue
+			}
 			rawEvent, ok := record["event"].(map[string]any)
 			if !ok {
 				parsed.malformed++
@@ -583,6 +595,10 @@ func parseWire(ctx context.Context, data []byte) (parsedWire, bool) {
 				fallbackUsage = append(fallbackUsage, fallback)
 			}
 		case "usage.record":
+			if _, ok := optionalMillisTimestamp(record, "time"); !ok {
+				parsed.malformed++
+				continue
+			}
 			usage, ok := parseUsage(record["usage"])
 			if !ok {
 				parsed.malformed++
@@ -795,12 +811,24 @@ func nonNegativeInt(raw any) (int64, bool) {
 	return int64(value), ok && value >= 0 && value <= math.MaxInt64 && math.Trunc(value) == value
 }
 
-func millisTimestamp(raw any) string {
-	value, ok := raw.(float64)
-	if !ok || value < 0 || value > math.MaxInt64 || math.Trunc(value) != value {
-		return ""
+func optionalMillisTimestamp(record map[string]any, field string) (string, bool) {
+	raw, exists := record[field]
+	if !exists {
+		return "", true
 	}
-	return time.UnixMilli(int64(value)).UTC().Format(time.RFC3339Nano)
+	return requiredMillisTimestamp(raw)
+}
+
+func requiredMillisTimestamp(raw any) (string, bool) {
+	value, ok := raw.(float64)
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value >= math.Exp2(63) || math.Trunc(value) != value {
+		return "", false
+	}
+	millis := int64(value)
+	if millis < 0 {
+		return "", false
+	}
+	return time.UnixMilli(millis).UTC().Format(time.RFC3339Nano), true
 }
 
 func isThinkingEvent(value event) bool {
