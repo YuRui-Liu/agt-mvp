@@ -135,6 +135,7 @@ go vet ./...
 npm ci --ignore-scripts --no-audit --no-fund
 npm test
 bash tests/test_kuai_install_sh.sh
+bash tests/test_kuai_install_quarantine_sh.sh
 bash tests/test_build_kuai_release_sh.sh
 bash tests/test_kci_pipeline_build_sh.sh
 bash tests/test_assemble_kuai_checksums_sh.sh
@@ -168,7 +169,7 @@ go version -m ./dist/kuai-darwin-arm64
 | Linux ARM | Linux ARM64 物理机池 | `kuai-linux-arm64` | 无需签名 |
 | Linux x64 | Linux x64 物理机池 | `kuai-linux-amd64` | 无需签名 |
 
-`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在 `dist/targets` 下的隔离 staging 中生成和签名，发布前以 POSIX noclobber/O_EXCL 原子取得 per-target 锁，在锁内重查目标不存在后，再把二进制与 `.sha256` 作为一个不可变 pair 目录首次原子发布到 `dist/targets/<artifact>/`。目标或锁已经存在时均失败；trap 只删除本进程成功取得的锁。
+`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在 `dist/targets` 下的隔离 staging 中生成和签名，发布前用原子 `mkdir` 取得 per-target claim 目录；任何已存在的文件、目录、symlink 或 FIFO 都会令发布失败。claim 内重查目标不存在后，再把二进制与 `.sha256` 作为一个不可变 pair 目录首次原子发布到 `dist/targets/<artifact>/`，随后验证最终目录仍精确包含两个普通文件；目标被并发创建而导致 `mv` 嵌套时会失败，绝不虚报成功。claim 也是 append-only 发布记录并故意保留：脚本不删除锁路径，因此即使该路径被并发替换，也不会误删其他发布者的目录项。发布工作目录属于可信边界，只允许遵守永久 claim 的 KCI 任务写入；每个版本必须使用全新的隔离目录。
 
 本地可模拟天琴环境变量验证：
 

@@ -8,6 +8,7 @@ README = ROOT / "README.md"
 SKILL = ROOT / "kuai.md"
 INSTALLER = ROOT / "install.sh"
 RELEASE = ROOT / "scripts" / "build-kuai-release.sh"
+WORKFLOW = ROOT / ".github" / "workflows" / "kuai-mock.yml"
 
 
 class DocumentationTests(unittest.TestCase):
@@ -17,6 +18,7 @@ class DocumentationTests(unittest.TestCase):
         cls.skill = SKILL.read_text(encoding="utf-8")
         cls.installer = INSTALLER.read_text(encoding="utf-8")
         cls.release = RELEASE.read_text(encoding="utf-8")
+        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
     def test_readme_documents_current_scope_and_privacy(self):
         for phrase in (
@@ -190,7 +192,9 @@ class DocumentationTests(unittest.TestCase):
             "精确 12 个条目",
             "硬链接",
             "Python 3",
-            "O_EXCL",
+            "原子 `mkdir`",
+            "append-only 发布记录",
+            "可信边界",
         ):
             self.assertIn(phrase, self.readme)
         self.assertNotIn("APPLE_APP_SPECIFIC_PASSWORD", self.readme)
@@ -202,6 +206,12 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn("原子", document)
             self.assertRegex(document, r"(不要使用|不要运行).{0,12}`curl[^`]*\|\s*(?:sh|bash)`")
         self.assertIn("KUAI_INSTALL_DRY_RUN", self.installer)
+
+    def test_macos_quarantine_regression_is_in_standard_verification(self):
+        command = "bash tests/test_kuai_install_quarantine_sh.sh"
+        self.assertIn(command, self.readme)
+        macos_job = self.workflow.split("  macos:", 1)[1].split("  windows:", 1)[0]
+        self.assertIn(command, macos_job)
 
     def test_status_does_not_claim_remote_task_access(self):
         for document in (self.readme, self.skill):

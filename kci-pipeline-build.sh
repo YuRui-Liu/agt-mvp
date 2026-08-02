@@ -79,10 +79,8 @@ target_dir="$targets/$artifact_name"
 }
 stage=$(mktemp -d "$targets/.$artifact_name.stage.XXXXXX")
 lock="$targets/.$artifact_name.lock"
-lock_acquired=0
 cleanup() {
   [ -z "$stage" ] || rm -rf "$stage"
-  [ "$lock_acquired" -eq 0 ] || rm -f "$lock"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -243,18 +241,28 @@ if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -L "$targets" ] || [ ! -d "$targets" 
   exit 1
 fi
 
-if (set -C; : >"$lock") 2>/dev/null; then
-  lock_acquired=1
-else
+if ! mkdir "$lock" 2>/dev/null; then
   echo "kuai: another publication owns the target lock" >&2
   exit 1
 fi
+# The empty claim is append-only and is intentionally never deleted. There is no
+# portable atomic compare-and-delete primitive for a replaced path; retaining
+# the claim is the fail-closed way to avoid deleting another publisher's lock.
 [ ! -e "$target_dir" ] && [ ! -L "$target_dir" ] || {
   echo "kuai: immutable target pair already exists" >&2
   exit 1
 }
 
 mv "$stage" "$target_dir"
+published_entries=$(find "$target_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')
+if [ ! -f "$target_dir/$artifact_name" ] ||
+   [ -L "$target_dir/$artifact_name" ] ||
+   [ ! -f "$target_dir/$artifact_name.sha256" ] ||
+   [ -L "$target_dir/$artifact_name.sha256" ] ||
+   [ "$published_entries" -ne 2 ]; then
+  echo "kuai: target pair changed during publication" >&2
+  exit 1
+fi
 stage=
 
 echo "kuai: built $target_dir/$artifact_name (version $version, sign=$SIGN, notarize=$NOTARIZE)"

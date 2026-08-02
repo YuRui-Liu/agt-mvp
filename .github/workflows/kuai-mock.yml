@@ -34,6 +34,7 @@ jobs:
           go-version: 1.26.5
       - run: go test ./...
       - run: bash tests/test_kuai_install_sh.sh
+      - run: bash tests/test_kuai_install_quarantine_sh.sh
       - run: bash tests/test_build_kuai_release_sh.sh
 
   windows:

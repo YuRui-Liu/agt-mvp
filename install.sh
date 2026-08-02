@@ -17,6 +17,12 @@ validate_release_url() {
   fi
 }
 
+print_shell_literal() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 validate_release_url "$KUAI_RELEASE_URL"
 
 case "$(uname -s)" in
@@ -135,4 +141,19 @@ fi
 
 rm -f "$kuai_backup"
 transaction_started=0
+
+# Advisory only. The installer never clears quarantine or Mark-of-the-Web on the
+# user's behalf; it reports the state and leaves the decision to the user.
+if [ "$platform" = darwin ] && command -v xattr >/dev/null 2>&1; then
+  if xattr -p com.apple.quarantine "$install_dir/kuai" >/dev/null 2>&1; then
+    echo "kuai: $install_dir/kuai carries com.apple.quarantine; macOS may block or prompt" >&2
+    echo "kuai: review the file, then clear the download marker yourself if you trust it:" >&2
+    {
+      printf 'kuai:   xattr -d com.apple.quarantine -- '
+      print_shell_literal "$install_dir/kuai"
+      printf '\n'
+    } >&2
+  fi
+fi
+
 echo "Installed kuai to $install_dir"

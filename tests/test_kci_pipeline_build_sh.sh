@@ -114,6 +114,30 @@ exec /bin/rm "$@"
 EOF
 chmod +x "$TEST_ROOT/fakebin/rm"
 
+cat >"$TEST_ROOT/fakebin/mv" <<'EOF'
+#!/bin/sh
+if [ "${FAKE_REPLACE_PUBLICATION_LOCK:-}" = true ]; then
+  case "${1:-}:${2:-}" in
+    *.stage.*:*/dist/targets/kuai-*)
+      lock=$(dirname -- "$2")/.$(basename -- "$2").lock
+      marker=$(find "$lock" -mindepth 1 -maxdepth 1 -type f -name '*.owner' -print | head -1)
+      /bin/rm -rf "$lock"
+      mkdir "$lock"
+      replacement_name=replacement-owner
+      [ -z "$marker" ] || replacement_name=$(basename -- "$marker")
+      printf 'other owner\n' >"$lock/$replacement_name"
+      ;;
+  esac
+fi
+if [ "${FAKE_CREATE_PUBLICATION_TARGET:-}" = true ]; then
+  case "${1:-}:${2:-}" in
+    *.stage.*:*/dist/targets/kuai-*) mkdir -p "$2" ;;
+  esac
+fi
+exec /bin/mv "$@"
+EOF
+chmod +x "$TEST_ROOT/fakebin/mv"
+
 export FAKE_GO_LOG="$TEST_ROOT/go.log"
 export FAKE_SIGN_LOG="$TEST_ROOT/sign.log"
 export PATH="$TEST_ROOT/fakebin:/usr/bin:/bin"
@@ -211,13 +235,51 @@ assert_one_concurrent_winner() {
   pair="$TEST_ROOT/repo/dist/targets/$artifact"
   [ "$(find "$pair" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" -eq 2 ]
   [ -z "$(find "$pair" -name '*.stage.*' -print)" ]
-  [ ! -e "$TEST_ROOT/repo/dist/targets/.$artifact.lock" ]
+  claim="$TEST_ROOT/repo/dist/targets/.$artifact.lock"
+  [ -d "$claim" ] && [ ! -L "$claim" ]
+  [ -z "$(find "$claim" -mindepth 1 -maxdepth 1 -print)" ]
 }
 
 assert_one_concurrent_winner linux amd64 kuai-linux-amd64
 assert_one_concurrent_winner linux arm64 kuai-linux-arm64
+
+rm -rf "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64"
+lock="$TEST_ROOT/repo/dist/targets/.kuai-linux-amd64.lock"
+rm -rf "$lock"
+ln -s /dev/null "$lock"
+run_kci linux amd64 >/dev/null 2>&1 && {
+  echo "symlink publication lock unexpectedly accepted" >&2
+  exit 1
+}
+[ -L "$lock" ]
+rm "$lock"
+
+mkfifo "$lock"
+run_kci linux amd64 >/dev/null 2>&1 && {
+  echo "FIFO publication lock unexpectedly accepted" >&2
+  exit 1
+}
+[ -p "$lock" ]
+rm "$lock"
+
+FAKE_REPLACE_PUBLICATION_LOCK=true run_kci linux amd64 >/dev/null
+[ -d "$lock" ]
+[ "$(cat "$lock"/*)" = "other owner" ] || {
+  echo "publisher removed a replacement lock owned by another process" >&2
+  exit 1
+}
+rm -rf "$lock"
 old_artifact=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64")
 old_checksum=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256")
+
+rm -rf "$TEST_ROOT/repo/dist/targets/kuai-linux-arm64"
+rm -rf "$TEST_ROOT/repo/dist/targets/.kuai-linux-arm64.lock"
+FAKE_CREATE_PUBLICATION_TARGET=true run_kci linux arm64 >/dev/null 2>&1 && {
+  echo "nested publication target unexpectedly reported success" >&2
+  exit 1
+}
+[ ! -e "$TEST_ROOT/repo/dist/targets/kuai-linux-arm64/kuai-linux-arm64" ]
+
 run_kci linux amd64 >/dev/null 2>&1 && {
   echo "immutable target pair was overwritten" >&2
   exit 1
@@ -249,6 +311,7 @@ WINDOWS_SIGNING_PUBLISHER='CN=Qrite Technology Limited' \
   run_kci win32 amd64 true false >/dev/null
 grep -q '^verify /pa /all /v ' "$FAKE_SIGN_LOG"
 /bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-windows-amd64.exe"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/.kuai-windows-amd64.exe.lock"
 
 FAKE_SIGN_PUBLISHER_OUTPUT='Unexpected Publisher' \
 WINDOWS_SIGNING_PUBLISHER='CN=Qrite Technology Limited' \
@@ -281,6 +344,7 @@ last_verify=$(grep -n '^codesign --verify --strict --verbose=2 ' "$FAKE_SIGN_LOG
 [ "$first_verify" -lt "$notary_line" ] && [ "$notary_line" -lt "$last_verify" ]
 ! grep -Eq -- '--password|stapler' "$FAKE_SIGN_LOG"
 /bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-darwin-arm64"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/.kuai-darwin-arm64.lock"
 
 APPLE_NOTARY_TIMEOUT=0m APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null 2>&1 && {
@@ -301,6 +365,7 @@ APPLE_NOTARY_TIMEOUT=5m APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null
 grep -q -- '--timeout 5m --output-format json$' "$FAKE_SIGN_LOG"
 /bin/rm -rf "$TEST_ROOT/repo/dist/targets/kuai-darwin-arm64"
+/bin/rm -rf "$TEST_ROOT/repo/dist/targets/.kuai-darwin-arm64.lock"
 
 FAKE_NOTARY_STATUS=Invalid APPLE_NOTARY_PROFILE=kuai-notary \
   run_kci darwin arm64 true true >/dev/null 2>&1 && {

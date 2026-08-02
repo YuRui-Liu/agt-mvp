@@ -132,6 +132,22 @@ try {
         throw $originalFailure
     }
     Remove-Item -LiteralPath $kuaiOld -Force -ErrorAction SilentlyContinue
+
+    # Advisory only. The installer never clears Mark-of-the-Web on the user's
+    # behalf; it reports the state and leaves the decision to the user. Detection
+    # must never fail an already successful install, so it writes straight to the
+    # error stream instead of raising a PowerShell error record.
+    try {
+        $motw = Get-Item -LiteralPath $kuaiTarget -Stream "Zone.Identifier" -ErrorAction SilentlyContinue
+        if ($motw) {
+            $quotedTarget = "'" + $kuaiTarget.Replace("'", "''") + "'"
+            [Console]::Error.WriteLine("kuai: $kuaiTarget carries a Zone.Identifier mark-of-the-web; SmartScreen may block or prompt")
+            [Console]::Error.WriteLine("kuai: review the file, then clear the download marker yourself if you trust it:")
+            [Console]::Error.WriteLine("kuai:   Unblock-File -LiteralPath $quotedTarget")
+        }
+    }
+    catch {}
+
     Write-Host "Installed kuai to $installDir"
 }
 finally {

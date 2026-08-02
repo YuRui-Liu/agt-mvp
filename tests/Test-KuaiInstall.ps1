@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("kuai-install-test-" + [Guid]::NewGuid().ToString("N"))
 $fixture = Join-Path $temporary "fixture"
-$env:LOCALAPPDATA = Join-Path $temporary "local"
+$env:LOCALAPPDATA = Join-Path $temporary "local path's data"
 $env:KUAI_RELEASE_URL = "https://kuai.example/release"
 $oldUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $script:downloads = @()
@@ -22,6 +22,32 @@ function Invoke-WebRequest {
     $script:downloads += $Uri
     $leaf = [IO.Path]::GetFileName($Uri)
     Copy-Item -LiteralPath (Join-Path $fixture "kuai-$leaf") -Destination $OutFile
+}
+
+function Get-Item {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [string]$Stream
+    )
+    if ($env:KUAI_TEST_MOTW_FAILURE -eq "1" -and $Stream -eq "Zone.Identifier") {
+        throw "simulated MOTW inspection failure"
+    }
+    Microsoft.PowerShell.Management\Get-Item @PSBoundParameters
+}
+
+function Invoke-InstallWithCapturedError {
+    $originalError = [Console]::Error
+    $writer = New-Object IO.StringWriter
+    try {
+        [Console]::SetError($writer)
+        $null = & (Join-Path $root "install.ps1")
+        return $writer.ToString()
+    }
+    finally {
+        [Console]::SetError($originalError)
+        $writer.Dispose()
+    }
 }
 
 function Write-Fixtures([string]$Architecture, [bool]$BreakKuai) {
@@ -72,10 +98,27 @@ try {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $matches = @($userPath.Split(";") | Where-Object { $_.TrimEnd("\") -eq $installDir.TrimEnd("\") })
     Assert-True ($matches.Count -eq 1) "CurrentUser PATH contains duplicate install entries"
+
+    Write-Fixtures "arm64" $false
+    $fixtureArtifact = Join-Path $fixture "kuai-kuai-windows-arm64.exe"
+    Set-Content -Path ($fixtureArtifact + ":Zone.Identifier") -Value "[ZoneTransfer]`nZoneId=3"
+    $motwOutput = Invoke-InstallWithCapturedError
+    $target = Join-Path $installDir "kuai.exe"
+    $quotedTarget = "'" + $target.Replace("'", "''") + "'"
+    Assert-True ($motwOutput.Contains("SmartScreen may block or prompt")) "missing conservative MOTW advisory"
+    Assert-True ($motwOutput.Contains("Unblock-File -LiteralPath $quotedTarget")) "MOTW remediation path is not safely quoted"
+    Assert-True ($null -ne (Get-Item -LiteralPath $target -Stream "Zone.Identifier" -ErrorAction SilentlyContinue)) "installer cleared MOTW instead of only reporting it"
+
+    $env:KUAI_TEST_MOTW_FAILURE = "1"
+    Write-Fixtures "arm64" $false
+    $null = & (Join-Path $root "install.ps1")
+    Assert-True ((Get-Content -Raw $target).Trim() -eq "new-kuai-arm64") "MOTW detection failure changed a successful install"
+    Remove-Item Env:KUAI_TEST_MOTW_FAILURE -ErrorAction SilentlyContinue
     Write-Host "kuai install.ps1 tests passed"
 }
 finally {
     [Environment]::SetEnvironmentVariable("Path", $oldUserPath, "User")
     Remove-Item Env:KUAI_TEST_ARCH -ErrorAction SilentlyContinue
+    Remove-Item Env:KUAI_TEST_MOTW_FAILURE -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
 }
