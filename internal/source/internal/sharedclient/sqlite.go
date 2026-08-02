@@ -100,36 +100,50 @@ type querySpec struct {
 }
 
 var fixedSchemaQueries = []querySpec{
-	{kind: QuerySchema, columns: []string{"schema", "name", "type", "ncol", "wr", "strict"}, statement: `PRAGMA table_list`},
-	{kind: QuerySchema, table: "chat_session", columns: []string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}, statement: `PRAGMA table_xinfo(chat_session)`},
-	{kind: QuerySchema, table: "chat_record", columns: []string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}, statement: `PRAGMA table_xinfo(chat_record)`},
-	{kind: QuerySchema, table: "chat_message", columns: []string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}, statement: `PRAGMA table_xinfo(chat_message)`},
-	{kind: QuerySchema, table: "chat_snapshot", columns: []string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}, statement: `PRAGMA table_xinfo(chat_snapshot)`},
+	{kind: QuerySchema, columns: guardedColumnNames([]string{"schema", "name", "type", "ncol", "wr", "strict"}), statement: `SELECT typeof(schema),length(CAST(schema AS BLOB)),CASE WHEN typeof(schema)='text' AND length(CAST(schema AS BLOB))<=? THEN schema ELSE NULL END,typeof(name),length(CAST(name AS BLOB)),CASE WHEN typeof(name)='text' AND length(CAST(name AS BLOB))<=? THEN name ELSE NULL END,typeof(type),length(CAST(type AS BLOB)),CASE WHEN typeof(type)='text' AND length(CAST(type AS BLOB))<=? THEN type ELSE NULL END,typeof(ncol),length(CAST(ncol AS BLOB)),CASE WHEN typeof(ncol) IN ('integer','null') THEN ncol ELSE NULL END,typeof(wr),length(CAST(wr AS BLOB)),CASE WHEN typeof(wr) IN ('integer','null') THEN wr ELSE NULL END,typeof(strict),length(CAST(strict AS BLOB)),CASE WHEN typeof(strict) IN ('integer','null') THEN strict ELSE NULL END FROM pragma_table_list WHERE schema='main' AND name IN ('chat_session','chat_record','chat_message','chat_snapshot') LIMIT ?`},
+	{kind: QuerySchema, table: "chat_session", columns: guardedColumnNames([]string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}), statement: `SELECT typeof(cid),length(CAST(cid AS BLOB)),CASE WHEN typeof(cid) IN ('integer','null') THEN cid ELSE NULL END,typeof(name),length(CAST(name AS BLOB)),CASE WHEN typeof(name)='text' AND length(CAST(name AS BLOB))<=? THEN name ELSE NULL END,typeof(type),length(CAST(type AS BLOB)),CASE WHEN typeof(type)='text' AND length(CAST(type AS BLOB))<=? THEN type ELSE NULL END,typeof("notnull"),length(CAST("notnull" AS BLOB)),CASE WHEN typeof("notnull") IN ('integer','null') THEN "notnull" ELSE NULL END,typeof(dflt_value),length(CAST(dflt_value AS BLOB)),CASE WHEN typeof(dflt_value)='text' AND length(CAST(dflt_value AS BLOB))<=? THEN dflt_value ELSE NULL END,typeof(pk),length(CAST(pk AS BLOB)),CASE WHEN typeof(pk) IN ('integer','null') THEN pk ELSE NULL END,typeof(hidden),length(CAST(hidden AS BLOB)),CASE WHEN typeof(hidden) IN ('integer','null') THEN hidden ELSE NULL END FROM pragma_table_xinfo('chat_session','main') LIMIT ?`},
+	{kind: QuerySchema, table: "chat_record", columns: guardedColumnNames([]string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}), statement: `SELECT typeof(cid),length(CAST(cid AS BLOB)),CASE WHEN typeof(cid) IN ('integer','null') THEN cid ELSE NULL END,typeof(name),length(CAST(name AS BLOB)),CASE WHEN typeof(name)='text' AND length(CAST(name AS BLOB))<=? THEN name ELSE NULL END,typeof(type),length(CAST(type AS BLOB)),CASE WHEN typeof(type)='text' AND length(CAST(type AS BLOB))<=? THEN type ELSE NULL END,typeof("notnull"),length(CAST("notnull" AS BLOB)),CASE WHEN typeof("notnull") IN ('integer','null') THEN "notnull" ELSE NULL END,typeof(dflt_value),length(CAST(dflt_value AS BLOB)),CASE WHEN typeof(dflt_value)='text' AND length(CAST(dflt_value AS BLOB))<=? THEN dflt_value ELSE NULL END,typeof(pk),length(CAST(pk AS BLOB)),CASE WHEN typeof(pk) IN ('integer','null') THEN pk ELSE NULL END,typeof(hidden),length(CAST(hidden AS BLOB)),CASE WHEN typeof(hidden) IN ('integer','null') THEN hidden ELSE NULL END FROM pragma_table_xinfo('chat_record','main') LIMIT ?`},
+	{kind: QuerySchema, table: "chat_message", columns: guardedColumnNames([]string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}), statement: `SELECT typeof(cid),length(CAST(cid AS BLOB)),CASE WHEN typeof(cid) IN ('integer','null') THEN cid ELSE NULL END,typeof(name),length(CAST(name AS BLOB)),CASE WHEN typeof(name)='text' AND length(CAST(name AS BLOB))<=? THEN name ELSE NULL END,typeof(type),length(CAST(type AS BLOB)),CASE WHEN typeof(type)='text' AND length(CAST(type AS BLOB))<=? THEN type ELSE NULL END,typeof("notnull"),length(CAST("notnull" AS BLOB)),CASE WHEN typeof("notnull") IN ('integer','null') THEN "notnull" ELSE NULL END,typeof(dflt_value),length(CAST(dflt_value AS BLOB)),CASE WHEN typeof(dflt_value)='text' AND length(CAST(dflt_value AS BLOB))<=? THEN dflt_value ELSE NULL END,typeof(pk),length(CAST(pk AS BLOB)),CASE WHEN typeof(pk) IN ('integer','null') THEN pk ELSE NULL END,typeof(hidden),length(CAST(hidden AS BLOB)),CASE WHEN typeof(hidden) IN ('integer','null') THEN hidden ELSE NULL END FROM pragma_table_xinfo('chat_message','main') LIMIT ?`},
+	{kind: QuerySchema, table: "chat_snapshot", columns: guardedColumnNames([]string{"cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"}), statement: `SELECT typeof(cid),length(CAST(cid AS BLOB)),CASE WHEN typeof(cid) IN ('integer','null') THEN cid ELSE NULL END,typeof(name),length(CAST(name AS BLOB)),CASE WHEN typeof(name)='text' AND length(CAST(name AS BLOB))<=? THEN name ELSE NULL END,typeof(type),length(CAST(type AS BLOB)),CASE WHEN typeof(type)='text' AND length(CAST(type AS BLOB))<=? THEN type ELSE NULL END,typeof("notnull"),length(CAST("notnull" AS BLOB)),CASE WHEN typeof("notnull") IN ('integer','null') THEN "notnull" ELSE NULL END,typeof(dflt_value),length(CAST(dflt_value AS BLOB)),CASE WHEN typeof(dflt_value)='text' AND length(CAST(dflt_value AS BLOB))<=? THEN dflt_value ELSE NULL END,typeof(pk),length(CAST(pk AS BLOB)),CASE WHEN typeof(pk) IN ('integer','null') THEN pk ELSE NULL END,typeof(hidden),length(CAST(hidden AS BLOB)),CASE WHEN typeof(hidden) IN ('integer','null') THEN hidden ELSE NULL END FROM pragma_table_xinfo('chat_snapshot','main') LIMIT ?`},
 }
 
 var (
-	lingmaSessionColumns = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "stop_reason", "parent_session_id", "parent_tool_call_id"}
-	qoderSessionColumns  = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "status", "last_user_query_at", "stop_reason", "parent_session_id", "parent_tool_call_id"}
-	recordColumns        = []string{"request_id", "session_id", "question_type", "question_bytes", "question", "answer_type", "answer_bytes", "answer", "reasoning_content_type", "reasoning_content_bytes", "reasoning_content", "gmt_create", "gmt_modified", "finish_status"}
-	messageColumns       = []string{"id", "session_id", "request_id", "role", "content_type", "content_bytes", "content", "tool_result_type", "tool_result_bytes", "tool_result", "gmt_create"}
-	snapshotColumns      = []string{"snapshot_id", "session_id", "chat_record_id", "status", "gmt_create", "gmt_modified"}
+	lingmaSessionSourceColumns = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "stop_reason", "parent_session_id", "parent_tool_call_id"}
+	qoderSessionSourceColumns  = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "status", "last_user_query_at", "stop_reason", "parent_session_id", "parent_tool_call_id"}
+	recordSourceColumns        = []string{"request_id", "session_id", "question", "answer", "reasoning_content", "gmt_create", "gmt_modified", "finish_status"}
+	messageSourceColumns       = []string{"id", "session_id", "request_id", "role", "content", "tool_result", "gmt_create"}
+	snapshotSourceColumns      = []string{"snapshot_id", "session_id", "chat_record_id", "status", "gmt_create", "gmt_modified"}
+
+	lingmaSessionColumns = guardedColumnNames(lingmaSessionSourceColumns)
+	qoderSessionColumns  = guardedColumnNames(qoderSessionSourceColumns)
+	recordColumns        = guardedColumnNames(recordSourceColumns)
+	messageColumns       = guardedColumnNames(messageSourceColumns)
+	snapshotColumns      = guardedColumnNames(snapshotSourceColumns)
 )
 
 var (
 	lingmaSessionQuery = querySpec{kind: QueryData, table: "chat_session", columns: lingmaSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session LIMIT ?`}
+		statement: `SELECT typeof(session_id),length(CAST(session_id AS BLOB)),CASE WHEN typeof(session_id)='text' AND length(CAST(session_id AS BLOB))<=? THEN session_id ELSE NULL END,typeof(project_id),length(CAST(project_id AS BLOB)),CASE WHEN typeof(project_id)='text' AND length(CAST(project_id AS BLOB))<=? THEN project_id ELSE NULL END,typeof(gmt_create),length(CAST(gmt_create AS BLOB)),CASE WHEN typeof(gmt_create) IN ('integer','null') THEN gmt_create ELSE NULL END,typeof(gmt_modified),length(CAST(gmt_modified AS BLOB)),CASE WHEN typeof(gmt_modified) IN ('integer','null') THEN gmt_modified ELSE NULL END,typeof(session_type),length(CAST(session_type AS BLOB)),CASE WHEN typeof(session_type)='text' AND length(CAST(session_type AS BLOB))<=? THEN session_type ELSE NULL END,typeof(mode),length(CAST(mode AS BLOB)),CASE WHEN typeof(mode)='text' AND length(CAST(mode AS BLOB))<=? THEN mode ELSE NULL END,typeof(version),length(CAST(version AS BLOB)),CASE WHEN typeof(version)='text' AND length(CAST(version AS BLOB))<=? THEN version ELSE NULL END,typeof(stop_reason),length(CAST(stop_reason AS BLOB)),CASE WHEN typeof(stop_reason)='text' AND length(CAST(stop_reason AS BLOB))<=? THEN stop_reason ELSE NULL END,typeof(parent_session_id),length(CAST(parent_session_id AS BLOB)),CASE WHEN typeof(parent_session_id)='text' AND length(CAST(parent_session_id AS BLOB))<=? THEN parent_session_id ELSE NULL END,typeof(parent_tool_call_id),length(CAST(parent_tool_call_id AS BLOB)),CASE WHEN typeof(parent_tool_call_id)='text' AND length(CAST(parent_tool_call_id AS BLOB))<=? THEN parent_tool_call_id ELSE NULL END FROM chat_session LIMIT ?`}
 	qoderSessionQuery = querySpec{kind: QueryData, table: "chat_session", columns: qoderSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,status,last_user_query_at,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session LIMIT ?`}
+		statement: `SELECT typeof(session_id),length(CAST(session_id AS BLOB)),CASE WHEN typeof(session_id)='text' AND length(CAST(session_id AS BLOB))<=? THEN session_id ELSE NULL END,typeof(project_id),length(CAST(project_id AS BLOB)),CASE WHEN typeof(project_id)='text' AND length(CAST(project_id AS BLOB))<=? THEN project_id ELSE NULL END,typeof(gmt_create),length(CAST(gmt_create AS BLOB)),CASE WHEN typeof(gmt_create) IN ('integer','null') THEN gmt_create ELSE NULL END,typeof(gmt_modified),length(CAST(gmt_modified AS BLOB)),CASE WHEN typeof(gmt_modified) IN ('integer','null') THEN gmt_modified ELSE NULL END,typeof(session_type),length(CAST(session_type AS BLOB)),CASE WHEN typeof(session_type)='text' AND length(CAST(session_type AS BLOB))<=? THEN session_type ELSE NULL END,typeof(mode),length(CAST(mode AS BLOB)),CASE WHEN typeof(mode)='text' AND length(CAST(mode AS BLOB))<=? THEN mode ELSE NULL END,typeof(version),length(CAST(version AS BLOB)),CASE WHEN typeof(version)='text' AND length(CAST(version AS BLOB))<=? THEN version ELSE NULL END,typeof(status),length(CAST(status AS BLOB)),CASE WHEN typeof(status)='text' AND length(CAST(status AS BLOB))<=? THEN status ELSE NULL END,typeof(last_user_query_at),length(CAST(last_user_query_at AS BLOB)),CASE WHEN typeof(last_user_query_at) IN ('integer','null') THEN last_user_query_at ELSE NULL END,typeof(stop_reason),length(CAST(stop_reason AS BLOB)),CASE WHEN typeof(stop_reason)='text' AND length(CAST(stop_reason AS BLOB))<=? THEN stop_reason ELSE NULL END,typeof(parent_session_id),length(CAST(parent_session_id AS BLOB)),CASE WHEN typeof(parent_session_id)='text' AND length(CAST(parent_session_id AS BLOB))<=? THEN parent_session_id ELSE NULL END,typeof(parent_tool_call_id),length(CAST(parent_tool_call_id AS BLOB)),CASE WHEN typeof(parent_tool_call_id)='text' AND length(CAST(parent_tool_call_id AS BLOB))<=? THEN parent_tool_call_id ELSE NULL END FROM chat_session LIMIT ?`}
 	recordQuery = querySpec{kind: QueryData, table: "chat_record", columns: recordColumns,
-		statement: `SELECT request_id,session_id,typeof(question),length(CAST(question AS BLOB)),CASE WHEN typeof(question)='text' AND length(CAST(question AS BLOB))<=? THEN question ELSE NULL END,typeof(answer),length(CAST(answer AS BLOB)),CASE WHEN typeof(answer)='text' AND length(CAST(answer AS BLOB))<=? THEN answer ELSE NULL END,typeof(reasoning_content),length(CAST(reasoning_content AS BLOB)),CASE WHEN typeof(reasoning_content)='text' AND length(CAST(reasoning_content AS BLOB))<=? THEN reasoning_content ELSE NULL END,gmt_create,gmt_modified,finish_status FROM chat_record LIMIT ?`}
+		statement: `SELECT typeof(request_id),length(CAST(request_id AS BLOB)),CASE WHEN typeof(request_id)='text' AND length(CAST(request_id AS BLOB))<=? THEN request_id ELSE NULL END,typeof(session_id),length(CAST(session_id AS BLOB)),CASE WHEN typeof(session_id)='text' AND length(CAST(session_id AS BLOB))<=? THEN session_id ELSE NULL END,typeof(question),length(CAST(question AS BLOB)),CASE WHEN typeof(question)='text' AND length(CAST(question AS BLOB))<=? AND (CASE WHEN typeof(question)='text' THEN length(CAST(question AS BLOB)) ELSE 0 END+CASE WHEN typeof(answer)='text' THEN length(CAST(answer AS BLOB)) ELSE 0 END+CASE WHEN typeof(reasoning_content)='text' THEN length(CAST(reasoning_content AS BLOB)) ELSE 0 END)<=? THEN question ELSE NULL END,typeof(answer),length(CAST(answer AS BLOB)),CASE WHEN typeof(answer)='text' AND length(CAST(answer AS BLOB))<=? AND (CASE WHEN typeof(question)='text' THEN length(CAST(question AS BLOB)) ELSE 0 END+CASE WHEN typeof(answer)='text' THEN length(CAST(answer AS BLOB)) ELSE 0 END+CASE WHEN typeof(reasoning_content)='text' THEN length(CAST(reasoning_content AS BLOB)) ELSE 0 END)<=? THEN answer ELSE NULL END,typeof(reasoning_content),length(CAST(reasoning_content AS BLOB)),CASE WHEN typeof(reasoning_content)='text' AND length(CAST(reasoning_content AS BLOB))<=? AND (CASE WHEN typeof(question)='text' THEN length(CAST(question AS BLOB)) ELSE 0 END+CASE WHEN typeof(answer)='text' THEN length(CAST(answer AS BLOB)) ELSE 0 END+CASE WHEN typeof(reasoning_content)='text' THEN length(CAST(reasoning_content AS BLOB)) ELSE 0 END)<=? THEN reasoning_content ELSE NULL END,typeof(gmt_create),length(CAST(gmt_create AS BLOB)),CASE WHEN typeof(gmt_create) IN ('integer','null') THEN gmt_create ELSE NULL END,typeof(gmt_modified),length(CAST(gmt_modified AS BLOB)),CASE WHEN typeof(gmt_modified) IN ('integer','null') THEN gmt_modified ELSE NULL END,typeof(finish_status),length(CAST(finish_status AS BLOB)),CASE WHEN typeof(finish_status) IN ('integer','null') THEN finish_status ELSE NULL END FROM chat_record LIMIT ?`}
 	messageQuery = querySpec{kind: QueryData, table: "chat_message", columns: messageColumns,
-		statement: `SELECT id,session_id,request_id,role,typeof(content),length(CAST(content AS BLOB)),CASE WHEN typeof(content)='text' AND length(CAST(content AS BLOB))<=? THEN content ELSE NULL END,typeof(tool_result),length(CAST(tool_result AS BLOB)),CASE WHEN typeof(tool_result)='text' AND length(CAST(tool_result AS BLOB))<=? THEN tool_result ELSE NULL END,gmt_create FROM chat_message LIMIT ?`}
+		statement: `SELECT typeof(id),length(CAST(id AS BLOB)),CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=? THEN id ELSE NULL END,typeof(session_id),length(CAST(session_id AS BLOB)),CASE WHEN typeof(session_id)='text' AND length(CAST(session_id AS BLOB))<=? THEN session_id ELSE NULL END,typeof(request_id),length(CAST(request_id AS BLOB)),CASE WHEN typeof(request_id)='text' AND length(CAST(request_id AS BLOB))<=? THEN request_id ELSE NULL END,typeof(role),length(CAST(role AS BLOB)),CASE WHEN typeof(role)='text' AND length(CAST(role AS BLOB))<=? THEN role ELSE NULL END,typeof(content),length(CAST(content AS BLOB)),CASE WHEN typeof(content)='text' AND length(CAST(content AS BLOB))<=? AND (CASE WHEN typeof(content)='text' THEN length(CAST(content AS BLOB)) ELSE 0 END+CASE WHEN typeof(tool_result)='text' THEN length(CAST(tool_result AS BLOB)) ELSE 0 END)<=? THEN content ELSE NULL END,typeof(tool_result),length(CAST(tool_result AS BLOB)),CASE WHEN typeof(tool_result)='text' AND length(CAST(tool_result AS BLOB))<=? AND (CASE WHEN typeof(content)='text' THEN length(CAST(content AS BLOB)) ELSE 0 END+CASE WHEN typeof(tool_result)='text' THEN length(CAST(tool_result AS BLOB)) ELSE 0 END)<=? THEN tool_result ELSE NULL END,typeof(gmt_create),length(CAST(gmt_create AS BLOB)),CASE WHEN typeof(gmt_create) IN ('integer','null') THEN gmt_create ELSE NULL END FROM chat_message LIMIT ?`}
 	snapshotQuery = querySpec{kind: QueryData, table: "chat_snapshot", columns: snapshotColumns,
-		statement: `SELECT snapshot_id,session_id,chat_record_id,status,gmt_create,gmt_modified FROM chat_snapshot LIMIT ?`}
+		statement: `SELECT typeof(snapshot_id),length(CAST(snapshot_id AS BLOB)),CASE WHEN typeof(snapshot_id)='text' AND length(CAST(snapshot_id AS BLOB))<=? THEN snapshot_id ELSE NULL END,typeof(session_id),length(CAST(session_id AS BLOB)),CASE WHEN typeof(session_id)='text' AND length(CAST(session_id AS BLOB))<=? THEN session_id ELSE NULL END,typeof(chat_record_id),length(CAST(chat_record_id AS BLOB)),CASE WHEN typeof(chat_record_id)='text' AND length(CAST(chat_record_id AS BLOB))<=? THEN chat_record_id ELSE NULL END,typeof(status),length(CAST(status AS BLOB)),CASE WHEN typeof(status)='text' AND length(CAST(status AS BLOB))<=? THEN status ELSE NULL END,typeof(gmt_create),length(CAST(gmt_create AS BLOB)),CASE WHEN typeof(gmt_create) IN ('integer','null') THEN gmt_create ELSE NULL END,typeof(gmt_modified),length(CAST(gmt_modified AS BLOB)),CASE WHEN typeof(gmt_modified) IN ('integer','null') THEN gmt_modified ELSE NULL END FROM chat_snapshot LIMIT ?`}
 )
 
 var fixedDataQueries = []querySpec{
 	lingmaSessionQuery, qoderSessionQuery, recordQuery, messageQuery, snapshotQuery,
+}
+
+func guardedColumnNames(source []string) []string {
+	columns := make([]string, 0, len(source)*3)
+	for _, name := range source {
+		columns = append(columns, name+"_type", name+"_bytes", name)
+	}
+	return columns
 }
 
 type columnDefinition struct {
@@ -226,6 +240,12 @@ type sqliteBudget struct {
 	payloadBytes, canonicalBytes int64
 }
 
+const (
+	maxSQLiteSchemaCellBytes   int64 = 4 << 10
+	maxSQLiteMetadataCellBytes int64 = 4 << 10
+	maxSQLiteBodyCellBytes     int64 = 64 << 10
+)
+
 func (budget *sqliteBudget) consumeSession() error {
 	if budget.sessions >= budget.limits.MaxSessions {
 		return ErrBudgetExceeded
@@ -258,13 +278,27 @@ func (budget *sqliteBudget) consumeCanonical(amount int64) error {
 	return consumeBytes(&budget.canonicalBytes, budget.limits.MaxCanonicalBytes, amount)
 }
 
-func (budget *sqliteBudget) remainingBodyBytes() (int64, error) {
+func (budget *sqliteBudget) guardedCellCaps(textCells, bodyCells int64) (int64, int64, error) {
 	payload := budget.limits.MaxPayloadBytes - budget.payloadBytes
 	canonical := budget.limits.MaxCanonicalBytes - budget.canonicalBytes
-	if payload < 0 || canonical < 0 {
+	if payload < 0 || canonical < 0 || textCells <= 0 || bodyCells < 0 || bodyCells > textCells {
+		return 0, 0, ErrBudgetExceeded
+	}
+	canonicalShare := canonical / textCells
+	metadataCap := min(maxSQLiteMetadataCellBytes, canonicalShare)
+	bodyCap := min(maxSQLiteBodyCellBytes, canonicalShare)
+	if bodyCells > 0 {
+		bodyCap = min(bodyCap, payload)
+	}
+	return metadataCap, bodyCap, nil
+}
+
+func (budget *sqliteBudget) remainingPayloadBytes() (int64, error) {
+	remaining := budget.limits.MaxPayloadBytes - budget.payloadBytes
+	if remaining < 0 {
 		return 0, ErrBudgetExceeded
 	}
-	return min(payload, canonical), nil
+	return remaining, nil
 }
 
 type chatReader struct {
@@ -345,7 +379,7 @@ func query(ctx context.Context, tx *sqliteread.ReadTx, observer func(QueryEvent)
 }
 
 func validateSchema(ctx context.Context, tx *sqliteread.ReadTx, definition schemaDefinition, observer func(QueryEvent)) error {
-	rows, err := query(ctx, tx, observer, fixedSchemaQueries[0])
+	rows, err := query(ctx, tx, observer, fixedSchemaQueries[0], maxSQLiteSchemaCellBytes, maxSQLiteSchemaCellBytes, maxSQLiteSchemaCellBytes, len(definition.tables)+1)
 	if err != nil {
 		return schemaFailure(ctx)
 	}
@@ -359,18 +393,32 @@ func validateSchema(ctx context.Context, tx *sqliteread.ReadTx, definition schem
 			rows.Close()
 			return err
 		}
-		var schemaName, name, kind string
-		var columns, withoutRowID, strict int
-		if err := rows.Scan(&schemaName, &name, &kind, &columns, &withoutRowID, &strict); err != nil {
+		decoder, err := scanStorage(rows, len(fixedSchemaQueries[0].columns))
+		if err != nil {
 			rows.Close()
 			return schemaFailure(ctx)
+		}
+		schemaName, schemaErr := decoder.guardedText(maxSQLiteSchemaCellBytes)
+		name, nameErr := decoder.guardedText(maxSQLiteSchemaCellBytes)
+		kind, kindErr := decoder.guardedText(maxSQLiteSchemaCellBytes)
+		columns, columnsErr := decoder.guardedInteger()
+		withoutRowID, withoutRowIDErr := decoder.guardedInteger()
+		strict, strictErr := decoder.guardedInteger()
+		for _, decodeErr := range []error{schemaErr, nameErr, kindErr, columnsErr, withoutRowIDErr, strictErr} {
+			if decodeErr != nil {
+				rows.Close()
+				if errors.Is(decodeErr, ErrBudgetExceeded) {
+					return decodeErr
+				}
+				return schemaFailure(ctx)
+			}
 		}
 		if schemaName == "main" {
 			objects[name] = struct {
 				kind                 string
 				columns              int
 				withoutRowID, strict int
-			}{kind: kind, columns: columns, withoutRowID: withoutRowID, strict: strict}
+			}{kind: kind, columns: int(columns), withoutRowID: int(withoutRowID), strict: int(strict)}
 		}
 	}
 	rowsErr := rows.Err()
@@ -383,7 +431,7 @@ func validateSchema(ctx context.Context, tx *sqliteread.ReadTx, definition schem
 		if !ok || object.kind != "table" || object.columns != len(table.columns) || object.withoutRowID != table.withoutRowID || object.strict != table.strict {
 			return ErrUnsupportedSchema
 		}
-		rows, err := query(ctx, tx, observer, fixedSchemaQueries[index+1])
+		rows, err := query(ctx, tx, observer, fixedSchemaQueries[index+1], maxSQLiteSchemaCellBytes, maxSQLiteSchemaCellBytes, maxSQLiteSchemaCellBytes, len(table.columns)+1)
 		if err != nil {
 			return schemaFailure(ctx)
 		}
@@ -393,14 +441,38 @@ func validateSchema(ctx context.Context, tx *sqliteread.ReadTx, definition schem
 				rows.Close()
 				return err
 			}
-			var cid int
 			var item columnDefinition
-			var defaultValue sql.NullString
-			if err := rows.Scan(&cid, &item.name, &item.declaredType, &item.notNull, &defaultValue, &item.primaryKey, &item.hidden); err != nil || cid != len(actual) {
+			decoder, err := scanStorage(rows, len(fixedSchemaQueries[index+1].columns))
+			if err != nil {
 				rows.Close()
 				return schemaFailure(ctx)
 			}
-			item.defaultSQL, item.hasDefault = defaultValue.String, defaultValue.Valid
+			cid, cidErr := decoder.guardedInteger()
+			item.name, err = decoder.guardedText(maxSQLiteSchemaCellBytes)
+			nameErr := err
+			item.declaredType, err = decoder.guardedText(maxSQLiteSchemaCellBytes)
+			typeErr := err
+			notNull, notNullErr := decoder.guardedInteger()
+			item.notNull = int(notNull)
+			item.defaultSQL, item.hasDefault, err = decoder.guardedNullableText(maxSQLiteSchemaCellBytes)
+			defaultErr := err
+			primaryKey, primaryKeyErr := decoder.guardedInteger()
+			item.primaryKey = int(primaryKey)
+			hidden, hiddenErr := decoder.guardedInteger()
+			item.hidden = int(hidden)
+			for _, decodeErr := range []error{cidErr, nameErr, typeErr, notNullErr, defaultErr, primaryKeyErr, hiddenErr} {
+				if decodeErr != nil {
+					rows.Close()
+					if errors.Is(decodeErr, ErrBudgetExceeded) {
+						return decodeErr
+					}
+					return schemaFailure(ctx)
+				}
+			}
+			if cid != int64(len(actual)) {
+				rows.Close()
+				return schemaFailure(ctx)
+			}
 			actual = append(actual, item)
 		}
 		rowsErr := rows.Err()
@@ -494,7 +566,7 @@ func (reader *chatReader) finishLoad(ctx context.Context, err error) error {
 	return err
 }
 
-func scanSession(scanner interface{ Scan(...any) error }, schema SchemaID) (SessionRow, error) {
+func scanSession(scanner interface{ Scan(...any) error }, schema SchemaID, cellLimit int64) (SessionRow, error) {
 	count := len(lingmaSessionColumns)
 	if schema == QoderIDEV1 {
 		count = len(qoderSessionColumns)
@@ -503,24 +575,26 @@ func scanSession(scanner interface{ Scan(...any) error }, schema SchemaID) (Sess
 	if err != nil {
 		return SessionRow{}, ErrMalformedConversation
 	}
-	id, idOK := decoder.text(true)
-	projectID, projectOK := decoder.text(true)
-	createdAt, createdOK := decoder.integer()
-	modifiedAt, modifiedOK := decoder.integer()
-	sessionType, sessionTypeOK := decoder.text(false)
-	mode, modeOK := decoder.text(false)
-	version, versionOK := decoder.text(false)
-	status, statusOK := "", true
-	lastUserQueryAt, lastUserQueryOK := int64(0), true
+	id, idErr := decoder.guardedText(cellLimit)
+	projectID, projectErr := decoder.guardedText(cellLimit)
+	createdAt, createdErr := decoder.guardedInteger()
+	modifiedAt, modifiedErr := decoder.guardedInteger()
+	sessionType, sessionTypeErr := decoder.guardedText(cellLimit)
+	mode, modeErr := decoder.guardedText(cellLimit)
+	version, versionErr := decoder.guardedText(cellLimit)
+	status, statusErr := "", error(nil)
+	lastUserQueryAt, lastUserQueryErr := int64(0), error(nil)
 	if schema == QoderIDEV1 {
-		status, statusOK = decoder.text(false)
-		lastUserQueryAt, lastUserQueryOK = decoder.integer()
+		status, statusErr = decoder.guardedText(cellLimit)
+		lastUserQueryAt, lastUserQueryErr = decoder.guardedInteger()
 	}
-	stopReason, stopReasonOK := decoder.text(false)
-	parentSessionID, parentSessionOK := decoder.text(false)
-	parentToolCallID, parentToolCallOK := decoder.text(false)
-	if !idOK || !projectOK || !createdOK || !modifiedOK || !sessionTypeOK || !modeOK || !versionOK || !statusOK || !lastUserQueryOK || !stopReasonOK || !parentSessionOK || !parentToolCallOK {
-		return SessionRow{}, ErrMalformedConversation
+	stopReason, stopReasonErr := decoder.guardedText(cellLimit)
+	parentSessionID, parentSessionErr := decoder.guardedText(cellLimit)
+	parentToolCallID, parentToolCallErr := decoder.guardedText(cellLimit)
+	for _, err := range []error{idErr, projectErr, createdErr, modifiedErr, sessionTypeErr, modeErr, versionErr, statusErr, lastUserQueryErr, stopReasonErr, parentSessionErr, parentToolCallErr} {
+		if err != nil {
+			return SessionRow{}, err
+		}
 	}
 	return SessionRow{
 		ID: id, ProjectID: projectID, CreatedAt: createdAt, ModifiedAt: modifiedAt,
@@ -560,19 +634,6 @@ func (decoder *storageDecoder) text(required bool) (string, bool) {
 	return text, ok
 }
 
-func (decoder *storageDecoder) integer() (int64, bool) {
-	if decoder.index >= len(decoder.values) {
-		return 0, false
-	}
-	value := decoder.values[decoder.index]
-	decoder.index++
-	if value == nil {
-		return 0, true
-	}
-	integer, ok := value.(int64)
-	return integer, ok
-}
-
 func (decoder *storageDecoder) raw() (any, bool) {
 	if decoder.index >= len(decoder.values) {
 		return nil, false
@@ -583,37 +644,75 @@ func (decoder *storageDecoder) raw() (any, bool) {
 }
 
 func (decoder *storageDecoder) guardedText(maxBytes int64) (string, error) {
+	text, _, err := decoder.guardedNullableText(maxBytes)
+	return text, err
+}
+
+func (decoder *storageDecoder) guardedNullableText(maxBytes int64) (string, bool, error) {
 	storageType, typeOK := decoder.text(true)
 	lengthValue, lengthOK := decoder.raw()
 	textValue, valueOK := decoder.raw()
 	if !typeOK || !lengthOK || !valueOK {
-		return "", ErrMalformedConversation
+		return "", false, ErrMalformedConversation
 	}
 	switch storageType {
 	case "null":
 		if lengthValue != nil || textValue != nil {
-			return "", ErrMalformedConversation
+			return "", false, ErrMalformedConversation
 		}
-		return "", nil
+		return "", false, nil
 	case "text":
 		length, ok := lengthValue.(int64)
 		if !ok || length < 0 {
-			return "", ErrMalformedConversation
+			return "", false, ErrMalformedConversation
 		}
-		if length > maxBytes {
-			if textValue != nil {
-				return "", ErrMalformedConversation
-			}
-			return "", ErrBudgetExceeded
+		if textValue == nil {
+			return "", false, ErrBudgetExceeded
 		}
 		text, ok := textValue.(string)
-		if !ok || int64(len(text)) != length {
-			return "", ErrMalformedConversation
+		if !ok || length > maxBytes || int64(len(text)) != length {
+			return "", false, ErrMalformedConversation
 		}
-		return text, nil
+		return text, true, nil
 	default:
-		return "", ErrMalformedConversation
+		return "", false, ErrMalformedConversation
 	}
+}
+
+func (decoder *storageDecoder) guardedInteger() (int64, error) {
+	storageType, typeOK := decoder.text(true)
+	lengthValue, lengthOK := decoder.raw()
+	integerValue, valueOK := decoder.raw()
+	if !typeOK || !lengthOK || !valueOK {
+		return 0, ErrMalformedConversation
+	}
+	switch storageType {
+	case "null":
+		if lengthValue != nil || integerValue != nil {
+			return 0, ErrMalformedConversation
+		}
+		return 0, nil
+	case "integer":
+		length, lengthIsInteger := lengthValue.(int64)
+		integer, integerIsInteger := integerValue.(int64)
+		if !lengthIsInteger || length < 0 || !integerIsInteger {
+			return 0, ErrMalformedConversation
+		}
+		return integer, nil
+	default:
+		if integerValue != nil {
+			return 0, ErrMalformedConversation
+		}
+		return 0, ErrMalformedConversation
+	}
+}
+
+func repeatedArguments(value int64, count int) []any {
+	arguments := make([]any, count)
+	for index := range arguments {
+		arguments[index] = value
+	}
+	return arguments
 }
 
 func (reader *chatReader) loadSessions(ctx context.Context) error {
@@ -625,15 +724,23 @@ func (reader *chatReader) loadSessions(ctx context.Context) error {
 	reader.malformed = make(map[string]bool)
 
 	spec := lingmaSessionQuery
+	textCells := 8
 	if reader.schema == QoderIDEV1 {
 		spec = qoderSessionQuery
+		textCells = 9
+	}
+	metadataCap, _, err := reader.budget.guardedCellCaps(int64(textCells), 0)
+	if err != nil {
+		reader.sessionsErr = err
+		return err
 	}
 	remaining := min(reader.budget.limits.MaxSessions-reader.budget.sessions, reader.budget.limits.MaxRows-reader.budget.rows)
 	if remaining < 0 {
 		reader.sessionsErr = ErrBudgetExceeded
 		return reader.sessionsErr
 	}
-	rows, err := query(ctx, reader.tx, reader.observer, spec, plusOne(remaining))
+	arguments := append(repeatedArguments(metadataCap, textCells), plusOne(remaining))
+	rows, err := query(ctx, reader.tx, reader.observer, spec, arguments...)
 	if err != nil {
 		reader.sessionsErr = dataFailure(reader.parent, ctx)
 		return reader.sessionsErr
@@ -644,7 +751,11 @@ func (reader *chatReader) loadSessions(ctx context.Context) error {
 			reader.sessionsErr = err
 			return err
 		}
-		row, err := scanSession(rows, reader.schema)
+		row, err := scanSession(rows, reader.schema, metadataCap)
+		if errors.Is(err, ErrBudgetExceeded) {
+			reader.sessionsErr = err
+			return err
+		}
 		if err != nil || row.ID == "" || row.ProjectID == "" {
 			reader.sessionsErr = dataFailure(reader.parent, ctx)
 			return reader.sessionsErr
@@ -684,12 +795,17 @@ func (reader *chatReader) loadRecords(ctx context.Context) error {
 	}
 	reader.recordsLoaded = true
 	reader.recordsBySession = make(map[string][]RecordRow)
-	cellLimit, err := reader.budget.remainingBodyBytes()
+	metadataCap, bodyCap, err := reader.budget.guardedCellCaps(5, 3)
 	if err != nil {
 		reader.recordsErr = err
 		return err
 	}
-	rows, err := reader.queryRemainingRows(ctx, recordQuery, cellLimit, cellLimit, cellLimit)
+	payloadCap, err := reader.budget.remainingPayloadBytes()
+	if err != nil {
+		reader.recordsErr = err
+		return err
+	}
+	rows, err := reader.queryRemainingRows(ctx, recordQuery, metadataCap, metadataCap, bodyCap, payloadCap, bodyCap, payloadCap, bodyCap, payloadCap)
 	if err != nil {
 		reader.recordsErr = err
 		return err
@@ -705,15 +821,19 @@ func (reader *chatReader) loadRecords(ctx context.Context) error {
 			reader.recordsErr = dataFailure(reader.parent, ctx)
 			return reader.recordsErr
 		}
-		requestID, requestOK := decoder.text(true)
-		rowSessionID, sessionOK := decoder.text(true)
-		question, questionErr := decoder.guardedText(cellLimit)
-		answer, answerErr := decoder.guardedText(cellLimit)
-		reasoning, reasoningErr := decoder.guardedText(cellLimit)
-		createdAt, createdOK := decoder.integer()
-		modifiedAt, modifiedOK := decoder.integer()
-		finishStatus, finishOK := decoder.integer()
-		if !sessionOK || rowSessionID == "" {
+		requestID, requestErr := decoder.guardedText(metadataCap)
+		rowSessionID, sessionErr := decoder.guardedText(metadataCap)
+		question, questionErr := decoder.guardedText(bodyCap)
+		answer, answerErr := decoder.guardedText(bodyCap)
+		reasoning, reasoningErr := decoder.guardedText(bodyCap)
+		createdAt, createdErr := decoder.guardedInteger()
+		modifiedAt, modifiedErr := decoder.guardedInteger()
+		finishStatus, finishErr := decoder.guardedInteger()
+		if errors.Is(sessionErr, ErrBudgetExceeded) {
+			reader.recordsErr = sessionErr
+			return sessionErr
+		}
+		if sessionErr != nil || rowSessionID == "" {
 			reader.recordsErr = dataFailure(reader.parent, ctx)
 			return reader.recordsErr
 		}
@@ -721,11 +841,11 @@ func (reader *chatReader) loadRecords(ctx context.Context) error {
 			reader.recordsErr = err
 			return err
 		}
-		if errors.Is(questionErr, ErrBudgetExceeded) || errors.Is(answerErr, ErrBudgetExceeded) || errors.Is(reasoningErr, ErrBudgetExceeded) {
+		if errors.Is(requestErr, ErrBudgetExceeded) || errors.Is(questionErr, ErrBudgetExceeded) || errors.Is(answerErr, ErrBudgetExceeded) || errors.Is(reasoningErr, ErrBudgetExceeded) {
 			reader.recordsErr = ErrBudgetExceeded
 			return reader.recordsErr
 		}
-		if !requestOK || questionErr != nil || answerErr != nil || reasoningErr != nil || !createdOK || !modifiedOK || !finishOK || requestID == "" {
+		if requestErr != nil || questionErr != nil || answerErr != nil || reasoningErr != nil || createdErr != nil || modifiedErr != nil || finishErr != nil || requestID == "" {
 			reader.malformed[rowSessionID] = true
 			continue
 		}
@@ -763,12 +883,17 @@ func (reader *chatReader) loadMessages(ctx context.Context) error {
 	}
 	reader.messagesLoaded = true
 	reader.messagesBySession = make(map[string][]MessageRow)
-	cellLimit, err := reader.budget.remainingBodyBytes()
+	metadataCap, bodyCap, err := reader.budget.guardedCellCaps(6, 2)
 	if err != nil {
 		reader.messagesErr = err
 		return err
 	}
-	rows, err := reader.queryRemainingRows(ctx, messageQuery, cellLimit, cellLimit)
+	payloadCap, err := reader.budget.remainingPayloadBytes()
+	if err != nil {
+		reader.messagesErr = err
+		return err
+	}
+	rows, err := reader.queryRemainingRows(ctx, messageQuery, metadataCap, metadataCap, metadataCap, metadataCap, bodyCap, payloadCap, bodyCap, payloadCap)
 	if err != nil {
 		reader.messagesErr = err
 		return err
@@ -784,14 +909,18 @@ func (reader *chatReader) loadMessages(ctx context.Context) error {
 			reader.messagesErr = dataFailure(reader.parent, ctx)
 			return reader.messagesErr
 		}
-		id, idOK := decoder.text(true)
-		rowSessionID, sessionOK := decoder.text(true)
-		requestID, requestOK := decoder.text(false)
-		role, roleOK := decoder.text(false)
-		content, contentErr := decoder.guardedText(cellLimit)
-		toolResult, toolErr := decoder.guardedText(cellLimit)
-		createdAt, createdOK := decoder.integer()
-		if !sessionOK || rowSessionID == "" {
+		id, idErr := decoder.guardedText(metadataCap)
+		rowSessionID, sessionErr := decoder.guardedText(metadataCap)
+		requestID, requestErr := decoder.guardedText(metadataCap)
+		role, roleErr := decoder.guardedText(metadataCap)
+		content, contentErr := decoder.guardedText(bodyCap)
+		toolResult, toolErr := decoder.guardedText(bodyCap)
+		createdAt, createdErr := decoder.guardedInteger()
+		if errors.Is(sessionErr, ErrBudgetExceeded) {
+			reader.messagesErr = sessionErr
+			return sessionErr
+		}
+		if sessionErr != nil || rowSessionID == "" {
 			reader.messagesErr = dataFailure(reader.parent, ctx)
 			return reader.messagesErr
 		}
@@ -799,11 +928,11 @@ func (reader *chatReader) loadMessages(ctx context.Context) error {
 			reader.messagesErr = err
 			return err
 		}
-		if errors.Is(contentErr, ErrBudgetExceeded) || errors.Is(toolErr, ErrBudgetExceeded) {
+		if errors.Is(idErr, ErrBudgetExceeded) || errors.Is(requestErr, ErrBudgetExceeded) || errors.Is(roleErr, ErrBudgetExceeded) || errors.Is(contentErr, ErrBudgetExceeded) || errors.Is(toolErr, ErrBudgetExceeded) {
 			reader.messagesErr = ErrBudgetExceeded
 			return reader.messagesErr
 		}
-		if !idOK || !requestOK || !roleOK || contentErr != nil || toolErr != nil || !createdOK || id == "" {
+		if idErr != nil || requestErr != nil || roleErr != nil || contentErr != nil || toolErr != nil || createdErr != nil || id == "" {
 			reader.malformed[rowSessionID] = true
 			continue
 		}
@@ -841,7 +970,12 @@ func (reader *chatReader) loadSnapshots(ctx context.Context) error {
 	}
 	reader.snapshotsLoaded = true
 	reader.snapshotsBySession = make(map[string][]SnapshotRow)
-	rows, err := reader.queryRemainingRows(ctx, snapshotQuery)
+	metadataCap, _, err := reader.budget.guardedCellCaps(4, 0)
+	if err != nil {
+		reader.snapshotsErr = err
+		return err
+	}
+	rows, err := reader.queryRemainingRows(ctx, snapshotQuery, metadataCap, metadataCap, metadataCap, metadataCap)
 	if err != nil {
 		reader.snapshotsErr = err
 		return err
@@ -857,13 +991,17 @@ func (reader *chatReader) loadSnapshots(ctx context.Context) error {
 			reader.snapshotsErr = dataFailure(reader.parent, ctx)
 			return reader.snapshotsErr
 		}
-		id, idOK := decoder.text(true)
-		rowSessionID, sessionOK := decoder.text(true)
-		recordID, recordOK := decoder.text(false)
-		status, statusOK := decoder.text(false)
-		createdAt, createdOK := decoder.integer()
-		modifiedAt, modifiedOK := decoder.integer()
-		if !sessionOK || rowSessionID == "" {
+		id, idErr := decoder.guardedText(metadataCap)
+		rowSessionID, sessionErr := decoder.guardedText(metadataCap)
+		recordID, recordErr := decoder.guardedText(metadataCap)
+		status, statusErr := decoder.guardedText(metadataCap)
+		createdAt, createdErr := decoder.guardedInteger()
+		modifiedAt, modifiedErr := decoder.guardedInteger()
+		if errors.Is(sessionErr, ErrBudgetExceeded) {
+			reader.snapshotsErr = sessionErr
+			return sessionErr
+		}
+		if sessionErr != nil || rowSessionID == "" {
 			reader.snapshotsErr = dataFailure(reader.parent, ctx)
 			return reader.snapshotsErr
 		}
@@ -871,7 +1009,11 @@ func (reader *chatReader) loadSnapshots(ctx context.Context) error {
 			reader.snapshotsErr = err
 			return err
 		}
-		if !idOK || !recordOK || !statusOK || !createdOK || !modifiedOK || id == "" {
+		if errors.Is(idErr, ErrBudgetExceeded) || errors.Is(recordErr, ErrBudgetExceeded) || errors.Is(statusErr, ErrBudgetExceeded) {
+			reader.snapshotsErr = ErrBudgetExceeded
+			return reader.snapshotsErr
+		}
+		if idErr != nil || recordErr != nil || statusErr != nil || createdErr != nil || modifiedErr != nil || id == "" {
 			reader.malformed[rowSessionID] = true
 			continue
 		}

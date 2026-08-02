@@ -432,6 +432,59 @@ func TestWithChatSnapshotRejectsSchemaDriftBeforeDataQueries(t *testing.T) {
 	}
 }
 
+func TestSchemaQueriesFilterAndGuardEveryProjectedCell(t *testing.T) {
+	for index, spec := range fixedSchemaQueries {
+		statement := strings.ToLower(spec.statement)
+		normalized := strings.ReplaceAll(statement, `"`, "")
+		if !strings.HasPrefix(statement, "select ") || !strings.Contains(statement, "pragma_table_") {
+			t.Fatalf("schema query is not a guarded table-valued pragma SELECT: %q", spec.statement)
+		}
+		var textColumns, intColumns []string
+		if index == 0 {
+			textColumns = []string{"schema", "name", "type"}
+			intColumns = []string{"ncol", "wr", "strict"}
+			for _, table := range []string{"chat_session", "chat_record", "chat_message", "chat_snapshot"} {
+				if !strings.Contains(statement, "'"+table+"'") {
+					t.Fatalf("table_list query does not filter %s: %q", table, spec.statement)
+				}
+			}
+		} else {
+			textColumns = []string{"name", "type", "dflt_value"}
+			intColumns = []string{"cid", "notnull", "pk", "hidden"}
+			if !strings.Contains(statement, ",'main')") {
+				t.Fatalf("table_xinfo query is not pinned to main: %q", spec.statement)
+			}
+		}
+		allColumns := append(slices.Clone(textColumns), intColumns...)
+		for _, column := range allColumns {
+			if !strings.Contains(normalized, "typeof("+column+")") || !strings.Contains(normalized, "length(cast("+column+" as blob))") || !strings.Contains(normalized, "then "+column+" else null end") {
+				t.Fatalf("schema query does not guard %s: %q", column, spec.statement)
+			}
+		}
+		if !strings.Contains(statement, " limit ?") {
+			t.Fatalf("schema query has no row cap: %q", spec.statement)
+		}
+		if len(spec.columns) != len(allColumns)*3 {
+			t.Fatalf("observer columns=%d want %d", len(spec.columns), len(allColumns)*3)
+		}
+	}
+}
+
+func TestSchemaGuardClassifiesOversizeCellAsBudget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	oversizeType := strings.Repeat("X", int(maxSQLiteSchemaCellBytes)+1)
+	database := openSharedClientFixture(t, path, LingmaIDEV1, replaceDDL("request_id varchar(64) PRIMARY KEY,", "request_id "+oversizeType+" PRIMARY KEY,"))
+	defer database.Close()
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(ChatReader) error {
+		t.Fatal("callback invoked")
+		return nil
+	})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestWithChatSnapshotClassifiesBudgetsMalformedRowsAndCancellation(t *testing.T) {
 	t.Run("aggregate database sidecars", func(t *testing.T) {
 		root := t.TempDir()
@@ -760,33 +813,181 @@ func TestFixedQueryPlansContainNoWildcardDynamicOrProhibitedData(t *testing.T) {
 	}
 }
 
-func TestBodyQueriesGuardEveryTextCellBeforeMaterialization(t *testing.T) {
+func TestDataQueriesGuardEveryProjectedCellBeforeMaterialization(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		spec    querySpec
-		columns []string
+		name        string
+		spec        querySpec
+		textColumns []string
+		intColumns  []string
+		bodyColumns int
 	}{
-		{name: "record", spec: recordQuery, columns: []string{"question", "answer", "reasoning_content"}},
-		{name: "message", spec: messageQuery, columns: []string{"content", "tool_result"}},
+		{name: "lingma session", spec: lingmaSessionQuery, textColumns: []string{"session_id", "project_id", "session_type", "mode", "version", "stop_reason", "parent_session_id", "parent_tool_call_id"}, intColumns: []string{"gmt_create", "gmt_modified"}},
+		{name: "qoder session", spec: qoderSessionQuery, textColumns: []string{"session_id", "project_id", "session_type", "mode", "version", "status", "stop_reason", "parent_session_id", "parent_tool_call_id"}, intColumns: []string{"gmt_create", "gmt_modified", "last_user_query_at"}},
+		{name: "record", spec: recordQuery, textColumns: []string{"request_id", "session_id", "question", "answer", "reasoning_content"}, intColumns: []string{"gmt_create", "gmt_modified", "finish_status"}, bodyColumns: 3},
+		{name: "message", spec: messageQuery, textColumns: []string{"id", "session_id", "request_id", "role", "content", "tool_result"}, intColumns: []string{"gmt_create"}, bodyColumns: 2},
+		{name: "snapshot", spec: snapshotQuery, textColumns: []string{"snapshot_id", "session_id", "chat_record_id", "status"}, intColumns: []string{"gmt_create", "gmt_modified"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			statement := strings.ToLower(test.spec.statement)
-			for _, column := range test.columns {
+			allColumns := append(slices.Clone(test.textColumns), test.intColumns...)
+			for _, column := range allColumns {
 				if !strings.Contains(statement, "typeof("+column+")") {
 					t.Fatalf("query does not expose %s storage type: %q", column, test.spec.statement)
 				}
 				if !strings.Contains(statement, "length(cast("+column+" as blob))") {
 					t.Fatalf("query does not expose %s byte length: %q", column, test.spec.statement)
 				}
-				if !strings.Contains(statement, "case when typeof("+column+")='text'") || !strings.Contains(statement, "then "+column+" else null end") {
+				if !strings.Contains(statement, "then "+column+" else null end") {
 					t.Fatalf("query does not guard %s value: %q", column, test.spec.statement)
 				}
 			}
-			if strings.Count(statement, "case when") != len(test.columns) {
-				t.Fatalf("query guards=%d want %d: %q", strings.Count(statement, "case when"), len(test.columns), test.spec.statement)
+			for _, column := range test.textColumns {
+				if !strings.Contains(statement, "case when typeof("+column+")='text'") {
+					t.Fatalf("query does not text-guard %s: %q", column, test.spec.statement)
+				}
 			}
-			if strings.Count(statement, "<=?") != len(test.columns) {
-				t.Fatalf("query guard limits=%d want %d: %q", strings.Count(statement, "<=?"), len(test.columns), test.spec.statement)
+			for _, column := range test.intColumns {
+				if !strings.Contains(statement, "case when typeof("+column+") in ('integer','null')") {
+					t.Fatalf("query does not integer-guard %s: %q", column, test.spec.statement)
+				}
+			}
+			if strings.Count(statement, "else null end") != len(allColumns) {
+				t.Fatalf("query value guards=%d want %d: %q", strings.Count(statement, "else null end"), len(allColumns), test.spec.statement)
+			}
+			wantLimits := len(test.textColumns) + test.bodyColumns
+			if strings.Count(statement, "<=?") != wantLimits {
+				t.Fatalf("query guard limits=%d want %d: %q", strings.Count(statement, "<=?"), wantLimits, test.spec.statement)
+			}
+			if len(test.spec.columns) != len(allColumns)*3 {
+				t.Fatalf("observer columns=%d want %d: %#v", len(test.spec.columns), len(allColumns)*3, test.spec.columns)
+			}
+		})
+	}
+}
+
+func TestSQLiteCellCapsAreSmallAndDivideAggregateBudgets(t *testing.T) {
+	budget := sqliteBudget{limits: Limits{MaxPayloadBytes: 300, MaxCanonicalBytes: 1000}}
+	metadata, body, err := budget.guardedCellCaps(5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata != 200 || body != 200 {
+		t.Fatalf("metadata=%d body=%d", metadata, body)
+	}
+	budget.limits.MaxPayloadBytes = 1 << 30
+	budget.limits.MaxCanonicalBytes = 1 << 30
+	metadata, body, err = budget.guardedCellCaps(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata != maxSQLiteMetadataCellBytes || body != maxSQLiteBodyCellBytes {
+		t.Fatalf("metadata=%d body=%d", metadata, body)
+	}
+}
+
+func TestBodyQueriesGuardAggregateRowBytes(t *testing.T) {
+	recordBodyBytes := `(case when typeof(question)='text' then length(cast(question as blob)) else 0 end+case when typeof(answer)='text' then length(cast(answer as blob)) else 0 end+case when typeof(reasoning_content)='text' then length(cast(reasoning_content as blob)) else 0 end)<=?`
+	if count := strings.Count(strings.ToLower(recordQuery.statement), recordBodyBytes); count != 3 {
+		t.Fatalf("record aggregate guards=%d", count)
+	}
+	messageBodyBytes := `(case when typeof(content)='text' then length(cast(content as blob)) else 0 end+case when typeof(tool_result)='text' then length(cast(tool_result as blob)) else 0 end)<=?`
+	if count := strings.Count(strings.ToLower(messageQuery.statement), messageBodyBytes); count != 2 {
+		t.Fatalf("message aggregate guards=%d", count)
+	}
+}
+
+func TestMetadataCellLimitsAreExactAcrossEveryTable(t *testing.T) {
+	for _, test := range []struct {
+		name, update, readID string
+		listOnly             bool
+	}{
+		{name: "session", update: `UPDATE chat_session SET project_id=? WHERE session_id='session-1'`, listOnly: true},
+		{name: "record", update: `UPDATE chat_record SET request_id=? WHERE request_id='request-1'`, readID: "session-1"},
+		{name: "message", update: `UPDATE chat_message SET role=? WHERE id='message-1'`, readID: "session-1"},
+		{name: "snapshot", update: `UPDATE chat_snapshot SET status=? WHERE snapshot_id='snapshot-1'`, readID: "session-1"},
+	} {
+		for _, size := range []int{int(maxSQLiteMetadataCellBytes), int(maxSQLiteMetadataCellBytes) + 1} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, size), func(t *testing.T) {
+				root := t.TempDir()
+				path := filepath.Join(root, "local.db")
+				database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+				defer database.Close()
+				insertFixtureConversation(t, database, LingmaIDEV1)
+				if _, err := database.Exec(test.update, strings.Repeat("m", size)); err != nil {
+					t.Fatal(err)
+				}
+				err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+					if test.listOnly {
+						_, err := reader.ListSessions(context.Background())
+						return err
+					}
+					_, err := reader.ReadConversation(context.Background(), test.readID)
+					return err
+				})
+				if size == int(maxSQLiteMetadataCellBytes) && err != nil {
+					t.Fatal(err)
+				}
+				if size == int(maxSQLiteMetadataCellBytes)+1 && !errors.Is(err, ErrBudgetExceeded) {
+					t.Fatalf("error=%v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestMetadataCellLimitUsesUTF8Bytes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		err   error
+	}{
+		{name: "exact", value: strings.Repeat("界", 1365) + "x"},
+		{name: "plus one", value: strings.Repeat("界", 1365) + "xy", err: ErrBudgetExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "local.db")
+			database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+			defer database.Close()
+			insertFixtureConversation(t, database, LingmaIDEV1)
+			if _, err := database.Exec(`UPDATE chat_message SET role=? WHERE id='message-1'`, test.value); err != nil {
+				t.Fatal(err)
+			}
+			err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+				_, err := reader.ReadConversation(context.Background(), "session-1")
+				return err
+			})
+			if !errors.Is(err, test.err) {
+				t.Fatalf("bytes=%d error=%v want %v", len(test.value), err, test.err)
+			}
+		})
+	}
+}
+
+func TestIntegerProjectionsSuppressLargeDynamicText(t *testing.T) {
+	for _, test := range []struct {
+		name, update string
+	}{
+		{name: "session timestamp", update: `UPDATE chat_session SET gmt_create=? WHERE session_id='session-1'`},
+		{name: "record status", update: `UPDATE chat_record SET finish_status=? WHERE request_id='request-1'`},
+		{name: "message timestamp", update: `UPDATE chat_message SET gmt_create=? WHERE id='message-1'`},
+		{name: "snapshot timestamp", update: `UPDATE chat_snapshot SET gmt_create=? WHERE snapshot_id='snapshot-1'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "local.db")
+			database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+			defer database.Close()
+			insertFixtureConversation(t, database, LingmaIDEV1)
+			if _, err := database.Exec(test.update, strings.Repeat("not-an-integer", 1024)); err != nil {
+				t.Fatal(err)
+			}
+			err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+				_, err := reader.ReadConversation(context.Background(), "session-1")
+				return err
+			})
+			if !errors.Is(err, ErrMalformedConversation) {
+				t.Fatalf("error=%v", err)
 			}
 		})
 	}
@@ -857,6 +1058,31 @@ func TestBodyCellPayloadLimitsAreExactAndApplyToEveryColumn(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBodyHardCellLimitIsExact(t *testing.T) {
+	for _, size := range []int{int(maxSQLiteBodyCellBytes), int(maxSQLiteBodyCellBytes) + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "local.db")
+			database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+			defer database.Close()
+			insertFixtureConversation(t, database, LingmaIDEV1)
+			if _, err := database.Exec(`UPDATE chat_record SET question=? WHERE request_id='request-1'`, strings.Repeat("b", size)); err != nil {
+				t.Fatal(err)
+			}
+			err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+				_, err := reader.ReadConversation(context.Background(), "session-1")
+				return err
+			})
+			if size == int(maxSQLiteBodyCellBytes) && err != nil {
+				t.Fatal(err)
+			}
+			if size == int(maxSQLiteBodyCellBytes)+1 && !errors.Is(err, ErrBudgetExceeded) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 
