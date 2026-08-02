@@ -351,8 +351,8 @@ func parseSegmentEvents(ctx context.Context, raw []byte) ([]event, bool) {
 		if len(userLines) == 0 {
 			return
 		}
-		content := strings.TrimSpace(strings.Join(userLines, "\n"))
-		if content != "" {
+		content := strings.Join(userLines, "\n")
+		if strings.TrimSpace(content) != "" {
 			out = append(out, event{Type: "message", Role: "user", Content: content})
 		}
 		userLines = nil
@@ -361,8 +361,8 @@ func parseSegmentEvents(ctx context.Context, raw []byte) ([]event, bool) {
 		if len(assistantLines) == 0 {
 			return
 		}
-		content := strings.TrimSpace(strings.Join(assistantLines, "\n"))
-		if content != "" {
+		content := strings.Join(assistantLines, "\n")
+		if strings.TrimSpace(content) != "" {
 			out = append(out, event{Type: "message", Role: "assistant", Content: content})
 		}
 		assistantLines = nil
@@ -401,7 +401,7 @@ func parseSegmentEvents(ctx context.Context, raw []byte) ([]event, bool) {
 		case strings.HasPrefix(line, "> "):
 			flushUser()
 			flushAssistant()
-		case strings.TrimSpace(line) == "":
+		case line == "":
 			flushUser()
 			flushAssistant()
 		default:

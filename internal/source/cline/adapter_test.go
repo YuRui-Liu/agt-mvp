@@ -182,6 +182,54 @@ func TestIgnoredBlocksAndStrictToolUseEnvelope(t *testing.T) {
 	}
 }
 
+func TestToolRecordAtomicRollbackRemovesAllSiblingEvents(t *testing.T) {
+	manifest, _ := fixture(t)
+	messages := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"user","content":"kept"},{"role":"assistant","content":[{"type":"text","text":"must roll back"},{"type":"thinking","thinking":"must also roll back"},{"type":"tool_use","id":"dangling","name":"read_file","input":{}}]},{"role":"assistant","content":"also kept"}]}`)
+	root := t.TempDir()
+	installFixture(t, root, "session-alpha", manifest, messages)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].MessageCount != 2 || got[0].MalformedCount != 1 || !slices.Equal(got[0].Capabilities, []source.Capability{source.CapabilityMessages}) {
+		t.Fatalf("session=%#v", got[0])
+	}
+	gotEvents := events(t, a, got[0])
+	if len(gotEvents) != 2 || gotEvents[0]["content"] != "kept" || gotEvents[1]["content"] != "also kept" {
+		t.Fatalf("events=%#v", gotEvents)
+	}
+}
+
+func TestToolResultRecordAtomicRollbackAndIgnoredOnlyNoSession(t *testing.T) {
+	manifest, _ := fixture(t)
+	messages := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"user","content":"kept"},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"read_file","input":{}}]},{"role":"user","content":[{"type":"text","text":"must roll back"},{"type":"tool_result","tool_use_id":"call-1","name":"read_file","content":"ok","is_error":false},{"type":"tool_result","tool_use_id":"orphan","name":"read_file","content":"bad","is_error":false}]},{"role":"assistant","content":"also kept"}]}`)
+	root := t.TempDir()
+	installFixture(t, root, "session-alpha", manifest, messages)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	if got[0].MessageCount != 2 || got[0].MalformedCount < 2 {
+		t.Fatalf("session=%#v", got[0])
+	}
+	for _, event := range events(t, a, got[0]) {
+		if event["content"] == "must roll back" || event["type"] == "tool_use" || event["type"] == "tool_result" {
+			t.Fatalf("partial tool record committed: %#v", event)
+		}
+	}
+
+	ignored := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"secret"},{"type":"image","source":"ignored"},{"type":"file","path":"ignored"}]}]}`)
+	ignoredRoot := t.TempDir()
+	installFixture(t, ignoredRoot, "session-alpha", manifest, ignored)
+	ignoredAdapter := New(ignoredRoot)
+	ignoredSessions, err := ignoredAdapter.Discover(context.Background())
+	if err != nil || len(ignoredSessions) != 0 {
+		t.Fatalf("ignored sessions=%#v err=%v", ignoredSessions, err)
+	}
+}
+
 func TestAuthorizationBindsBothFilesAndMetadata(t *testing.T) {
 	manifest, messages := fixture(t)
 	root := t.TempDir()

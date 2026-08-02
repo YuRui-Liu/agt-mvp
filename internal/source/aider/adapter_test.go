@@ -1,7 +1,10 @@
 package aider
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +85,102 @@ func TestCRLFNoNewlineMarkerOnlyAndBlankUser(t *testing.T) {
 	events := aiderEvents(t, a, got[0])
 	if len(events) != 2 || events[1]["content"] != "answer" {
 		t.Fatalf("events=%#v", events)
+	}
+}
+
+func TestMarkdownContentPreservesMeaningfulWhitespace(t *testing.T) {
+	body := []byte("# aider chat started at 2026-06-01 10:00:00\n####   user keeps leading and one trailing \n    indented code  \n    \nplain trailing \n> hidden status\n#### next\nanswer\n")
+	root := t.TempDir()
+	installHistory(t, root, body)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	want := []map[string]any{
+		{"type": "message", "role": "user", "content": "  user keeps leading and one trailing "},
+		{"type": "message", "role": "assistant", "content": "    indented code  \n    \nplain trailing "},
+		{"type": "message", "role": "user", "content": "next"},
+		{"type": "message", "role": "assistant", "content": "answer"},
+	}
+	if gotEvents := aiderEvents(t, a, got[0]); !reflect.DeepEqual(gotEvents, want) {
+		t.Fatalf("events=%#v", gotEvents)
+	}
+}
+
+func rawSegmentDigests(t *testing.T, data []byte) []string {
+	t.Helper()
+	marker := []byte(markerPrefix)
+	var offsets []int
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], marker)
+		if index < 0 {
+			break
+		}
+		absolute := offset + index
+		if absolute == 0 || data[absolute-1] == '\n' {
+			offsets = append(offsets, absolute)
+		}
+		offset = absolute + len(marker)
+	}
+	var out []string
+	for index, start := range offsets {
+		end := len(data)
+		if index+1 < len(offsets) {
+			end = offsets[index+1]
+		}
+		sum := sha256.Sum256(data[start:end])
+		out = append(out, hex.EncodeToString(sum[:]))
+	}
+	return out
+}
+
+func TestSnapshotIDsAreExactRawSegmentDigests(t *testing.T) {
+	history := adaptertest.ReadFixture(t, "../testdata/aider/history.md")
+	root := t.TempDir()
+	path := installHistory(t, root, history)
+	a := New(root)
+	first, err := a.Discover(context.Background())
+	if err != nil || len(first) != 2 {
+		t.Fatalf("sessions=%#v err=%v", first, err)
+	}
+	digests := rawSegmentDigests(t, history)
+	if len(digests) != 2 || first[0].SnapshotID != digests[0] || first[1].SnapshotID != digests[1] {
+		t.Fatalf("snapshots=%q,%q want=%#v", first[0].SnapshotID, first[1].SnapshotID, digests)
+	}
+	third := []byte("# aider chat started at 2026-06-01 12:00:00\n#### third\nanswer\n")
+	withThird := append(append([]byte{}, history...), third...)
+	if err := os.WriteFile(path, withThird, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.Discover(context.Background())
+	if err != nil || len(second) != 3 {
+		t.Fatalf("sessions=%#v err=%v", second, err)
+	}
+	for index := 0; index < 2; index++ {
+		if first[index].ID != second[index].ID || first[index].SnapshotID != second[index].SnapshotID {
+			t.Fatalf("closed segment %d changed", index)
+		}
+	}
+	thirdDigest := rawSegmentDigests(t, withThird)
+	if second[2].SnapshotID != thirdDigest[2] {
+		t.Fatalf("third snapshot=%q want=%q", second[2].SnapshotID, thirdDigest[2])
+	}
+	withTailGrowth := append(append([]byte{}, withThird...), []byte("tail growth  \n")...)
+	if err := os.WriteFile(path, withTailGrowth, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	thirdScan, err := a.Discover(context.Background())
+	if err != nil || len(thirdScan) != 3 {
+		t.Fatalf("sessions=%#v err=%v", thirdScan, err)
+	}
+	for index := 0; index < 2; index++ {
+		if second[index].ID != thirdScan[index].ID || second[index].SnapshotID != thirdScan[index].SnapshotID {
+			t.Fatalf("closed segment %d changed on tail growth", index)
+		}
+	}
+	if second[2].ID != thirdScan[2].ID || second[2].SnapshotID == thirdScan[2].SnapshotID || thirdScan[2].SnapshotID != rawSegmentDigests(t, withTailGrowth)[2] {
+		t.Fatalf("active tail semantics before=%#v after=%#v", second[2], thirdScan[2])
 	}
 }
 

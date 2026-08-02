@@ -389,36 +389,93 @@ func parseComposite(ctx context.Context, id string, manifestData, messagesData [
 		end, _ = time.Parse(time.RFC3339Nano, *manifest.EndedAt)
 	}
 	result := parsed{manifest: manifest, start: start, end: end}
-	pending := map[string]string{}
-	completed := map[string]bool{}
+	type stagedRecord struct {
+		events      []event
+		transitions []toolTransition
+	}
+	var staged []stagedRecord
+	stagedEvents := 0
 	for _, record := range wrapper.Messages {
 		if ctx.Err() != nil {
 			return parsed{}, false
 		}
 		events, transitions, ok := parseMessage(ctx, record)
-		if !ok || len(result.events)+len(events) > maxEvents || !applyToolTransitions(transitions, pending, completed) {
+		if !ok {
 			result.malformed++
 			continue
 		}
 		if len(events) == 0 {
 			continue
 		}
-		result.events = append(result.events, events...)
-		result.messages++
+		stagedEvents += len(events)
+		if stagedEvents > maxEvents {
+			return parsed{}, false
+		}
+		staged = append(staged, stagedRecord{events: events, transitions: transitions})
 	}
 	if ctx.Err() != nil {
 		return parsed{}, false
 	}
-	if len(pending) > 0 {
-		result.malformed += len(pending)
-		filtered := result.events[:0]
-		for _, value := range result.events {
-			if value.Type == "tool_use" && pending[value.CallID] != "" {
-				continue
+	type pairReference struct {
+		stage int
+		name  string
+	}
+	type pairSet struct {
+		uses, results []pairReference
+	}
+	pairs := map[string]*pairSet{}
+	for stageIndex, record := range staged {
+		for _, transition := range record.transitions {
+			pair := pairs[transition.id]
+			if pair == nil {
+				pair = &pairSet{}
+				pairs[transition.id] = pair
 			}
-			filtered = append(filtered, value)
+			reference := pairReference{stage: stageIndex, name: transition.name}
+			if transition.use {
+				pair.uses = append(pair.uses, reference)
+			} else {
+				pair.results = append(pair.results, reference)
+			}
 		}
-		result.events = filtered
+	}
+	invalid := make([]bool, len(staged))
+	adjacent := make([][]int, len(staged))
+	for _, pair := range pairs {
+		exact := len(pair.uses) == 1 && len(pair.results) == 1 && pair.uses[0].name == pair.results[0].name && pair.uses[0].stage < pair.results[0].stage
+		if !exact {
+			for _, reference := range append(append([]pairReference(nil), pair.uses...), pair.results...) {
+				invalid[reference.stage] = true
+			}
+			continue
+		}
+		useStage, resultStage := pair.uses[0].stage, pair.results[0].stage
+		adjacent[useStage] = append(adjacent[useStage], resultStage)
+		adjacent[resultStage] = append(adjacent[resultStage], useStage)
+	}
+	queue := make([]int, 0, len(staged))
+	for index, bad := range invalid {
+		if bad {
+			queue = append(queue, index)
+		}
+	}
+	for len(queue) > 0 {
+		index := queue[0]
+		queue = queue[1:]
+		for _, neighbor := range adjacent[index] {
+			if !invalid[neighbor] {
+				invalid[neighbor] = true
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+	for index, record := range staged {
+		if invalid[index] {
+			result.malformed++
+			continue
+		}
+		result.events = append(result.events, record.events...)
+		result.messages++
 	}
 	return result, len(result.events) > 0
 }
@@ -542,40 +599,6 @@ func parseMessage(ctx context.Context, record messageRecord) ([]event, []toolTra
 		}
 	}
 	return out, transitions, true
-}
-
-func applyToolTransitions(transitions []toolTransition, pending map[string]string, completed map[string]bool) bool {
-	trialPending := make(map[string]string, len(pending))
-	for key, value := range pending {
-		trialPending[key] = value
-	}
-	trialCompleted := make(map[string]bool, len(completed))
-	for key, value := range completed {
-		trialCompleted[key] = value
-	}
-	for _, transition := range transitions {
-		if transition.use {
-			if trialPending[transition.id] != "" || trialCompleted[transition.id] {
-				return false
-			}
-			trialPending[transition.id] = transition.name
-			continue
-		}
-		if trialPending[transition.id] == "" || trialPending[transition.id] != transition.name || trialCompleted[transition.id] {
-			return false
-		}
-		delete(trialPending, transition.id)
-		trialCompleted[transition.id] = true
-	}
-	clear(pending)
-	for key, value := range trialPending {
-		pending[key] = value
-	}
-	clear(completed)
-	for key, value := range trialCompleted {
-		completed[key] = value
-	}
-	return true
 }
 
 func clineScope(manifest manifestV1, fallback string) source.ScopeRef {
