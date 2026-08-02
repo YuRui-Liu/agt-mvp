@@ -1,0 +1,4 @@
+{"type":"session.start","timestamp":"2026-06-03T10:00:00Z","data":{"sessionId":"flat-session","context":{"cwd":"synthetic-project"}}}
+{"type":"user.message","timestamp":"2026-06-03T10:00:01Z","data":{"content":"synthetic question"}}
+{"type":"assistant.message","timestamp":"2026-06-03T10:00:02Z","data":{"content":"synthetic answer","reasoningText":"synthetic reasoning","toolRequests":[{"toolCallId":"call-1","name":"lookup","arguments":{"query":"sample"}}]}}
+{"type":"tool.execution_complete","timestamp":"2026-06-03T10:00:03Z","data":{"toolCallId":"call-1","result":{"value":"synthetic result"}}}

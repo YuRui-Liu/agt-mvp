@@ -1,0 +1,4 @@
+{"sessionId":"stream-session","startTime":"2026-06-02T10:00:00Z","type":"metadata","schemaVersion":1}
+{"sessionId":"stream-session","id":"user-1","type":"user","timestamp":"2026-06-02T10:00:01Z","content":"synthetic stream question"}
+{"sessionId":"stream-session","id":"assistant-1","type":"gemini","timestamp":"2026-06-02T10:00:02Z","content":"superseded answer"}
+{"sessionId":"stream-session","id":"assistant-1","type":"gemini","timestamp":"2026-06-02T10:00:03Z","thoughts":[{"description":"synthetic stream reasoning"}],"content":"synthetic final answer"}
