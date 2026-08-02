@@ -75,12 +75,19 @@ type scopeView struct {
 }
 
 type sourceView struct {
-	Product     string         `json:"product"`
-	DisplayName string         `json:"display_name"`
-	Status      catalog.Status `json:"status"`
-	Supported   bool           `json:"supported"`
-	Enabled     bool           `json:"enabled"`
-	Detected    bool           `json:"detected"`
+	Product      string              `json:"product"`
+	DisplayName  string              `json:"display_name"`
+	State        source.SourceState  `json:"state"`
+	Status       source.SourceState  `json:"status"`
+	Code         string              `json:"code,omitempty"`
+	Supported    bool                `json:"supported"`
+	Enabled      bool                `json:"enabled"`
+	Detected     bool                `json:"detected"`
+	Selectable   bool                `json:"selectable"`
+	SessionCount int                 `json:"session_count"`
+	Verification source.Verification `json:"verification"`
+	Capabilities []source.Capability `json:"capabilities"`
+	Reason       string              `json:"reason,omitempty"`
 }
 
 type submissionReceipt struct {
@@ -326,21 +333,24 @@ func (h *appHandler) scopes(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, view)
 	}
-	for _, definition := range h.app.Catalog {
-		if definition.Supported || !definition.Detected {
-			continue
-		}
-		views = append(views, scopeView{
-			Type: source.ScopeSessionCollection, Label: definition.DisplayName,
-			Agents: []string{definition.Product}, Capabilities: []string{},
-			Status: string(catalog.DetectedUnsupported), Selectable: false,
-		})
+	sessionCounts := make(map[string]int, len(scan.Sources))
+	for _, session := range scan.Sessions {
+		sessionCounts[session.Product]++
 	}
 	sourceViews := make([]sourceView, 0, len(h.app.Catalog))
 	for _, definition := range h.app.Catalog {
+		var runtimeStatus *source.SourceStatus
+		if status, exists := scan.Sources[definition.Product]; exists {
+			statusCopy := status
+			runtimeStatus = &statusCopy
+		}
+		resolved := catalog.Resolve(definition, runtimeStatus, sessionCounts[definition.Product])
 		sourceViews = append(sourceViews, sourceView{
-			Product: definition.Product, DisplayName: definition.DisplayName, Status: definition.Status,
-			Supported: definition.Supported, Enabled: definition.Enabled, Detected: definition.Detected,
+			Product: resolved.Product, DisplayName: resolved.DisplayName,
+			State: resolved.State, Status: resolved.State, Code: resolved.Code,
+			Supported: resolved.Supported, Enabled: resolved.Enabled, Detected: resolved.Detected,
+			Selectable: resolved.Selectable, SessionCount: resolved.SessionCount,
+			Verification: resolved.Verification, Capabilities: resolved.Capabilities, Reason: resolved.Reason,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"scopes": views, "sources": sourceViews})

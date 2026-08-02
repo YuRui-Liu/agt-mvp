@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -139,7 +141,7 @@ func TestScanUsesEmbeddedRegistryAndWritesJSON(t *testing.T) {
 		t.Fatalf("calls=%s", got)
 	}
 	if !strings.Contains(stdout.String(), `"product":"test"`) ||
-		!strings.Contains(stdout.String(), `"state":"ready"`) {
+		!strings.Contains(stdout.String(), `"state":"not_found"`) {
 		t.Fatalf("scan output=%q", stdout.String())
 	}
 }
@@ -147,17 +149,128 @@ func TestScanUsesEmbeddedRegistryAndWritesJSON(t *testing.T) {
 func TestProductionDependenciesExposeCompleteCatalog(t *testing.T) {
 	deps := productionDependencies()
 	definitions := deps.newCatalog(nil)
-	ready := 0
+	want := map[string]struct{}{
+		"aider": {}, "claude-code": {}, "cline": {}, "codebuddy-cli": {}, "codeflicker": {},
+		"codex": {}, "copilot-cli": {}, "cursor": {}, "gemini-cli": {}, "hermes-agent": {},
+		"kimi-cli": {}, "kimi-code": {}, "myflicker": {}, "openclaw": {}, "opencode": {},
+		"qoder-cli": {}, "qoder-ide": {}, "qwen-code": {}, "tongyi-lingma-cli": {},
+		"tongyi-lingma-ide": {}, "vscode-copilot": {}, "workbuddy": {},
+	}
+	ready := map[string]struct{}{}
 	for _, definition := range definitions {
 		if definition.Supported && definition.Enabled && definition.Status == catalog.Ready {
-			ready++
+			ready[definition.Product] = struct{}{}
 		}
 	}
-	if ready != 12 {
-		t.Fatalf("ready sources=%d definitions=%#v", ready, definitions)
+	if !reflect.DeepEqual(ready, want) {
+		t.Fatalf("ready sources=%v want=%v", ready, want)
 	}
-	if deps.newRegistry(nil) == nil {
+	roots := make(map[string][]string, len(want))
+	for product := range want {
+		roots[product] = []string{t.TempDir()}
+	}
+	// CodeFlicker has a stable two-position constructor contract:
+	// projects directory followed by the composer SQLite file.
+	roots["codeflicker"] = []string{t.TempDir(), filepath.Join(t.TempDir(), "composer_data.sqlite")}
+	registry := deps.newRegistry(roots)
+	if registry == nil {
 		t.Fatal("production registry is nil")
+	}
+	scan, err := registry.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]struct{}, len(scan.Sources))
+	for product, status := range scan.Sources {
+		if status.Code == "duplicate_product" {
+			t.Fatalf("duplicate registry product %q", product)
+		}
+		got[product] = struct{}{}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("registry sources=%v want=%v", got, want)
+	}
+}
+
+func TestProductionRegistryKeepsCodeFlickerRootsPositionalAndProductsIsolated(t *testing.T) {
+	projects := t.TempDir()
+	projectDir := filepath.Join(projects, "campus")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := strings.Join([]string{
+		`{"type":"config","config":{"cwd":"/workspace/campus"}}`,
+		`{"type":"message","role":"user","content":"hello"}`,
+		`{"type":"message","role":"assistant","content":"hi"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "codeflicker-session.jsonl"), []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	isolatedProducts := []string{
+		"aider", "claude-code", "cline", "codebuddy-cli", "codeflicker", "codex", "copilot-cli",
+		"cursor", "gemini-cli", "hermes-agent", "kimi-cli", "kimi-code", "myflicker", "openclaw",
+		"opencode", "qoder-cli", "qoder-ide", "qwen-code", "tongyi-lingma-cli",
+		"tongyi-lingma-ide", "vscode-copilot", "workbuddy",
+	}
+	roots := make(map[string][]string, len(isolatedProducts))
+	for _, product := range isolatedProducts {
+		roots[product] = []string{t.TempDir()}
+	}
+	roots["codeflicker"] = []string{projects, filepath.Join(t.TempDir(), "composer_data.sqlite")}
+	scan, err := productionDependencies().newRegistry(roots).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.Sources["codeflicker"].State != source.SourceReady {
+		t.Fatalf("CodeFlicker did not receive its projects root: %#v", scan.Sources["codeflicker"])
+	}
+	for _, product := range []string{"myflicker", "copilot-cli", "vscode-copilot", "kimi-cli", "kimi-code", "qoder-cli", "qoder-ide", "tongyi-lingma-cli", "tongyi-lingma-ide"} {
+		if scan.Sources[product].State == source.SourceReady {
+			t.Fatalf("%s consumed another product's root", product)
+		}
+	}
+}
+
+func TestSafeScanOutputMergesEveryRuntimeStateWithoutLeakingErrors(t *testing.T) {
+	definitions := []catalog.Definition{
+		{Product: "ready-one", DisplayName: "Ready", Supported: true, Enabled: true, Status: source.SourceReady,
+			Verification: source.VerificationMachine, Capabilities: []source.Capability{source.CapabilityMessages}},
+		{Product: "export-one", DisplayName: "Export", Status: source.SourceDetectedUnsupported,
+			Verification: source.VerificationExport, Reason: "official_export_required", Capabilities: []source.Capability{}},
+	}
+	session := source.Session{ID: "private-session-id", Product: "ready-one", OpaqueRef: "/private/opaque",
+		Scope:        source.ScopeRef{Type: source.ScopeProject, Root: "/private/project", Label: "project"},
+		Capabilities: []source.Capability{source.CapabilityMessages}}
+	states := []source.SourceState{source.SourceReady, source.SourceNotFound, source.SourceFormatUnsupported,
+		source.SourceReadError, source.SourceExportRequired, source.SourceDetectedUnsupported}
+	for _, state := range states {
+		t.Run(string(state), func(t *testing.T) {
+			scan := source.ScanResult{Sources: map[string]source.SourceStatus{
+				"ready-one":  {State: state, Code: "filesystem /private/error secret"},
+				"export-one": {State: source.SourceExportRequired, Code: "raw product failure"},
+			}}
+			if state == source.SourceReady {
+				scan.Sessions = []source.Session{session}
+			}
+			output, err := safeScanOutput(scan, definitions, bytes.Repeat([]byte{7}, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := output.Sources[0]; got.State != string(state) || got.Status != string(state) ||
+				got.Selectable != (state == source.SourceReady) || got.SessionCount != len(scan.Sessions) ||
+				got.Verification != source.VerificationMachine || !reflect.DeepEqual(got.Capabilities, []source.Capability{source.CapabilityMessages}) {
+				t.Fatalf("source=%#v", got)
+			}
+			encoded, err := json.Marshal(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"/private", "private-session-id", "raw product failure", "filesystem"} {
+				if strings.Contains(string(encoded), secret) {
+					t.Fatalf("safe output leaked %q: %s", secret, encoded)
+				}
+			}
+		})
 	}
 }
 

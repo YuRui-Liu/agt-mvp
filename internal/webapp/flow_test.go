@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,35 @@ func (testAdapter) Capabilities() []source.Capability {
 type changingAdapter struct {
 	mu    sync.Mutex
 	scans int
+}
+
+type stateAdapter struct {
+	product string
+	state   source.SourceState
+	error   string
+	session bool
+}
+
+func (a stateAdapter) Product() string { return a.product }
+func (a stateAdapter) Capabilities() []source.Capability {
+	return []source.Capability{source.CapabilityMessages}
+}
+func (a stateAdapter) Discover(context.Context) ([]source.Session, error) {
+	switch a.state {
+	case source.SourceFormatUnsupported, source.SourceExportRequired:
+		return nil, source.NewDiscoveryError(a.state, errors.New(a.error))
+	case source.SourceReadError:
+		return nil, errors.New(a.error)
+	}
+	if !a.session {
+		return nil, nil
+	}
+	return []source.Session{{ID: "private-session-id", Scope: source.ScopeRef{
+		Type: source.ScopeProject, Root: "/private/project", Label: "project",
+	}}}, nil
+}
+func (stateAdapter) Open(context.Context, source.Session) (io.ReadCloser, error) {
+	return nil, io.EOF
 }
 
 func (a *changingAdapter) Product() string                   { return "codex" }
@@ -264,16 +294,81 @@ func TestScopesIncludeDisabledUnsupportedSourceDiagnostics(t *testing.T) {
 	for _, scope := range result.Scopes {
 		if len(scope.Agents) == 1 && scope.Agents[0] == "trae" {
 			found = true
-			if scope.Selectable || scope.SessionCount != 0 || scope.Status != "detected_unsupported" {
-				t.Fatalf("unsupported scope=%#v", scope)
-			}
 		}
 	}
-	if !found {
-		t.Fatalf("unsupported source diagnostic missing: %s", response.Body.String())
+	if found {
+		t.Fatalf("unsupported source was exposed as a fake assessment scope: %s", response.Body.String())
+	}
+	var trae *sourceView
+	for i := range result.Sources {
+		if result.Sources[i].Product == "trae" {
+			trae = &result.Sources[i]
+			break
+		}
+	}
+	if trae == nil || trae.State != source.SourceDetectedUnsupported || trae.Status != source.SourceDetectedUnsupported ||
+		trae.Selectable || !trae.Detected || trae.Verification != source.VerificationExport ||
+		trae.Reason != "official_export_required" || trae.Capabilities == nil {
+		t.Fatalf("TRAE source metadata=%#v", trae)
 	}
 	if strings.Contains(response.Body.String(), root) || strings.Contains(response.Body.String(), `"dirs"`) {
 		t.Fatalf("source diagnostics exposed filesystem roots: %s", response.Body.String())
+	}
+}
+
+func TestScopesMergeRuntimeSourceStateAndExposeOnlySafeMetadata(t *testing.T) {
+	states := []source.SourceState{source.SourceReady, source.SourceNotFound, source.SourceFormatUnsupported,
+		source.SourceReadError, source.SourceExportRequired}
+	for _, runtimeState := range states {
+		t.Run(string(runtimeState), func(t *testing.T) {
+			adapter := stateAdapter{product: "codex", state: runtimeState, error: "private /Users/alice/session-id"}
+			if runtimeState == source.SourceReady {
+				adapter.session = true
+			}
+			registry := source.NewRegistry(adapter)
+			app := newTestApp()
+			app.Registry = registry
+			app.Exporter = upload.NewStreamExporter(registry, upload.Client{Name: "kuai", Version: "test", Platform: "test"}, upload.Limits{})
+			app.Catalog = []catalog.Definition{{
+				Product: "codex", DisplayName: "Codex", Supported: true, Enabled: true,
+				Status: source.SourceReady, Verification: source.VerificationMachine,
+				Capabilities: []source.Capability{source.CapabilityMessages, source.CapabilityTools},
+			}}
+			response := call(t, Handler(app), http.MethodGet, "/api/scopes", "", "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var result struct {
+				Scopes  []scopeView  `json:"scopes"`
+				Sources []sourceView `json:"sources"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || len(result.Sources) != 1 {
+				t.Fatalf("result=%s err=%v", response.Body.String(), err)
+			}
+			got := result.Sources[0]
+			wantCount := 0
+			if runtimeState == source.SourceReady {
+				wantCount = 1
+			}
+			if got.Product != "codex" || got.DisplayName != "Codex" || got.State != runtimeState ||
+				got.Status != runtimeState || got.Verification != source.VerificationMachine ||
+				!reflect.DeepEqual(got.Capabilities, []source.Capability{source.CapabilityMessages, source.CapabilityTools}) ||
+				got.SessionCount != wantCount || got.Selectable != (runtimeState == source.SourceReady) ||
+				got.Detected != (wantCount > 0) {
+				t.Fatalf("source=%#v", got)
+			}
+			if runtimeState == source.SourceReady && len(result.Scopes) != 1 {
+				t.Fatalf("ready session scope missing: %#v", result.Scopes)
+			}
+			if runtimeState != source.SourceReady && len(result.Scopes) != 0 {
+				t.Fatalf("non-ready source created scope: %#v", result.Scopes)
+			}
+			for _, secret := range []string{"/Users/alice", "private-session-id", "private /"} {
+				if strings.Contains(response.Body.String(), secret) {
+					t.Fatalf("response leaked %q: %s", secret, response.Body.String())
+				}
+			}
+		})
 	}
 }
 

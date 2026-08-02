@@ -12,25 +12,41 @@ import (
 
 func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 	supported := map[string]bool{
-		"claude-code": true, "codex": true, "cursor": true, "opencode": true,
-		"vscode-copilot": true, "codeflicker": true, "myflicker": true,
-		"openclaw": true, "hermes-agent": true, "workbuddy": true,
-		"kimi-cli": true, "qwen-code": true,
+		"aider": true, "claude-code": true, "cline": true, "codebuddy-cli": true,
+		"codeflicker": true, "codex": true, "copilot-cli": true, "cursor": true,
+		"gemini-cli": true, "hermes-agent": true, "kimi-cli": true, "kimi-code": true,
+		"myflicker": true, "openclaw": true, "opencode": true, "qoder-cli": true,
+		"qoder-ide": true, "qwen-code": true, "tongyi-lingma-cli": true,
+		"tongyi-lingma-ide": true, "vscode-copilot": true, "workbuddy": true,
 	}
 	reasons := map[string]string{
 		"trae": "official_export_required", "trae-work": "no_distinct_local_format",
-		"kimi-work": "no_verified_session_schema", "kimi-code": "no_verified_session_schema",
-		"tongyi-lingma": "no_verified_session_schema", "qoder": "no_verified_session_schema",
-		"qoder-work": "no_distinct_local_format", "codebuddy": "no_verified_session_schema",
+		"kimi-work": "no_verified_session_schema", "qoder-work": "no_distinct_local_format",
 		"kiro": "no_verified_session_schema", "codebuddy-ide": "no_verified_transcript_body",
 	}
+	messagesOnly := map[string]bool{"aider": true, "tongyi-lingma-cli": true, "tongyi-lingma-ide": true, "qoder-ide": true}
+	reasoningOnly := map[string]bool{"qoder-cli": true}
+	toolReasoning := map[string]bool{"cline": true, "codebuddy-cli": true, "copilot-cli": true, "gemini-cli": true, "kimi-code": true}
+	fixtureVerified := map[string]bool{"gemini-cli": true, "copilot-cli": true}
 
 	for _, definition := range Definitions() {
 		if supported[definition.Product] {
-			if definition.Status != source.SourceReady || definition.Verification != source.VerificationMachine || definition.Reason != "" {
+			wantVerification := source.VerificationMachine
+			if fixtureVerified[definition.Product] {
+				wantVerification = source.VerificationFixture
+			}
+			if definition.Status != source.SourceReady || definition.Verification != wantVerification || definition.Reason != "" {
 				t.Errorf("supported %s metadata = %#v", definition.Product, definition)
 			}
 			wantCapabilities := []source.Capability{source.CapabilityMessages, source.CapabilityTools}
+			switch {
+			case messagesOnly[definition.Product]:
+				wantCapabilities = []source.Capability{source.CapabilityMessages}
+			case reasoningOnly[definition.Product]:
+				wantCapabilities = []source.Capability{source.CapabilityMessages, source.CapabilityReasoning}
+			case toolReasoning[definition.Product]:
+				wantCapabilities = []source.Capability{source.CapabilityMessages, source.CapabilityTools, source.CapabilityReasoning}
+			}
 			if !reflect.DeepEqual(definition.Capabilities, wantCapabilities) {
 				t.Errorf("%s capabilities = %#v, want %#v", definition.Product, definition.Capabilities, wantCapabilities)
 			}
@@ -52,13 +68,13 @@ func TestDefinitionsExposeVerificationMetadata(t *testing.T) {
 
 func TestDefinitionsHaveUniqueProducts(t *testing.T) {
 	want := map[string]struct{}{
-		"claude-code": {}, "codex": {}, "cursor": {}, "opencode": {},
-		"vscode-copilot": {}, "codeflicker": {}, "myflicker": {},
-		"openclaw": {}, "hermes-agent": {}, "workbuddy": {},
+		"aider": {}, "claude-code": {}, "cline": {}, "codebuddy-cli": {},
+		"codeflicker": {}, "codex": {}, "copilot-cli": {}, "cursor": {},
+		"gemini-cli": {}, "hermes-agent": {}, "kimi-code": {}, "myflicker": {},
+		"openclaw": {}, "opencode": {}, "qoder-cli": {}, "qoder-ide": {},
+		"tongyi-lingma-cli": {}, "tongyi-lingma-ide": {}, "vscode-copilot": {}, "workbuddy": {},
 		"trae": {}, "trae-work": {}, "kimi-cli": {}, "kimi-work": {},
-		"kimi-code": {}, "qwen-code": {}, "tongyi-lingma": {},
-		"qoder": {}, "qoder-work": {}, "codebuddy": {}, "codebuddy-ide": {},
-		"kiro": {},
+		"qwen-code": {}, "qoder-work": {}, "codebuddy-ide": {}, "kiro": {},
 	}
 	seen := make(map[string]struct{})
 	for _, definition := range Definitions() {
@@ -224,13 +240,13 @@ func TestExplicitRootRejectsDirectorySymlink(t *testing.T) {
 }
 
 func TestDefinitionsUseRegistryProductNames(t *testing.T) {
-	for _, product := range []string{"claude-code", "vscode-copilot"} {
+	for _, product := range []string{"claude-code", "vscode-copilot", "copilot-cli", "kimi-cli", "kimi-code", "tongyi-lingma-cli", "tongyi-lingma-ide", "qoder-cli", "qoder-ide"} {
 		d := find(Definitions(), product)
 		if d == nil || !d.Supported || !d.Enabled {
 			t.Fatalf("%s=%#v", product, d)
 		}
 	}
-	for _, obsolete := range []string{"claude", "copilot"} {
+	for _, obsolete := range []string{"claude", "copilot", "tongyi-lingma", "qoder", "codebuddy"} {
 		if d := find(Definitions(), obsolete); d != nil {
 			t.Fatalf("obsolete product definition=%#v", d)
 		}
@@ -238,12 +254,20 @@ func TestDefinitionsUseRegistryProductNames(t *testing.T) {
 }
 
 func TestSupportedLongTailHasOnlyVerifiedRoots(t *testing.T) {
-	want := map[string]string{"openclaw": "OPENCLAW_DIR", "hermes-agent": "HERMES_SESSIONS_DIR", "workbuddy": "WORKBUDDY_PROJECTS_DIR", "kimi-cli": "KIMI_DIR", "qwen-code": "QWEN_PROJECTS_DIR"}
+	want := map[string]string{"openclaw": "OPENCLAW_DIR", "hermes-agent": "HERMES_SESSIONS_DIR", "workbuddy": "WORKBUDDY_PROJECTS_DIR", "kimi-cli": "KIMI_DIR", "qwen-code": "QWEN_PROJECTS_DIR", "copilot-cli": "COPILOT_DIR", "gemini-cli": "GEMINI_DIR"}
 	for product, env := range want {
 		d := find(Definitions(), product)
-		if d == nil || !d.Supported || !d.Enabled || d.Status != Ready || d.EnvVar != env || len(d.DefaultDirs) != 1 {
+		wantDirCount := 1
+		if product == "workbuddy" {
+			wantDirCount = 2
+		}
+		if d == nil || !d.Supported || !d.Enabled || d.Status != Ready || d.EnvVar != env || len(d.DefaultDirs) != wantDirCount {
 			t.Fatalf("%s=%#v", product, d)
 		}
+	}
+	workbuddy := find(Definitions(), "workbuddy")
+	if !reflect.DeepEqual(workbuddy.DefaultDirs, []string{".workbuddy-ai/projects", ".workbuddy/projects"}) {
+		t.Fatalf("workbuddy defaults=%#v", workbuddy.DefaultDirs)
 	}
 }
 

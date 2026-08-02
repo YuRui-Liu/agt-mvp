@@ -23,17 +23,25 @@ import (
 
 	"github.com/YuRui-Liu/agt-mvp/internal/service"
 	"github.com/YuRui-Liu/agt-mvp/internal/source"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/aider"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/catalog"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/claude"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/cline"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/codebuddycli"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/codeflicker"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/codex"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/copilot"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/copilotcli"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/cursor"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/gemini"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/hermes"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/kimi"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/kimicode"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/lingma"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/myflicker"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/openclaw"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/opencode"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/qoder"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/qwen"
 	"github.com/YuRui-Liu/agt-mvp/internal/source/workbuddy"
 	"github.com/YuRui-Liu/agt-mvp/internal/upload"
@@ -64,12 +72,17 @@ func productionDependencies() dependencies {
 		loadConfig: loadCLIConfig,
 		newRegistry: func(roots map[string][]string) *source.Registry {
 			return source.NewRegistry(
-				claude.New(roots["claude-code"]...), codex.New(roots["codex"]...),
-				cursor.New(roots["cursor"]...), opencode.New(roots["opencode"]...),
-				copilot.New(roots["vscode-copilot"]...), codeflicker.New(roots["codeflicker"]...),
+				aider.New(roots["aider"]...), claude.New(roots["claude-code"]...),
+				cline.New(roots["cline"]...), codebuddycli.New(roots["codebuddy-cli"]...),
+				codeflicker.New(roots["codeflicker"]...), codex.New(roots["codex"]...),
+				copilotcli.New(roots["copilot-cli"]...), cursor.New(roots["cursor"]...),
+				gemini.New(roots["gemini-cli"]...), hermes.New(roots["hermes-agent"]...),
+				kimi.New(roots["kimi-cli"]...), kimicode.New(roots["kimi-code"]...),
 				myflicker.New(roots["myflicker"]...), openclaw.New(roots["openclaw"]...),
-				hermes.New(roots["hermes-agent"]...), workbuddy.New(roots["workbuddy"]...),
-				kimi.New(roots["kimi-cli"]...), qwen.New(roots["qwen-code"]...),
+				opencode.New(roots["opencode"]...), qoder.NewCLI(roots["qoder-cli"]...),
+				qoder.NewIDE(roots["qoder-ide"]...), qwen.New(roots["qwen-code"]...),
+				lingma.NewCLI(roots["tongyi-lingma-cli"]...), lingma.NewIDE(roots["tongyi-lingma-ide"]...),
+				copilot.New(roots["vscode-copilot"]...), workbuddy.New(roots["workbuddy"]...),
 			)
 		},
 		newCatalog: catalog.Detect,
@@ -245,12 +258,19 @@ type cliScanScope struct {
 }
 
 type cliScanSource struct {
-	Product     string `json:"product"`
-	DisplayName string `json:"display_name"`
-	State       string `json:"state"`
-	Enabled     bool   `json:"enabled"`
-	Selectable  bool   `json:"selectable"`
-	Detected    bool   `json:"detected"`
+	Product      string              `json:"product"`
+	DisplayName  string              `json:"display_name"`
+	State        string              `json:"state"`
+	Status       string              `json:"status"`
+	Code         string              `json:"code,omitempty"`
+	Supported    bool                `json:"supported"`
+	Enabled      bool                `json:"enabled"`
+	Selectable   bool                `json:"selectable"`
+	Detected     bool                `json:"detected"`
+	SessionCount int                 `json:"session_count"`
+	Verification source.Verification `json:"verification"`
+	Capabilities []source.Capability `json:"capabilities"`
+	Reason       string              `json:"reason,omitempty"`
 }
 
 type cliScanOutput struct {
@@ -297,15 +317,23 @@ func safeScanOutput(scan source.ScanResult, definitions []catalog.Definition, se
 			Status: status, Selectable: selectable,
 		})
 	}
+	sessionCounts := make(map[string]int, len(definitions))
+	for _, session := range scan.Sessions {
+		sessionCounts[session.Product]++
+	}
 	for _, definition := range definitions {
-		state := string(definition.Status)
-		if status, exists := scan.Sources[definition.Product]; exists && status.State == source.SourceFailed {
-			state = status.Error
+		var runtimeStatus *source.SourceStatus
+		if status, exists := scan.Sources[definition.Product]; exists {
+			statusCopy := status
+			runtimeStatus = &statusCopy
 		}
+		resolved := catalog.Resolve(definition, runtimeStatus, sessionCounts[definition.Product])
 		output.Sources = append(output.Sources, cliScanSource{
-			Product: definition.Product, DisplayName: definition.DisplayName, State: state,
-			Enabled: definition.Enabled, Selectable: definition.Supported && definition.Enabled,
-			Detected: definition.Detected,
+			Product: resolved.Product, DisplayName: resolved.DisplayName,
+			State: string(resolved.State), Status: string(resolved.State), Code: resolved.Code,
+			Supported: resolved.Supported, Enabled: resolved.Enabled, Selectable: resolved.Selectable,
+			Detected: resolved.Detected, SessionCount: resolved.SessionCount,
+			Verification: resolved.Verification, Capabilities: resolved.Capabilities, Reason: resolved.Reason,
 		})
 	}
 	return output, nil
