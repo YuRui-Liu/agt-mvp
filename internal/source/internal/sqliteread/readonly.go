@@ -18,6 +18,66 @@ import (
 var afterInitialValidation func()
 var afterSQLiteOpen func()
 
+type validatedFile struct {
+	file *os.File
+	info os.FileInfo
+}
+
+type validatedFileSet map[string]validatedFile
+
+func openValidatedFileSet(root, path string, maxBytes int64) (validatedFileSet, error) {
+	set := validatedFileSet{}
+	closeSet := func() {
+		for _, item := range set {
+			item.file.Close()
+		}
+	}
+	var total int64
+	for index, suffix := range []string{"", "-wal", "-shm"} {
+		file, err := safeopen.Open(root, path+suffix, maxBytes)
+		if err != nil {
+			if index != 0 && os.IsNotExist(err) {
+				continue
+			}
+			closeSet()
+			return nil, err
+		}
+		info, err := file.Stat()
+		if err != nil {
+			file.Close()
+			closeSet()
+			return nil, err
+		}
+		if info.Size() > maxBytes-total {
+			file.Close()
+			closeSet()
+			return nil, errors.New("sqliteread: database snapshot exceeds limit")
+		}
+		total += info.Size()
+		set[suffix] = validatedFile{file: file, info: info}
+	}
+	return set, nil
+}
+
+func (set validatedFileSet) close() {
+	for _, item := range set {
+		item.file.Close()
+	}
+}
+
+func sameValidatedFileSet(first, second validatedFileSet) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for suffix, original := range first {
+		current, ok := second[suffix]
+		if !ok || !os.SameFile(original.info, current.info) {
+			return false
+		}
+	}
+	return true
+}
+
 // ReadTx exposes only guarded query operations from the underlying SQLite
 // transaction. It deliberately provides no Exec, Commit, connection, or raw
 // transaction access.
@@ -47,15 +107,11 @@ func WithReadOnlyTx(ctx context.Context, root, path string, maxBytes int64, fn f
 	if fn == nil {
 		return errors.New("sqliteread: nil callback")
 	}
-	validated, err := safeopen.Open(root, path, maxBytes)
+	validated, err := openValidatedFileSet(root, path, maxBytes)
 	if err != nil {
 		return err
 	}
-	defer validated.Close()
-	validatedInfo, err := validated.Stat()
-	if err != nil {
-		return err
-	}
+	defer validated.close()
 	if afterInitialValidation != nil {
 		afterInitialValidation()
 	}
@@ -83,17 +139,13 @@ func WithReadOnlyTx(ctx context.Context, root, path string, maxBytes int64, fn f
 	if afterSQLiteOpen != nil {
 		afterSQLiteOpen()
 	}
-	current, err := safeopen.Open(root, path, maxBytes)
+	current, err := openValidatedFileSet(root, path, maxBytes)
 	if err != nil {
 		return err
 	}
-	currentInfo, err := current.Stat()
-	current.Close()
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(validatedInfo, currentInfo) {
-		return errors.New("sqliteread: database changed during open")
+	defer current.close()
+	if !sameValidatedFileSet(validated, current) {
+		return errors.New("sqliteread: database or sidecar changed during open")
 	}
 
 	if err := fn(&ReadTx{tx: tx}); err != nil {

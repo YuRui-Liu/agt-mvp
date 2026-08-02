@@ -19,6 +19,9 @@ func TestWithReadOnlyTxReadsCommittedWALAndRejectsWrites(t *testing.T) {
 	path := filepath.Join(root, "state #?%.sqlite")
 	writer := openWALDatabase(t, path)
 	defer writer.Close()
+	if info, err := os.Stat(path + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("non-empty WAL fixture required: info=%v err=%v", info, err)
+	}
 
 	err := WithReadOnlyTx(context.Background(), root, path, 1<<20, func(tx *ReadTx) error {
 		var value string
@@ -36,6 +39,100 @@ func TestWithReadOnlyTxReadsCommittedWALAndRejectsWrites(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWithReadOnlyTxRejectsAggregateSidecarLimit(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.sqlite")
+	writer := openWALDatabase(t, path)
+	defer writer.Close()
+	total := int64(0)
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += info.Size()
+	}
+	if err := WithReadOnlyTx(context.Background(), root, path, total-1, noOpTx); err == nil {
+		t.Fatal("aggregate database and sidecar limit bypassed")
+	}
+}
+
+func TestWithReadOnlyTxRejectsSymlinkedSidecars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		t.Run(suffix, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "state.sqlite")
+			writer := openWALDatabase(t, path)
+			writer.Close()
+			outside := filepath.Join(t.TempDir(), "sidecar")
+			if err := os.WriteFile(outside, []byte("synthetic"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path+suffix); err != nil {
+				t.Fatal(err)
+			}
+			if err := WithReadOnlyTx(context.Background(), root, path, 1<<20, noOpTx); err == nil {
+				t.Fatal("symlinked sidecar accepted")
+			}
+		})
+	}
+}
+
+func TestWithReadOnlyTxRejectsSidecarIdentityChanges(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deterministic sidecar replacement is Unix-only")
+	}
+	for _, change := range []string{"replace", "appear", "disappear"} {
+		t.Run(change, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "state.sqlite")
+			writer := openWALDatabase(t, path)
+			if change == "appear" {
+				writer.Close()
+			}
+			mutate := func() {
+				switch change {
+				case "replace":
+					data, err := os.ReadFile(path + "-wal")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Rename(path+"-wal", path+"-wal-old"); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path+"-wal", data, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "appear":
+					if err := os.WriteFile(path+"-wal", []byte{}, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "disappear":
+					if err := os.Remove(path + "-wal"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if change == "appear" {
+				afterSQLiteOpen = mutate
+			} else {
+				afterInitialValidation = mutate
+			}
+			defer func() {
+				afterInitialValidation = nil
+				afterSQLiteOpen = nil
+				writer.Close()
+			}()
+			if err := WithReadOnlyTx(context.Background(), root, path, 1<<20, noOpTx); err == nil {
+				t.Fatal("sidecar identity change accepted")
+			}
+		})
 	}
 }
 
