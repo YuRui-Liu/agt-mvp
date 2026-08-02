@@ -284,7 +284,7 @@ func TestCountsAndCapabilitiesComeOnlyFromFinalEvents(t *testing.T) {
 
 func TestStructuredPayloadFileURIsAreSanitizedRecursively(t *testing.T) {
 	manifest, _ := fixture(t)
-	messages := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"inspect","input":{"nested":["file:///synthetic/absolute","FILE://host/share","file:%2Fsynthetic%2Fopaque","file:C:%5Csynthetic%5Cwin","file:%5C%5Chost%5Cshare"],"file:///synthetic/key":"value","note":"ordinary text containing file:/relative","prose":"file: this is ordinary prose"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","name":"inspect","content":{"deep":{"file:%2Fsynthetic%2Fresult":"file://host/result"}},"is_error":false}]}]}`)
+	messages := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"inspect","input":{"nested":["file:///synthetic/absolute","FILE://host/share","file:%2Fsynthetic%2Fopaque","file:C:%5Csynthetic%5Cwin","file:%5C%5Chost%5Cshare","\\Users\\secret","file:%5CUsers%5Csecret","/home/secret"],"file:///synthetic/key":"value","\\Users\\secret":"rooted-key","note":"ordinary text containing file:/relative","prose":"file: this is ordinary prose"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","name":"inspect","content":{"deep":{"file:%2Fsynthetic%2Fresult":"file://host/result"}},"is_error":false}]}]}`)
 	root := t.TempDir()
 	installFixture(t, root, "session-alpha", manifest, messages)
 	a := New(root)
@@ -330,6 +330,37 @@ func TestStructuredPayloadSanitizedKeyCollisionFailsClosed(t *testing.T) {
 	redactedKey := "[redacted-path-key:" + digestPrefix(absKey, 16) + "]"
 	if _, ok := sanitizePayload(context.Background(), map[string]any{absKey: "one", redactedKey: "two"}); ok {
 		t.Fatal("sanitized key collision accepted")
+	}
+}
+
+func TestPlatformIndependentSingleSeparatorRootedPaths(t *testing.T) {
+	for _, value := range []string{`\Users\secret`, "/home/secret", `file:%5CUsers%5Csecret`, "file:///home/secret"} {
+		clean, ok := sanitizePayload(context.Background(), value)
+		if !ok || clean != "[redacted-path]" {
+			t.Fatalf("value %q sanitized as %#v ok=%v", value, clean, ok)
+		}
+	}
+	ordinary := "file:prose-about-local-history"
+	if clean, ok := sanitizePayload(context.Background(), ordinary); !ok || clean != ordinary {
+		t.Fatalf("ordinary prose sanitized as %#v ok=%v", clean, ok)
+	}
+	payload := map[string]any{
+		`\Users\secret`: "direct-key",
+		"nested":        []any{`\Users\secret`, "/home/secret", `file:%5CUsers%5Csecret`, "file:///home/secret"},
+	}
+	clean, ok := sanitizePayload(context.Background(), payload)
+	if !ok {
+		t.Fatal("nested rooted payload rejected")
+	}
+	adaptertest.AssertNoPrivateFields(t, map[string]any{"type": "tool_use", "input": clean})
+	first, _ := json.Marshal(clean)
+	secondRaw, ok := sanitizePayload(context.Background(), payload)
+	if !ok {
+		t.Fatal("repeat sanitization rejected")
+	}
+	second, _ := json.Marshal(secondRaw)
+	if !bytes.Equal(first, second) {
+		t.Fatal("rooted sanitization is not deterministic")
 	}
 }
 

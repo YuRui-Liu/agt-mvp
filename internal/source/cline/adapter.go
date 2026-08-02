@@ -730,7 +730,7 @@ func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
 }
 
 func isAbsoluteString(value string) bool {
-	if filepath.IsAbs(value) || uncPath(value) || windowsDrivePath(value) {
+	if rootedPath(value) {
 		return true
 	}
 	if len(value) < len("file:") || !strings.EqualFold(value[:len("file:")], "file:") {
@@ -745,11 +745,11 @@ func isAbsoluteString(value string) bool {
 		path = parsed.Opaque
 	}
 	decoded, err := url.PathUnescape(path)
-	return err != nil || filepath.IsAbs(decoded) || uncPath(decoded) || windowsDrivePath(decoded) || windowsDrivePath(strings.TrimPrefix(decoded, "/"))
+	return err != nil || rootedPath(decoded) || windowsDrivePath(strings.TrimPrefix(decoded, "/"))
 }
 
-func uncPath(value string) bool {
-	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//")
+func rootedPath(value string) bool {
+	return strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || windowsDrivePath(value)
 }
 
 func windowsDrivePath(value string) bool {
