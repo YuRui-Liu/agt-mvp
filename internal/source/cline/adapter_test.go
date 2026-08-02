@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -227,6 +228,108 @@ func TestToolResultRecordAtomicRollbackAndIgnoredOnlyNoSession(t *testing.T) {
 	ignoredSessions, err := ignoredAdapter.Discover(context.Background())
 	if err != nil || len(ignoredSessions) != 0 {
 		t.Fatalf("ignored sessions=%#v err=%v", ignoredSessions, err)
+	}
+}
+
+func TestCountsAndCapabilitiesComeOnlyFromFinalEvents(t *testing.T) {
+	manifest, _ := fixture(t)
+	cases := []struct {
+		name         string
+		messages     string
+		messageCount int
+		capabilities []source.Capability
+		eventTypes   []string
+	}{
+		{
+			name:         "reasoning-only",
+			messages:     `{"role":"assistant","content":[{"type":"thinking","thinking":"reason only"}]}`,
+			capabilities: []source.Capability{source.CapabilityReasoning}, eventTypes: []string{"reasoning"},
+		},
+		{
+			name: "tool-only",
+			messages: `{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"read_file","input":{}}]},` +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","name":"read_file","content":"ok","is_error":false}]}`,
+			capabilities: []source.Capability{source.CapabilityTools}, eventTypes: []string{"tool_use", "tool_result"},
+		},
+		{
+			name: "two-text-blocks-one-record", messageCount: 2,
+			messages:     `{"role":"assistant","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]}`,
+			capabilities: []source.Capability{source.CapabilityMessages}, eventTypes: []string{"message", "message"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapper := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[` + tc.messages + `]}`)
+			root := t.TempDir()
+			installFixture(t, root, "session-alpha", manifest, wrapper)
+			a := New(root)
+			got, err := a.Discover(context.Background())
+			if err != nil || len(got) != 1 {
+				t.Fatalf("sessions=%#v err=%v", got, err)
+			}
+			if got[0].MessageCount != tc.messageCount || !slices.Equal(got[0].Capabilities, tc.capabilities) {
+				t.Fatalf("session=%#v", got[0])
+			}
+			gotEvents := events(t, a, got[0])
+			var types []string
+			for _, event := range gotEvents {
+				types = append(types, event["type"].(string))
+			}
+			if !slices.Equal(types, tc.eventTypes) {
+				t.Fatalf("types=%#v", types)
+			}
+		})
+	}
+}
+
+func TestStructuredPayloadFileURIsAreSanitizedRecursively(t *testing.T) {
+	manifest, _ := fixture(t)
+	messages := []byte(`{"version":1,"updated_at":"2026-06-01T10:01:00Z","agent":"lead","sessionId":"session-alpha","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"inspect","input":{"nested":["file:///synthetic/absolute","FILE://host/share","file:%2Fsynthetic%2Fopaque","file:C:%5Csynthetic%5Cwin","file:%5C%5Chost%5Cshare"],"file:///synthetic/key":"value","note":"ordinary text containing file:/relative","prose":"file: this is ordinary prose"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","name":"inspect","content":{"deep":{"file:%2Fsynthetic%2Fresult":"file://host/result"}},"is_error":false}]}]}`)
+	root := t.TempDir()
+	installFixture(t, root, "session-alpha", manifest, messages)
+	a := New(root)
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("sessions=%#v err=%v", got, err)
+	}
+	gotEvents := events(t, a, got[0])
+	for _, event := range gotEvents {
+		adaptertest.AssertNoPrivateFields(t, event)
+	}
+	first, err := a.Open(context.Background(), got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBytes, err := io.ReadAll(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	second, err := a.Open(context.Background(), got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBytes, err := io.ReadAll(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Close()
+	if !bytes.Equal(firstBytes, secondBytes) {
+		t.Fatal("sanitization is not deterministic")
+	}
+	if strings.Contains(string(firstBytes), "ordinary text containing file:/relative") == false {
+		t.Fatal("ordinary file text was damaged")
+	}
+	if strings.Contains(string(firstBytes), "file: this is ordinary prose") == false {
+		t.Fatal("file-prefixed prose was damaged")
+	}
+}
+
+func TestStructuredPayloadSanitizedKeyCollisionFailsClosed(t *testing.T) {
+	absKey := "file:///synthetic/collision"
+	redactedKey := "[redacted-path-key:" + digestPrefix(absKey, 16) + "]"
+	if _, ok := sanitizePayload(context.Background(), map[string]any{absKey: "one", redactedKey: "two"}); ok {
+		t.Fatal("sanitized key collision accepted")
 	}
 }
 

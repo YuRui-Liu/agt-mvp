@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -475,7 +476,11 @@ func parseComposite(ctx context.Context, id string, manifestData, messagesData [
 			continue
 		}
 		result.events = append(result.events, record.events...)
-		result.messages++
+	}
+	for _, value := range result.events {
+		if value.Type == "message" {
+			result.messages++
+		}
 	}
 	return result, len(result.events) > 0
 }
@@ -573,9 +578,11 @@ func parseMessage(ctx context.Context, record messageRecord) ([]event, []toolTra
 			if input == nil {
 				input = map[string]any{}
 			}
-			if containsAbsolute(input) {
-				input = map[string]any{}
+			cleanInput, sanitized := sanitizePayload(ctx, input)
+			if !sanitized {
+				return nil, nil, false
 			}
+			input = cleanInput
 			out = append(out, event{Type: "tool_use", CallID: id, Name: name, Input: input})
 			transitions = append(transitions, toolTransition{use: true, id: id, name: name})
 		case "tool_result":
@@ -589,9 +596,11 @@ func parseMessage(ctx context.Context, record messageRecord) ([]event, []toolTra
 			if !safeToken(id, maxIDBytes) || !safeToken(name, 256) || !ok || !exists {
 				return nil, nil, false
 			}
-			if containsAbsolute(result) {
-				result = "[path omitted]"
+			cleanResult, sanitized := sanitizePayload(ctx, result)
+			if !sanitized {
+				return nil, nil, false
 			}
+			result = cleanResult
 			out = append(out, event{Type: "tool_result", CallID: id, Name: name, Result: result, IsError: &isError})
 			transitions = append(transitions, toolTransition{id: id, name: name})
 		default:
@@ -632,11 +641,15 @@ func safeLabel(value string) string {
 }
 
 func dynamicCapabilities(events []event) []source.Capability {
-	capabilities := []source.Capability{source.CapabilityMessages}
-	tools, reasoning := false, false
+	var capabilities []source.Capability
+	messages, tools, reasoning := false, false, false
 	for _, value := range events {
+		messages = messages || value.Type == "message"
 		tools = tools || value.Type == "tool_use" || value.Type == "tool_result"
 		reasoning = reasoning || value.Type == "reasoning"
+	}
+	if messages {
+		capabilities = append(capabilities, source.CapabilityMessages)
 	}
 	if tools {
 		capabilities = append(capabilities, source.CapabilityTools)
@@ -651,28 +664,96 @@ func safeToken(value string, limit int) bool {
 	return value != "" && len(value) <= limit && !strings.ContainsAny(value, "\x00\r\n")
 }
 
-func containsAbsolute(value any) bool {
-	switch typed := value.(type) {
-	case string:
-		return absoluteString(typed)
-	case []any:
-		for _, child := range typed {
-			if containsAbsolute(child) {
-				return true
-			}
-		}
-	case map[string]any:
-		for key, child := range typed {
-			if absoluteString(key) || containsAbsolute(child) {
-				return true
-			}
-		}
-	}
-	return false
+type traversalGuard struct {
+	ctx       context.Context
+	remaining int
 }
 
-func absoluteString(value string) bool {
-	return filepath.IsAbs(value) || strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`) || (len(value) > 2 && value[1] == ':' && (value[2] == '/' || value[2] == '\\'))
+func (g *traversalGuard) allowed() bool {
+	g.remaining--
+	if g.remaining > 0 {
+		return true
+	}
+	g.remaining = 64
+	return g.ctx.Err() == nil
+}
+
+func sanitizePayload(ctx context.Context, value any) (any, bool) {
+	return sanitizePayloadGuarded(&traversalGuard{ctx: ctx, remaining: 1}, value)
+}
+
+func sanitizePayloadGuarded(guard *traversalGuard, value any) (any, bool) {
+	if !guard.allowed() {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case string:
+		if isAbsoluteString(typed) {
+			return "[redacted-path]", true
+		}
+		return typed, true
+	case []any:
+		out := make([]any, len(typed))
+		for index := range typed {
+			clean, ok := sanitizePayloadGuarded(guard, typed[index])
+			if !ok {
+				return nil, false
+			}
+			out[index] = clean
+		}
+		return out, true
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, original := range keys {
+			key := original
+			if isAbsoluteString(key) {
+				key = "[redacted-path-key:" + digestPrefix(original, 16) + "]"
+			}
+			if _, exists := out[key]; exists {
+				return nil, false
+			}
+			clean, ok := sanitizePayloadGuarded(guard, typed[original])
+			if !ok {
+				return nil, false
+			}
+			out[key] = clean
+		}
+		return out, true
+	default:
+		return value, true
+	}
+}
+
+func isAbsoluteString(value string) bool {
+	if filepath.IsAbs(value) || uncPath(value) || windowsDrivePath(value) {
+		return true
+	}
+	if len(value) < len("file:") || !strings.EqualFold(value[:len("file:")], "file:") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host != "" {
+		return true
+	}
+	path := parsed.Path
+	if path == "" {
+		path = parsed.Opaque
+	}
+	decoded, err := url.PathUnescape(path)
+	return err != nil || filepath.IsAbs(decoded) || uncPath(decoded) || windowsDrivePath(decoded) || windowsDrivePath(strings.TrimPrefix(decoded, "/"))
+}
+
+func uncPath(value string) bool {
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//")
+}
+
+func windowsDrivePath(value string) bool {
+	return len(value) > 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
 }
 
 func identityString(value safeopen.Identity) string {

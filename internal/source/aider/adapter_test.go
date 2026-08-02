@@ -184,6 +184,57 @@ func TestSnapshotIDsAreExactRawSegmentDigests(t *testing.T) {
 	}
 }
 
+func aggregateHistory(segmentCount, eventsPerSegment int) []byte {
+	var body strings.Builder
+	for segmentIndex := 0; segmentIndex < segmentCount; segmentIndex++ {
+		fmt.Fprintf(&body, "# aider chat started at 2026-06-%02d 10:%02d:00\n", 1+segmentIndex/60, segmentIndex%60)
+		for eventIndex := 0; eventIndex < eventsPerSegment; eventIndex++ {
+			if eventIndex%2 == 0 {
+				fmt.Fprintf(&body, "#### user-%d-%d\n", segmentIndex, eventIndex)
+			} else {
+				fmt.Fprintf(&body, "assistant-%d-%d\n", segmentIndex, eventIndex)
+			}
+		}
+	}
+	return []byte(body.String())
+}
+
+func TestAggregateEventLimitFailsWholePhysicalSourceAndClearsAuth(t *testing.T) {
+	root := t.TempDir()
+	path := installHistory(t, root, aggregateHistory(2, 4))
+	a := New(root)
+	initial, err := a.Discover(context.Background())
+	if err != nil || len(initial) != 2 {
+		t.Fatalf("sessions=%#v err=%v", initial, err)
+	}
+	for _, session := range initial {
+		if len(aiderEvents(t, a, session)) != 4 {
+			t.Fatalf("session events=%#v", session)
+		}
+	}
+	overLimit := aggregateHistory(512, maxEvents/512+2)
+	if len(overLimit) >= maxFileBytes {
+		t.Fatalf("test input unexpectedly too large: %d", len(overLimit))
+	}
+	if err := os.WriteFile(path, overLimit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Discover(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("sessions=%d err=%v", len(got), err)
+	}
+	a.mu.RLock()
+	known := len(a.known)
+	a.mu.RUnlock()
+	if known != 0 {
+		t.Fatalf("oversized source installed %d authorizations", known)
+	}
+	if r, err := a.Open(context.Background(), initial[0]); err == nil {
+		r.Close()
+		t.Fatal("stale authorization survived aggregate limit")
+	}
+}
+
 func TestAppendAndTailSnapshotSemantics(t *testing.T) {
 	first := []byte("# aider chat started at 2026-06-01 10:00:00\n#### one\nanswer\n")
 	second := []byte("# aider chat started at 2026-06-01 11:00:00\n#### two\nanswer\n")

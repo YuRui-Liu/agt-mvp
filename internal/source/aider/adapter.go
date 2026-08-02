@@ -314,6 +314,7 @@ func parseSegments(ctx context.Context, data []byte) ([]segment, bool) {
 		offset = end
 	}
 	segments := make([]segment, 0, len(markers))
+	totalEvents := 0
 	for index, marker := range markers {
 		if ctx.Err() != nil {
 			return nil, false
@@ -325,6 +326,10 @@ func parseSegments(ctx context.Context, data []byte) ([]segment, bool) {
 		raw := data[marker.start:end]
 		events, ok := parseSegmentEvents(ctx, raw)
 		if !ok {
+			return nil, false
+		}
+		totalEvents += len(events)
+		if totalEvents > maxEvents {
 			return nil, false
 		}
 		segments = append(segments, segment{index: index, ordinal: marker.ordinal, marker: marker.text, started: marker.started, raw: raw, events: events})
