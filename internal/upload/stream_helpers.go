@@ -166,15 +166,21 @@ func markCorrelatedReadResults(events []map[string]any) int {
 	}
 	taintedIDs := make(map[string]bool)
 	for _, result := range results {
-		call, matchedID := nearestCall(callsByID, result)
-		if call == nil {
+		matches := nearestCalls(callsByID, result)
+		if len(matches) == 0 {
 			continue
 		}
-		if !call.read && !taintedIDs[matchedID] && hasUnresolvedReadBefore(callsByID[matchedID], call.order) {
-			taintedIDs[matchedID] = true
+		omit := false
+		for _, match := range matches {
+			if !match.call.read && !taintedIDs[match.id] && hasUnresolvedReadBefore(callsByID[match.id], match.call.order) {
+				taintedIDs[match.id] = true
+			}
+			match.call.resolved = true
+			if match.call.read || taintedIDs[match.id] {
+				omit = true
+			}
 		}
-		call.resolved = true
-		if !call.read && !taintedIDs[matchedID] {
+		if !omit {
 			continue
 		}
 		for key, current := range result.value {
@@ -200,9 +206,13 @@ func hasUnresolvedReadBefore(calls []*toolCallOccurrence, before int) bool {
 	return false
 }
 
-func nearestCall(callsByID map[string][]*toolCallOccurrence, result toolResultOccurrence) (*toolCallOccurrence, string) {
-	var preceding, following *toolCallOccurrence
-	precedingID, followingID := "", ""
+type matchedToolCall struct {
+	call *toolCallOccurrence
+	id   string
+}
+
+func nearestCalls(callsByID map[string][]*toolCallOccurrence, result toolResultOccurrence) []matchedToolCall {
+	matches := make([]matchedToolCall, 0, len(result.ids))
 	for _, id := range result.ids {
 		calls := callsByID[id]
 		if len(calls) == 0 {
@@ -210,22 +220,12 @@ func nearestCall(callsByID map[string][]*toolCallOccurrence, result toolResultOc
 		}
 		index := sort.Search(len(calls), func(index int) bool { return calls[index].order >= result.order })
 		if index > 0 {
-			call := calls[index-1]
-			if preceding == nil || call.order > preceding.order {
-				preceding, precedingID = call, id
-			}
-		}
-		if index < len(calls) {
-			call := calls[index]
-			if following == nil || call.order < following.order {
-				following, followingID = call, id
-			}
+			matches = append(matches, matchedToolCall{call: calls[index-1], id: id})
+		} else if index < len(calls) {
+			matches = append(matches, matchedToolCall{call: calls[index], id: id})
 		}
 	}
-	if preceding != nil {
-		return preceding, precedingID
-	}
-	return following, followingID
+	return matches
 }
 
 func isToolCallShape(value map[string]any) bool {

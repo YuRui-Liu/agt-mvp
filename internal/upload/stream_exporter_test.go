@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,6 +234,27 @@ func TestBuildScopeReadCallWithMultipleIDsCannotHideResultAssociation(t *testing
 	}
 }
 
+func TestBuildScopeAnyReadAssociationMakesConflictingResultFailClosed(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","call_id":"read-1","name":"Read"}`,
+			`{"type":"tool_use","call_id":"write-1","name":"apply_patch"}`,
+			`{"type":"tool_result","tool_call_id":"read-1","tool_use_id":"write-1","content":"PRIVATE CONFLICTING RESULT"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "PRIVATE CONFLICTING RESULT") || !strings.Contains(body, omittedFileContent) {
+		t.Fatalf("Read association lost to nearer non-Read ID: %s", body)
+	}
+}
+
 func TestBuildScopeCorrelatesOutOfOrderReadResultAndIsolatesReusedIDs(t *testing.T) {
 	scope := testScope()
 	scope.Sessions = scope.Sessions[:1]
@@ -381,7 +403,18 @@ func TestBuildScopeFailureDestroysPartialPackageWhenRemovalIsBlocked(t *testing.
 	}
 	exporter := NewStreamExporter(opener, Client{}, Limits{})
 	exporter.tempDir = tempDir
-	exporter.remove = func(string) error { return errors.New("simulated sharing violation") }
+	var backing *os.File
+	exporter.newBacking = func(dir string) (*os.File, func() error, error) {
+		file, createErr := os.CreateTemp(dir, ".kuai-upload-test-*.json")
+		backing = file
+		return file, func() error { return errors.New("simulated cleanup failure") }, createErr
+	}
+	t.Cleanup(func() {
+		if backing != nil {
+			_ = backing.Close()
+			_ = os.Remove(backing.Name())
+		}
+	})
 	artifact, err := exporter.BuildScope(context.Background(), testScope())
 	if err == nil || artifact != nil {
 		t.Fatalf("artifact=%v err=%v", artifact, err)
@@ -606,6 +639,9 @@ func TestArtifactConcurrentOpenCallsReturnIndependentReaders(t *testing.T) {
 }
 
 func TestArtifactOpenUsesBuiltFileWhenPathIsReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows backing uses delete-on-close in a private directory")
+	}
 	artifact, err := NewStreamExporter(&fakeSessionOpener{data: map[string]string{
 		"codex:2":       `{"message":"ORIGINAL"}` + "\n",
 		"claude-code:1": `{"message":"ORIGINAL"}` + "\n",
@@ -613,12 +649,11 @@ func TestArtifactOpenUsesBuiltFileWhenPathIsReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := artifact.path
-	replacement := path + ".replacement"
-	if err := os.WriteFile(replacement, []byte(`{"message":"REPLACEMENT"}`), 0o600); err != nil {
-		t.Fatal(err)
+	path := artifact.file.Name()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Unix artifact backing still has a directory entry: %v", err)
 	}
-	if err := os.Rename(replacement, path); err != nil {
+	if err := os.WriteFile(path, []byte(`{"message":"REPLACEMENT"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Remove(path) })
@@ -626,18 +661,12 @@ func TestArtifactOpenUsesBuiltFileWhenPathIsReplaced(t *testing.T) {
 	if !strings.Contains(body, "ORIGINAL") || strings.Contains(body, "REPLACEMENT") {
 		t.Fatalf("artifact followed replaced path: %s", body)
 	}
-	if err := artifact.Remove(); err == nil {
-		t.Fatal("artifact removal deleted a replacement path")
+	if err := artifact.Remove(); err != nil {
+		t.Fatal(err)
 	}
 	replacementBody, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(replacementBody), "REPLACEMENT") {
 		t.Fatalf("replacement path was altered: body=%q err=%v", replacementBody, err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := artifact.Remove(); err != nil {
-		t.Fatalf("artifact could not close bound file after replacement removal: %v", err)
 	}
 }
 
@@ -674,13 +703,13 @@ func TestArtifactConcurrentOpenWaitsForRemoveState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	realRemove := artifact.remove
+	realCleanup := artifact.cleanup
 	removeEntered := make(chan struct{})
 	allowRemove := make(chan struct{})
-	artifact.remove = func(path string) error {
+	artifact.cleanup = func() error {
 		close(removeEntered)
 		<-allowRemove
-		return realRemove(path)
+		return realCleanup()
 	}
 	removeDone := make(chan error, 1)
 	go func() { removeDone <- artifact.Remove() }()
@@ -728,7 +757,7 @@ func TestArtifactConcurrentRemoveIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestArtifactFailedRemoveKeepsPathForRetryWithoutLeakingIt(t *testing.T) {
+func TestArtifactFailedRemoveKeepsBackingForRetryWithoutLeakingIt(t *testing.T) {
 	artifact, err := NewStreamExporter(&fakeSessionOpener{data: map[string]string{
 		"codex:2":       "{}\n",
 		"claude-code:1": "{}\n",
@@ -736,13 +765,13 @@ func TestArtifactFailedRemoveKeepsPathForRetryWithoutLeakingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	realRemove := artifact.remove
+	realCleanup := artifact.cleanup
 	var calls atomic.Int32
-	artifact.remove = func(path string) error {
+	artifact.cleanup = func() error {
 		if calls.Add(1) == 1 {
-			return errors.New("busy: " + path)
+			return errors.New("busy")
 		}
-		return realRemove(path)
+		return realCleanup()
 	}
 	if err := artifact.Remove(); err == nil || strings.Contains(err.Error(), ".kuai-upload") {
 		t.Fatalf("first Remove err=%v", err)

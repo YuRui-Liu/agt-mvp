@@ -24,21 +24,21 @@ type SessionOpener interface {
 }
 
 type StreamExporter struct {
-	opener  SessionOpener
-	client  Client
-	limits  Limits
-	now     func() time.Time
-	tempDir string
-	remove  func(string) error
+	opener     SessionOpener
+	client     Client
+	limits     Limits
+	now        func() time.Time
+	tempDir    string
+	newBacking func(string) (*os.File, func() error, error)
 }
 
 func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *StreamExporter {
 	return &StreamExporter{
-		opener: opener,
-		client: client,
-		limits: withDefaultLimits(limits),
-		now:    time.Now,
-		remove: os.Remove,
+		opener:     opener,
+		client:     client,
+		limits:     withDefaultLimits(limits),
+		now:        time.Now,
+		newBacking: createArtifactBacking,
 	}
 }
 
@@ -50,11 +50,10 @@ func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *Stre
 // safe error and retains the artifact for retry.
 type Artifact struct {
 	mu            sync.Mutex
-	path          string
 	file          *os.File
+	cleanup       func() error
 	readers       int
-	removed       bool
-	remove        func(string) error
+	removePending bool
 	Digest        string
 	Bytes         int64
 	SessionCount  int
@@ -67,7 +66,7 @@ func (a *Artifact) Open() (io.ReadCloser, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.file == nil {
+	if a.removePending || a.file == nil {
 		return nil, errors.New("upload: artifact unavailable")
 	}
 	a.readers++
@@ -81,6 +80,7 @@ type artifactReader struct {
 	io.Reader
 	artifact *Artifact
 	once     sync.Once
+	closeErr error
 }
 
 func (r *artifactReader) Close() error {
@@ -93,11 +93,14 @@ func (r *artifactReader) Close() error {
 		if r.artifact.readers > 0 {
 			r.artifact.readers--
 		}
-		if r.artifact.removed && r.artifact.readers == 0 {
-			r.artifact.closeFileLocked()
+		if r.artifact.removePending && r.artifact.readers == 0 {
+			if err := r.artifact.closeFileLocked(); err != nil {
+				r.artifact.removePending = false
+				r.closeErr = errors.New("upload: artifact removal failed")
+			}
 		}
 	})
-	return nil
+	return r.closeErr
 }
 
 func (a *Artifact) Remove() error {
@@ -106,42 +109,34 @@ func (a *Artifact) Remove() error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.file == nil {
+	if a.file == nil {
 		return nil
 	}
-	fileInfo, statErr := a.file.Stat()
-	if statErr != nil {
+	a.removePending = true
+	if a.readers != 0 {
+		return nil
+	}
+	if err := a.closeFileLocked(); err != nil {
+		a.removePending = false
 		return errors.New("upload: artifact removal failed")
-	}
-	pathInfo, pathErr := os.Lstat(a.path)
-	if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
-		return errors.New("upload: artifact removal failed")
-	}
-	if pathErr == nil && !os.SameFile(fileInfo, pathInfo) {
-		return errors.New("upload: artifact removal failed")
-	}
-	remove := a.remove
-	if remove == nil {
-		remove = os.Remove
-	}
-	if pathErr == nil {
-		if err := remove(a.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return errors.New("upload: artifact removal failed")
-		}
-	}
-	a.path = ""
-	a.removed = true
-	if a.readers == 0 {
-		a.closeFileLocked()
 	}
 	return nil
 }
 
-func (a *Artifact) closeFileLocked() {
-	if a.file != nil {
-		_ = a.file.Close()
-		a.file = nil
+func (a *Artifact) closeFileLocked() error {
+	if a.file == nil {
+		return nil
 	}
+	cleanup := a.cleanup
+	if cleanup == nil {
+		cleanup = a.file.Close
+	}
+	if err := cleanup(); err != nil {
+		return err
+	}
+	a.file = nil
+	a.cleanup = nil
+	return nil
 }
 
 // BuildScope reads and redacts one session at a time. Only a single bounded
@@ -154,16 +149,15 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	file, err := os.CreateTemp(e.tempDir, ".kuai-upload-*.json")
+	newBacking := e.newBacking
+	if newBacking == nil {
+		newBacking = createArtifactBacking
+	}
+	file, cleanup, err := newBacking(e.tempDir)
 	if err != nil {
 		return nil, errors.New("upload: temporary package unavailable")
 	}
-	path := file.Name()
 	keep := false
-	remove := e.remove
-	if remove == nil {
-		remove = os.Remove
-	}
 	defer func() {
 		if keep {
 			return
@@ -173,9 +167,8 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 		// error and never return an Artifact.
 		truncateErr := file.Truncate(0)
 		syncErr := file.Sync()
-		_ = file.Close()
-		removeErr := remove(path)
-		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && (truncateErr != nil || syncErr != nil) {
+		cleanupErr := cleanup()
+		if cleanupErr != nil && (truncateErr != nil || syncErr != nil) {
 			returnErr = errors.New("upload: failed export cleanup incomplete")
 		}
 	}()
@@ -304,9 +297,8 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 	}
 	keep = true
 	return &Artifact{
-		path:          path,
 		file:          file,
-		remove:        os.Remove,
+		cleanup:       cleanup,
 		Digest:        digestHex(sum),
 		Bytes:         writer.written,
 		SessionCount:  len(scope.Sessions),
