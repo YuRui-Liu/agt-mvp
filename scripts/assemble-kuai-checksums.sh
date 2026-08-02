@@ -9,6 +9,10 @@ output=${2:-$fragments/SHA256SUMS}
   echo "kuai: release inputs must be in a real directory" >&2
   exit 1
 }
+command -v python3 >/dev/null 2>&1 || {
+  echo "kuai: python3 is required for atomic checksum publication" >&2
+  exit 1
+}
 input_dir=$(CDPATH= cd -- "$fragments" && pwd -P)
 output_dir=$(dirname -- "$output")
 [ -d "$output_dir" ] && [ ! -L "$output_dir" ] || {
@@ -103,9 +107,22 @@ entry_count=$(find "$input_dir" -mindepth 1 -maxdepth 1 ! -name "$manifest_name"
   echo "kuai: release input directory changed during assembly" >&2
   exit 1
 }
-# A same-directory hard link creates SHA256SUMS only if the name is absent.
-# A concurrent file, directory, or symlink makes ln fail without overwriting it.
-ln "$manifest" "$output"
+case "${KUAI_CHECKSUM_TEST_LINK_RACE:-}" in
+  '') ;;
+  directory) mkdir "$output" ;;
+  symlink)
+    : "${KUAI_CHECKSUM_TEST_RACE_TARGET:?missing test race target}"
+    ln -s "$KUAI_CHECKSUM_TEST_RACE_TARGET" "$output"
+    ;;
+  *) echo "kuai: invalid checksum link race test value" >&2; exit 1 ;;
+esac
+
+if ! KUAI_LINK_SOURCE="$manifest" KUAI_LINK_TARGET="$output" \
+  python3 -c 'import os; os.link(os.environ["KUAI_LINK_SOURCE"], os.environ["KUAI_LINK_TARGET"], follow_symlinks=False)'
+then
+  echo "kuai: atomic SHA256SUMS creation failed" >&2
+  exit 1
+fi
 rm -f "$manifest"
 manifest=
 trap - EXIT HUP INT TERM

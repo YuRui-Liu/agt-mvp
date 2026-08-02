@@ -189,6 +189,8 @@ class DocumentationTests(unittest.TestCase):
             "不可变 pair 目录",
             "精确 12 个条目",
             "硬链接",
+            "Python 3",
+            "O_EXCL",
         ):
             self.assertIn(phrase, self.readme)
         self.assertNotIn("APPLE_APP_SPECIFIC_PASSWORD", self.readme)

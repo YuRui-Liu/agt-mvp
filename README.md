@@ -168,7 +168,7 @@ go version -m ./dist/kuai-darwin-arm64
 | Linux ARM | Linux ARM64 物理机池 | `kuai-linux-arm64` | 无需签名 |
 | Linux x64 | Linux x64 物理机池 | `kuai-linux-amd64` | 无需签名 |
 
-`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在 `dist/targets` 下的隔离 staging 中生成和签名，再把二进制与 `.sha256` 作为一个不可变 pair 目录首次原子发布到 `dist/targets/<artifact>/`。目标名称已经存在时，无论是文件、目录还是 symlink 都立即失败，流水线不覆盖或替换已发布 pair。
+`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在 `dist/targets` 下的隔离 staging 中生成和签名，发布前以 POSIX noclobber/O_EXCL 原子取得 per-target 锁，在锁内重查目标不存在后，再把二进制与 `.sha256` 作为一个不可变 pair 目录首次原子发布到 `dist/targets/<artifact>/`。目标或锁已经存在时均失败；trap 只删除本进程成功取得的锁。
 
 本地可模拟天琴环境变量验证：
 
@@ -182,7 +182,7 @@ UPLOAD_PLATFORM=darwin UPLOAD_ARCH=arm64 UPLOAD_PACKAGE_VERSION=1.0.0 \
 
 正式 Windows 流水线使用 `true false`，并通过非空的 `WINDOWS_SIGNING_PUBLISHER` 指定期望的完整 leaf `SignerCertificate.Subject`，例如 `CN=Qrite Technology Limited`。远程签名下载完成后先通过 `signtool verify /pa /all /v`，再由 PowerShell 结构化读取 leaf subject；规范化空白后必须与期望值精确相等，时间戳证书或证书链中的文本不能代替 leaf 匹配。签名服务的未知状态立即失败。Linux 流水线显式使用 `false false`。签名后不得再修改二进制字节，否则签名失效。
 
-每条流水线产出自己的 `dist/targets/<artifact>/` pair 目录。发布汇总任务从六条流水线收集 pair 内容到一个全新的真实扁平目录，例如 `release-inputs`，再生成 `install.sh` 所需的唯一 `SHA256SUMS`。输入目录必须精确 12 个条目：六个规范分片和对应六个普通、非 symlink 产物，不允许 notes、额外 artifact、子目录或既有 `SHA256SUMS`。汇总脚本重新计算六个产物的 SHA-256 并与分片精确匹配，最后通过同目录硬链接原子创建此前不存在的 `SHA256SUMS`；并发出现的文件、目录或 symlink 会使创建失败且不会被覆盖：
+每条流水线产出自己的 `dist/targets/<artifact>/` pair 目录。发布汇总任务从六条流水线收集 pair 内容到一个全新的真实扁平目录，例如 `release-inputs`，并要求汇总机提供 Python 3，再生成 `install.sh` 所需的唯一 `SHA256SUMS`。输入目录必须精确 12 个条目：六个规范分片和对应六个普通、非 symlink 产物，不允许 notes、额外 artifact、子目录或既有 `SHA256SUMS`。汇总脚本重新计算六个产物的 SHA-256 并与分片精确匹配，最后由 Python `os.link(..., follow_symlinks=False)` 直接调用硬链接（link(2)）原子创建此前不存在的 `SHA256SUMS`；并发出现的文件、目录或 symlink 会返回 `EEXIST`，不会被当作目录跟随或覆盖：
 
 ```bash
 ./scripts/assemble-kuai-checksums.sh ./release-inputs ./release-inputs/SHA256SUMS

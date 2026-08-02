@@ -5,17 +5,6 @@ SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/kuai-checksums-test.XXXXXX")
 trap 'rm -rf "$TEST_ROOT"' EXIT HUP INT TERM
 mkdir -p "$TEST_ROOT/fragments"
-mkdir "$TEST_ROOT/fakebin"
-cat >"$TEST_ROOT/fakebin/ln" <<'EOF'
-#!/bin/sh
-if [ "${FAKE_LINK_RACE:-}" = directory ]; then
-  mkdir "$2"
-  exit 75
-fi
-exec /bin/ln "$@"
-EOF
-chmod +x "$TEST_ROOT/fakebin/ln"
-export PATH="$TEST_ROOT/fakebin:/usr/bin:/bin"
 
 artifacts='kuai-darwin-amd64 kuai-darwin-arm64 kuai-linux-amd64 kuai-linux-arm64 kuai-windows-amd64.exe kuai-windows-arm64.exe'
 i=1
@@ -99,12 +88,25 @@ ln -s "$TEST_ROOT/external-manifest" "$TEST_ROOT/fragments/SHA256SUMS"
 assert_rejected "symlinked checksum output"
 rm "$TEST_ROOT/fragments/SHA256SUMS"
 
-FAKE_LINK_RACE=directory \
+KUAI_CHECKSUM_TEST_LINK_RACE=directory \
   "$SOURCE_ROOT/scripts/assemble-kuai-checksums.sh" \
   "$TEST_ROOT/fragments" "$TEST_ROOT/fragments/SHA256SUMS" >/dev/null 2>&1 && {
   echo "checksum output race unexpectedly succeeded" >&2
   exit 1
 }
 [ -d "$TEST_ROOT/fragments/SHA256SUMS" ]
+[ -z "$(find "$TEST_ROOT/fragments/SHA256SUMS" -mindepth 1 -print)" ]
+rmdir "$TEST_ROOT/fragments/SHA256SUMS"
+
+mkdir "$TEST_ROOT/race-target"
+KUAI_CHECKSUM_TEST_LINK_RACE=symlink \
+KUAI_CHECKSUM_TEST_RACE_TARGET="$TEST_ROOT/race-target" \
+  "$SOURCE_ROOT/scripts/assemble-kuai-checksums.sh" \
+  "$TEST_ROOT/fragments" "$TEST_ROOT/fragments/SHA256SUMS" >/dev/null 2>&1 && {
+  echo "symlink checksum output race unexpectedly succeeded" >&2
+  exit 1
+}
+[ -L "$TEST_ROOT/fragments/SHA256SUMS" ]
+[ -z "$(find "$TEST_ROOT/race-target" -mindepth 1 -print)" ]
 
 echo "checksum assembly tests passed"

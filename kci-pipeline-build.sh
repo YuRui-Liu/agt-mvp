@@ -78,8 +78,11 @@ target_dir="$targets/$artifact_name"
   exit 1
 }
 stage=$(mktemp -d "$targets/.$artifact_name.stage.XXXXXX")
+lock="$targets/.$artifact_name.lock"
+lock_acquired=0
 cleanup() {
   [ -z "$stage" ] || rm -rf "$stage"
+  [ "$lock_acquired" -eq 0 ] || rm -f "$lock"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -240,6 +243,12 @@ if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -L "$targets" ] || [ ! -d "$targets" 
   exit 1
 fi
 
+if (set -C; : >"$lock") 2>/dev/null; then
+  lock_acquired=1
+else
+  echo "kuai: another publication owns the target lock" >&2
+  exit 1
+fi
 [ ! -e "$target_dir" ] && [ ! -L "$target_dir" ] || {
   echo "kuai: immutable target pair already exists" >&2
   exit 1

@@ -22,6 +22,7 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s/%s|CGO=%s|%s\n' "$GOOS" "$GOARCH" "$CGO_ENABLED" "$args" >>"$FAKE_GO_LOG"
 printf 'kuai %s/%s\n' "$GOOS" "$GOARCH" >"$output"
+[ -z "${FAKE_BUILD_DELAY:-}" ] || sleep "$FAKE_BUILD_DELAY"
 EOF
 chmod +x "$TEST_ROOT/fakebin/go"
 
@@ -199,7 +200,22 @@ run_kci linux amd64 >/dev/null 2>&1 && {
 }
 rm -rf "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64"
 
-run_kci linux amd64 >/dev/null
+assert_one_concurrent_winner() {
+  platform=$1 architecture=$2 artifact=$3
+  FAKE_BUILD_DELAY=1 run_kci "$platform" "$architecture" >/dev/null 2>&1 & first_pid=$!
+  FAKE_BUILD_DELAY=1 run_kci "$platform" "$architecture" >/dev/null 2>&1 & second_pid=$!
+  successes=0
+  if wait "$first_pid"; then successes=$((successes + 1)); fi
+  if wait "$second_pid"; then successes=$((successes + 1)); fi
+  [ "$successes" -eq 1 ]
+  pair="$TEST_ROOT/repo/dist/targets/$artifact"
+  [ "$(find "$pair" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" -eq 2 ]
+  [ -z "$(find "$pair" -name '*.stage.*' -print)" ]
+  [ ! -e "$TEST_ROOT/repo/dist/targets/.$artifact.lock" ]
+}
+
+assert_one_concurrent_winner linux amd64 kuai-linux-amd64
+assert_one_concurrent_winner linux arm64 kuai-linux-arm64
 old_artifact=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64")
 old_checksum=$(cat "$TEST_ROOT/repo/dist/targets/kuai-linux-amd64/kuai-linux-amd64.sha256")
 run_kci linux amd64 >/dev/null 2>&1 && {
