@@ -47,7 +47,7 @@ npm registry
   → Node launcher 检测 process.platform/process.arch
   → require.resolve 定位唯一平台包
   → shell:false 启动内部原生 kuai
-  → 原样传递参数、stdio、退出码和信号
+  → 按平台约定传递参数、stdio、退出码和终止事件
 
 用户执行 kuai skill install
   → 原生 kuai 读取内嵌的 canonical SKILL.md
@@ -94,6 +94,28 @@ LICENSE
 
 平台包只包含 manifest、一个内部二进制、README 和 LICENSE，不声明 npm `bin`，因此不会与主包争抢 `kuai` 命令。内部文件使用不会进入 PATH 的稳定名称，例如 macOS 的 `bin/kuai-native` 和 Windows 的 `bin/kuai-native.exe`。
 
+每个平台包必须通过 manifest 暴露稳定子路径。macOS 包使用：
+
+```json
+{
+  "exports": {
+    "./binary": "./bin/kuai-native"
+  }
+}
+```
+
+Windows 包使用：
+
+```json
+{
+  "exports": {
+    "./binary": "./bin/kuai-native.exe"
+  }
+}
+```
+
+Launcher 只通过 `require.resolve("<platform-package>/binary")` 获取路径，不加载该文件为 JavaScript，也不依赖平台包的 `main`。
+
 npm 使用 `win32`/`x64`，Go 构建使用 `windows`/`amd64`。打包脚本必须维护显式映射，禁止通过字符串替换猜测。
 
 ### 4.3 Launcher
@@ -103,8 +125,10 @@ npm 使用 `win32`/`x64`，Go 构建使用 `windows`/`amd64`。打包脚本必�
 1. 根据 `process.platform` 和 `process.arch` 选择准确的平台包。
 2. 使用 `require.resolve` 定位平台包导出的二进制路径，不手工拼接 `node_modules`。
 3. 校验主包与平台包版本完全一致。
-4. 使用 `shell: false`、继承 stdio 的子进程启动原生 CLI。
-5. 原样传递用户参数、退出码和终止信号。
+4. 使用 `shell: false`、继承 stdio 的异步子进程启动原生 CLI。
+5. 原样传递用户参数，并按平台规则处理退出与终止。
+
+POSIX 下，Launcher 将收到的 `SIGINT`、`SIGTERM` 和 `SIGHUP` 至多转发一次；子进程正常退出时返回其退出码，被信号终止时返回 `128 + signal number`。Windows 下，Launcher 与子进程共享控制台，不模拟 POSIX 信号；Ctrl-C 由控制台机制送达进程，子进程正常退出时返回其数值退出码。Launcher 自身的平台不支持、依赖缺失、版本错配或 spawn 失败统一返回 1，并将诊断写入 stderr。
 
 Apple Silicon 上运行 x64 Node 时选择 x64 包；Windows ARM 上运行 x64 Node 时也选择 x64 包。这与当前 Node 进程的实际执行架构一致。
 
@@ -133,10 +157,10 @@ internal/skillasset/kuai/SKILL.md
 原生 CLI 增加以下命令：
 
 ```text
-kuai skill install --target agents|claude|all
-kuai skill status --target agents|claude|all
-kuai skill upgrade --target agents|claude|all
-kuai skill uninstall --target agents|claude|all
+kuai skill install --target agents|claude|all|custom
+kuai skill status --target agents|claude|all|custom
+kuai skill upgrade --target agents|claude|all|custom
+kuai skill uninstall --target agents|claude|all|custom
 ```
 
 公共选项包括：
@@ -148,7 +172,7 @@ kuai skill uninstall --target agents|claude|all
 --allow-downgrade
 ```
 
-`--root` 只允许与单个 target 一起使用，且必须是绝对路径。无 TTY 和自动化环境使用同一组非交互命令，不增加会隐式选择目标的 `setup` 命令。
+`--root` 只允许与 `--target custom` 一起使用，语义固定为“包含各个 Skill 子目录的 skills root”；最终目标始终是 `<root>/kuai/SKILL.md`。它必须是绝对目录，规范化后不得等于文件系统根目录或用户 HOME。命令只能移动、替换或备份 `<root>/kuai` 子目录，绝不移动 `<root>` 本身。custom target 的备份只能创建为同一 root 下的 `.kuai.backup.<timestamp>`。`status`、`upgrade` 和 `uninstall` 使用完全相同的解析规则；`all` 不接受 `--root`。无 TTY 和自动化环境使用同一组非交互命令，不增加会隐式选择目标的 `setup` 命令。
 
 ### 5.3 目标目录
 
@@ -156,7 +180,8 @@ kuai skill uninstall --target agents|claude|all
 | --- | --- |
 | `agents` | `~/.agents/skills/kuai/SKILL.md` |
 | `claude` | `~/.claude/skills/kuai/SKILL.md` |
-| `all` | 先预检以上两处，再作为一个事务安装 |
+| `all` | 先预检以上两处，再按固定顺序分步提交并支持恢复 |
+| `custom` | `<absolute-skills-root>/kuai/SKILL.md` |
 
 Windows 使用系统路径 API 拼接目录，不手写 `/` 或 `\`。实现不自行猜测 `CODEX_HOME`、`CLAUDE_HOME` 等未在本项目中建立契约的环境变量。
 
@@ -166,10 +191,10 @@ Windows 使用系统路径 API 拼接目录，不手写 `/` 或 `\`。实现不�
 
 - Codex：`$kuai`
 - Claude Code：`/kuai`
-- 兼容 Agent：按平台 Skill 名 `kuai` 调用
+- 明确采用 `~/.agents/skills` 目录与当前 Skill frontmatter 格式的 Agent：按 Skill 名 `kuai` 调用
 - 自然语言“运行 kuAI”作为辅助触发方式
 
-Skill 仍然只负责检查、启动和指导同一个 `kuai` CLI，不复制扫描、脱敏或上传实现。
+本版本的支持矩阵仅包含 Codex/通用 Agent 约定的 `agents` target、Claude Code 的 `claude` target，以及用户显式提供的 `custom` target。未采用上述目录和格式的 Agent 不属于兼容范围。Skill 仍然只负责检查、启动和指导同一个 `kuai` CLI，不复制扫描、脱敏或上传实现。
 
 ## 6. Skill 安装安全模型
 
@@ -198,12 +223,16 @@ Skill 仍然只负责检查、启动和指导同一个 `kuai` CLI，不复制扫
 安装流程为：
 
 1. 校验嵌入 Skill 的 frontmatter、名称和版本。
-2. 解析 target，使用 no-follow 检查拒绝符号链接和 Windows reparse point。
+2. 解析 target，逐级检查所有已存在路径组件，拒绝符号链接和 Windows reparse point；确认 skills root 由当前用户拥有或可由当前用户安全写入。
 3. 读取管理标记和当前文件哈希，生成完整预检计划。
 4. `--target all` 必须在任何写入前完成两个目标的预检。
-5. 在同一文件系统创建 staging，写入 Skill 和管理标记。
-6. 通过原子 rename/swap 更新目标，并在失败时恢复备份。
-7. 安装后重新读取和校验内容哈希。
+5. 按规范化路径排序获取每个 skills root 的锁，在锁内重新校验路径组件身份，防止预检后的替换竞态。
+6. POSIX 实现使用目录句柄和 no-follow/fd-relative 操作；Windows 实现使用带 `FILE_FLAG_OPEN_REPARSE_POINT` 的句柄并在替换前复核文件标识。
+7. 在每个目标的同一文件系统创建 staging，写入 Skill 和管理标记。
+8. `all` 在用户状态目录写入不含敏感信息的恢复日志，再按 agents、claude 的固定顺序逐个执行原子 rename/swap。普通错误触发 best-effort 逆序回滚；进程崩溃后，下一次 `kuai skill` 命令必须先根据日志恢复到旧版本或完成同一版本提交，然后才接受新操作。
+9. 安装后重新读取和校验内容哈希，成功后删除恢复日志和本次 staging；启动时清理已由日志证明不再引用的陈旧 staging。
+
+跨两个不同目录的 `all` 操作不宣称具备单文件系统事务的瞬时原子性；其保证是完整预检、每目标原子替换、可重入恢复和普通错误下的 best-effort 回滚。
 
 退出码定义为：0 表示成功或 no-op，1 表示运行期/I/O 失败，2 表示参数错误，3 表示冲突或本地修改。
 
@@ -279,7 +308,7 @@ vX.Y.Z[-prerelease]
 - 主包已发布到 `candidate` 但烟测失败：deprecated 该候选版本，不提升 `latest`。
 - 已提升 `latest` 后发现问题：立即把主包 `latest` 移回上一已知良好版本，并 deprecated 故障版本。
 - npm 已发布版本不可覆盖；修复必须使用新的 patch 版本。
-- 即使只有一个平台损坏，也重新发布一整套同版本的五个包，保持版本集合一致。
+- 即使只有一个平台损坏，也使用同一个新的 patch 版本重新发布一整套五个包，保持版本集合一致；绝不覆盖故障旧版本。
 
 ## 10. 测试策略
 
@@ -296,12 +325,12 @@ vX.Y.Z[-prerelease]
 
 ### 10.2 Skill 生命周期
 
-- agents、claude、all 和自定义绝对 root。
+- agents、claude、all，以及通过 `--target custom --root <absolute-skills-root>` 指定的自定义 skills root。
 - 首次安装、重复安装、升级、降级拒绝、允许降级。
 - 受管修改冲突、无标记冲突、强制备份。
 - 卸载当前版本、不存在目标、修改后拒绝、未知目录拒绝。
-- staging 写入、rename、标记写入和第二目标失败时完整回滚。
-- 并发锁、只读目录、磁盘不足、POSIX symlink 和 Windows reparse point。
+- staging 写入、rename、标记写入和第二目标失败时的 best-effort 回滚，以及模拟崩溃后的日志恢复。
+- 并发锁、只读目录、磁盘不足、父路径替换竞态、POSIX symlink 和 Windows reparse point。
 - 嵌入 Skill 与 npm tarball Skill 的内容哈希一致。
 
 ### 10.3 原生验收
@@ -326,6 +355,6 @@ kuai start --no-browser
 - `kuai` launcher 只启动准确平台、准确版本的内部二进制。
 - 主包包含合法 `skill/kuai/SKILL.md`，且与 Go 内嵌内容逐字节一致。
 - Skill 安装显式、幂等、可升级、可回滚，不覆盖未知或用户修改的文件。
-- Codex、Claude Code 和兼容 Agent 可调用安装后的 `kuai` Skill。
+- Codex、Claude Code，以及明确采用 `~/.agents/skills` 与本 Skill 格式的 Agent 可调用安装后的 `kuai` Skill。
 - 五个包通过 tarball allowlist、版本一致性、registry 安装和四平台原生烟测。
 - 未签名限制在 README、Skill 和发布说明中被准确披露，不承诺完全绕过系统安全策略。
