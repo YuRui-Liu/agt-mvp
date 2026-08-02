@@ -10,13 +10,13 @@
   }
 
   function selectScope(current, scope) {
-    return scope && scope.selectable ? scope : current;
+    return scope && scope.selectable === true ? scope : current;
   }
 
   function restorePreparedScope(scopes, scopeKey) {
     if (typeof scopeKey !== "string") return null;
     return (Array.isArray(scopes) ? scopes : [])
-      .find((scope) => scope && scope.selectable && scope.key === scopeKey) || null;
+      .find((scope) => scope && scope.selectable === true && scope.key === scopeKey) || null;
   }
 
   function restorePreparationState(state, scopes, storage, draftKey) {
@@ -137,6 +137,11 @@
     tools: "工具调用",
     reasoning: "推理过程",
   });
+  const MAX_SOURCE_VIEWS = 64;
+
+  function mappedLabel(map, key, fallback = "") {
+    return typeof key === "string" && Object.hasOwn(map, key) ? map[key] : fallback;
+  }
 
   function safeSourceName(value) {
     if (typeof value !== "string") return "未知 Agent";
@@ -148,7 +153,7 @@
     if (!source || typeof source !== "object" || Array.isArray(source)) source = {};
     const state = typeof source.state === "string" ? source.state : "";
     let group = "attention";
-    let statusLabel = SOURCE_STATUS_LABELS[state] || "暂不可评估";
+    let statusLabel = mappedLabel(SOURCE_STATUS_LABELS, state, "暂不可评估");
     if (state === "ready") {
       if (source.selectable === true) {
         group = "available";
@@ -164,30 +169,78 @@
       name: safeSourceName(source.display_name),
       group,
       statusLabel,
-      reasonLabel: SOURCE_REASON_LABELS[source.reason] || "",
-      verificationLabel: SOURCE_VERIFICATION_LABELS[source.verification] || "",
+      reasonLabel: mappedLabel(SOURCE_REASON_LABELS, source.reason),
+      verificationLabel: mappedLabel(SOURCE_VERIFICATION_LABELS, source.verification),
       capabilityLabels: capabilities
-        .map((capability) => SOURCE_CAPABILITY_LABELS[capability])
+        .map((capability) => mappedLabel(SOURCE_CAPABILITY_LABELS, capability))
         .filter(Boolean),
+    });
+  }
+
+  function boundedSources(sources) {
+    const bounded = [];
+    const products = new Set();
+    for (const source of Array.isArray(sources) ? sources : []) {
+      if (bounded.length >= MAX_SOURCE_VIEWS) break;
+      const validSource = source && typeof source === "object" && !Array.isArray(source);
+      const product = validSource && typeof source.product === "string" &&
+        /^[a-z0-9][a-z0-9-]{0,63}$/.test(source.product) ? source.product : "";
+      if (product && products.has(product)) continue;
+      if (product) products.add(product);
+      bounded.push(source);
+    }
+    return bounded;
+  }
+
+  function safeSourceInputs(sources) {
+    return boundedSources(sources).map((source) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+      const safe = {};
+      if (typeof source.product === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(source.product)) {
+        safe.product = source.product;
+      }
+      if (typeof source.display_name === "string") safe.display_name = source.display_name;
+      if (typeof source.state === "string") safe.state = source.state;
+      if (typeof source.selectable === "boolean") safe.selectable = source.selectable;
+      if (typeof source.reason === "string") safe.reason = source.reason;
+      if (typeof source.verification === "string") safe.verification = source.verification;
+      if (Array.isArray(source.capabilities)) {
+        safe.capabilities = source.capabilities.slice(0, 8).filter((value) => typeof value === "string");
+      }
+      return safe;
+    });
+  }
+
+  function stableSortSourceViews(items) {
+    return items.sort((left, right) => {
+      if (left.name < right.name) return -1;
+      if (left.name > right.name) return 1;
+      if (left.statusLabel < right.statusLabel) return -1;
+      if (left.statusLabel > right.statusLabel) return 1;
+      return 0;
     });
   }
 
   function groupSourceViews(sources) {
     const groups = {available: [], attention: [], notFound: []};
-    (Array.isArray(sources) ? sources : []).forEach((source) => {
+    safeSourceInputs(sources).forEach((source) => {
       const view = sourceViewModel(source);
       if (view.group === "available") groups.available.push(view);
       else if (view.group === "not_found") groups.notFound.push(view);
       else groups.attention.push(view);
     });
+    stableSortSourceViews(groups.available);
+    stableSortSourceViews(groups.attention);
+    stableSortSourceViews(groups.notFound);
     return groups;
   }
 
   function sourceDisplayNames(sources) {
-    const names = {};
-    (Array.isArray(sources) ? sources : []).forEach((source) => {
+    const names = Object.create(null);
+    safeSourceInputs(sources).forEach((source) => {
       if (!source || typeof source !== "object" || Array.isArray(source)) return;
       if (typeof source.product !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(source.product)) return;
+      if (Object.hasOwn(names, source.product)) return;
       names[source.product] = safeSourceName(source.display_name);
     });
     return names;
@@ -287,7 +340,7 @@
   return {uploadDraft, selectScope,
     restorePreparedScope, restorePreparationState,
     bindScopeSelection, showExclusiveView, showUploadSuccess, bindSuccessActions, setUploadStage,
-    formatScopeDetails, sourceViewModel, groupSourceViews, sourceDisplayNames, renderSources,
+    formatScopeDetails, safeSourceInputs, sourceViewModel, groupSourceViews, sourceDisplayNames, renderSources,
     placeSelectionWorkflow, showPreparedWorkflows, hidePreparedWorkflows,
     scrollPreparedAuthentication};
 });

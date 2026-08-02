@@ -70,11 +70,12 @@ function renderScopes() {
   list.replaceChildren();
   byID("emptyScopes").hidden = state.scopes.length !== 0;
   state.scopes.forEach((scope) => {
+    const selectable = scope && scope.selectable === true;
     const card = document.createElement("article");
-    card.className = `scope-card${state.selectedScope && state.selectedScope.key === scope.key ? " selected" : ""}${scope.selectable ? "" : " unsupported"}`;
+    card.className = `scope-card${state.selectedScope && state.selectedScope.key === scope.key ? " selected" : ""}${selectable ? "" : " unsupported"}`;
     card.dataset.scopeKey = scope.key;
-    const button = scope.selectable === true ? document.createElement("button") : document.createElement("div");
-    if (scope.selectable === true) {
+    const button = selectable ? document.createElement("button") : document.createElement("div");
+    if (selectable) {
       button.type = "button";
       button.disabled = state.pending;
       button.setAttribute("aria-pressed", state.selectedScope && state.selectedScope.key === scope.key ? "true" : "false");
@@ -96,10 +97,10 @@ function renderScopes() {
     }, formatTime);
     const capability = document.createElement("span");
     capability.className = "capabilities";
-    capability.textContent = scope.selectable ? `能力：${(scope.capabilities || []).join(" · ") || "消息"}` : "已检测，格式尚未验证";
+    capability.textContent = selectable ? `能力：${(scope.capabilities || []).join(" · ") || "消息"}` : "已检测，格式尚未验证";
     copy.append(title, meta, detail, capability);
     button.append(marker, copy);
-    if (scope.selectable === true) {
+    if (selectable) {
       flowLogic.bindScopeSelection(button, scope, () => state.selectedScope,
         (selected) => { state.selectedScope = selected; }, (selected) => {
           byID("selectedScopeName").textContent = `${scopeType(selected.type)} · ${selected.label}`;
@@ -110,7 +111,7 @@ function renderScopes() {
     card.append(button);
     list.append(card);
   });
-  if (state.preparation && state.selectedScope) {
+  if (state.preparation && state.selectedScope && state.selectedScope.selectable === true) {
     flowLogic.placeSelectionWorkflow(document, state.selectedScope.key);
   }
 }
@@ -119,7 +120,7 @@ async function loadScopes() {
   try {
     const {body} = await api("/api/scopes");
     state.scopes = Array.isArray(body.scopes) ? body.scopes : [];
-    state.sources = Array.isArray(body.sources) ? body.sources : [];
+    state.sources = flowLogic.safeSourceInputs(body && body.sources);
     if (state.uploadDraft) {
       const restored = flowLogic.restorePreparationState(state, state.scopes, sessionStorage, UPLOAD_DRAFT_KEY);
       if (!restored) flowLogic.hidePreparedWorkflows(document);
@@ -149,7 +150,7 @@ function renderPreparation(body) {
 }
 
 async function prepareSelected() {
-  if (!state.selectedScope || state.pending) return;
+  if (!state.selectedScope || state.selectedScope.selectable !== true || state.pending) return;
   state.pending = true;
   byID("prepareScope").disabled = true;
   clearError();
@@ -195,7 +196,8 @@ async function verifyOTP(event) {
 }
 
 async function submitData() {
-  if (!state.consent || !state.preparation || state.pending) return;
+  if (!state.consent || !state.preparation || !state.selectedScope ||
+      state.selectedScope.selectable !== true || state.pending) return;
   state.pending = true;
   byID("startAnalysis").disabled = true;
   clearError();
@@ -255,7 +257,7 @@ document.addEventListener("DOMContentLoaded", () => {
   flowLogic.bindSuccessActions(byID("returnApplication"), byID("submitAgain"),
     () => { location.href = "/application"; }, startNew);
   loadScopes().then(() => {
-    if (state.preparation && state.selectedScope) {
+    if (state.preparation && state.selectedScope && state.selectedScope.selectable === true) {
       renderScopes();
       renderPreparation(state.preparation);
       setStatus(state.auth ? "已恢复上传断点，可使用原安全重试标识继续。" : "已恢复本地准备结果，请完成认证。");

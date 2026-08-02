@@ -40,6 +40,10 @@ func TestSubmissionFlowAssets(t *testing.T) {
 		strings.Contains(css, ".top-workflow{position:fixed") {
 		t.Fatal("topWorkflow must remain in normal document flow")
 	}
+	if !strings.Contains(page, `id="scopePanel" aria-label="Assessment Scope 选择与本地准备"`) ||
+		strings.Contains(page, `id="scopePanel" aria-labelledby="scopeTitle"`) {
+		t.Fatal("scopePanel must have a fixed accessible name independent of the later scopeTitle")
+	}
 	for _, want := range []string{"selectedScope: null", `"/api/scopes"`, "showUploadSuccess"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("script missing %q", want)

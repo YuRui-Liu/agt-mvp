@@ -16,10 +16,12 @@ test("upload draft reuses key for retries and rotates for new preparation", () =
   assert.equal(generated, 2);
 });
 
-test("selection has no default and rejects unsupported scope", () => {
+test("selection has no default and accepts only literal boolean true", () => {
   let selected = null;
-  selected = logic.selectScope(selected, {key: "blocked", selectable: false});
-  assert.equal(selected, null);
+  for (const selectable of [false, "false", 1, null, {}, undefined]) {
+    selected = logic.selectScope(selected, {key: "blocked", selectable});
+    assert.equal(selected, null);
+  }
   const ready = {key: "ready", selectable: true};
   selected = logic.selectScope(selected, ready);
   assert.equal(selected, ready);
@@ -34,6 +36,9 @@ test("restored preparation selects only a currently selectable matching scope", 
   assert.equal(logic.restorePreparedScope(scopes, "blocked"), null);
   assert.equal(logic.restorePreparedScope(scopes, "missing"), null);
   assert.equal(logic.restorePreparedScope(scopes, undefined), null);
+  for (const selectable of ["false", 1, null, {}, undefined]) {
+    assert.equal(logic.restorePreparedScope([{key: "unsafe", selectable}], "unsafe"), null);
+  }
 });
 
 test("invalid prepared scope recovery atomically clears the stale draft", () => {
@@ -105,6 +110,22 @@ test("source view model fails closed and never exposes raw diagnostic fields", (
   }
 });
 
+test("source allowlists are prototype-safe for status reason verification and capabilities", () => {
+  for (const key of ["constructor", "toString", "__proto__", "prototype", "unknown-private"]) {
+    const view = logic.sourceViewModel({
+      state: key,
+      reason: key,
+      verification: key,
+      capabilities: [key],
+    });
+    assert.equal(view.statusLabel, "暂不可评估");
+    assert.equal(view.reasonLabel, "");
+    assert.equal(view.verificationLabel, "");
+    assert.deepEqual(view.capabilityLabels, []);
+    assert.doesNotMatch(JSON.stringify(view), /function|native code|\[object Object\]|unknown-private/);
+  }
+});
+
 test("source view model translates only allowlisted reason verification and capabilities", () => {
   const reasons = new Map([
     ["official_export_required", "需要通过产品官方导出后再提交"],
@@ -139,7 +160,7 @@ test("source grouping is deterministic and display names are mapped by safe prod
   assert.deepEqual(grouped.available.map(item => item.name), ["Codex"]);
   assert.deepEqual(grouped.attention.map(item => item.name), ["TRAE"]);
   assert.deepEqual(grouped.notFound.map(item => item.name), ["未安装 Agent"]);
-  assert.deepEqual(logic.sourceDisplayNames(sources), {
+  assert.deepEqual({...logic.sourceDisplayNames(sources)}, {
     codex: "Codex", trae: "TRAE", missing: "未安装 Agent",
   });
 });
@@ -149,5 +170,47 @@ test("malformed source entries fail closed without interrupting the source overv
   const grouped = logic.groupSourceViews([null]);
   assert.equal(grouped.attention[0].statusLabel, "暂不可评估");
   assert.equal(grouped.attention[0].name, "未知 Agent");
-  assert.deepEqual(logic.sourceDisplayNames([null, {product: "__proto__", display_name: "unsafe"}]), {});
+  const names = logic.sourceDisplayNames([null, {product: "__proto__", display_name: "unsafe"}]);
+  assert.equal(Object.getPrototypeOf(names), null);
+  assert.deepEqual(Object.keys(names), []);
+});
+
+test("source collection is bounded, stably sorted, and first-wins deduplicated", () => {
+  const sources = [
+    {product: "same", display_name: "Zulu", state: "ready", selectable: true},
+    {product: "same", display_name: "Overwritten secret", state: "read_error"},
+    {product: "alpha", display_name: "Alpha", state: "ready", selectable: true},
+    ...Array.from({length: 80}, (_, index) => ({
+      product: `agent-${index}`,
+      display_name: `Agent ${String(index).padStart(2, "0")}`,
+      state: "not_found",
+    })),
+  ];
+  const grouped = logic.groupSourceViews(sources);
+  assert.deepEqual(grouped.available.map(item => item.name), ["Alpha", "Zulu"]);
+  assert.equal(grouped.attention.length, 0);
+  assert.equal(grouped.available.length + grouped.attention.length + grouped.notFound.length, 64);
+  assert.deepEqual(grouped.notFound.slice(0, 3).map(item => item.name), ["Agent 00", "Agent 01", "Agent 02"]);
+
+  const names = logic.sourceDisplayNames(sources);
+  assert.equal(Object.getPrototypeOf(names), null);
+  assert.equal(names.same, "Zulu");
+  assert.equal(names.alpha, "Alpha");
+  assert.equal(Object.keys(names).length, 64);
+  assert.doesNotMatch(JSON.stringify(names), /Overwritten secret/);
+});
+
+test("safe source inputs retain only rendering allowlist fields", () => {
+  const safe = logic.safeSourceInputs([{
+    product: "codex", display_name: "Codex", state: "ready", selectable: true,
+    reason: "official_export_required", verification: "machine_verified",
+    capabilities: ["messages"], code: "private-code", error: "/Users/private",
+    path: "/Users/private", sessionID: "private-session",
+  }]);
+  assert.deepEqual(safe, [{
+    product: "codex", display_name: "Codex", state: "ready", selectable: true,
+    reason: "official_export_required", verification: "machine_verified",
+    capabilities: ["messages"],
+  }]);
+  assert.doesNotMatch(JSON.stringify(safe), /private|\/Users/);
 });

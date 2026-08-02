@@ -298,3 +298,21 @@ test("source status renders as non-interactive groups with collapsed not-found d
   assert.match(document.getElementById("sourceActionList").textContent, /TRAE.*需要官方导出/s);
   assert.doesNotMatch(panel.textContent, /private|session-secret/);
 });
+
+test("prototype-like source values never reach the rendered DOM", () => {
+  const dom = new JSDOM(`<!doctype html><body>
+    <section id="sourceStatusPanel"><p id="sourceStatusSummary"></p>
+      <section id="sourceReadyGroup"><div id="sourceReadyList"></div></section>
+      <section id="sourceActionGroup"><div id="sourceActionList"></div></section>
+      <details id="sourceNotFoundGroup"><summary><span id="sourceNotFoundSummary"></span></summary><div id="sourceNotFoundList"></div></details>
+    </section>
+  </body>`);
+  const {document} = dom.window;
+  logic.renderSources(document, [
+    {display_name: "Prototype probe", state: "constructor", reason: "toString",
+      verification: "__proto__", capabilities: ["prototype"]},
+  ]);
+  assert.match(document.getElementById("sourceActionList").textContent, /Prototype probe.*暂不可评估/s);
+  assert.doesNotMatch(document.getElementById("sourceStatusPanel").textContent,
+    /function|native code|\[object Object\]|constructor|toString|__proto__|prototype/);
+});

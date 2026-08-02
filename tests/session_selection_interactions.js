@@ -60,8 +60,9 @@ test("scope discovery groups safe metadata and creates controls only for selecta
   assert.match(script, /scope\.session_count/);
   assert.match(script, /scope\.ended_at/);
   assert.match(script, /scope\.bytes/);
-  assert.match(script, /scope\.selectable === true \? document\.createElement\("button"\) : document\.createElement\("div"\)/);
-  assert.match(script, /if \(scope\.selectable === true\) \{\s*flowLogic\.bindScopeSelection/s);
+  assert.match(script, /const selectable = scope && scope\.selectable === true/);
+  assert.match(script, /const button = selectable \? document\.createElement\("button"\) : document\.createElement\("div"\)/);
+  assert.match(script, /if \(selectable\) \{\s*flowLogic\.bindScopeSelection/s);
   assert.doesNotMatch(script, /scope\.path|session\.id/);
 });
 
@@ -112,7 +113,20 @@ test("source overview is compact, responsive, and independent from scope control
   assert.equal(cssDeclarations(".source-list").getPropertyValue("grid-template-columns"), "repeat(auto-fit,minmax(220px,1fr))");
   assert.equal(cssDeclarations(".source-row strong").getPropertyValue("overflow-wrap"), "anywhere");
   assert.equal(cssDeclarations(".source-not-found summary").getPropertyValue("min-height"), "44px");
+  assert.equal(cssDeclarations(".source-not-found summary:focus-visible").getPropertyValue("outline-color"), "rgb(154, 58, 0)");
+  assert.equal(cssDeclarations(".source-not-found summary:before").getPropertyValue("content"), '"+"');
+  assert.equal(cssDeclarations(".source-not-found[open] summary:before").getPropertyValue("content"), '"−"');
   assert.match(styles, /@media\(max-width:700px\).*\.source-list\{grid-template-columns:1fr\}/s);
+});
+
+test("scope UI treats only literal boolean true as supported", () => {
+  assert.match(script, /scope\.selectable === true/);
+  assert.doesNotMatch(script, /scope\.selectable \?/);
+  assert.match(script, /state\.selectedScope\.selectable !== true/);
+});
+
+test("API sources are bounded and sanitized before entering application state", () => {
+  assert.match(script, /state\.sources = flowLogic\.safeSourceInputs\(body && body\.sources\)/);
 });
 
 test("long scope lists keep authentication at the top and preparation immediately after the selected card", () => {
