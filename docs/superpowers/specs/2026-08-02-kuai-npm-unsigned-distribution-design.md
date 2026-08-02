@@ -294,21 +294,25 @@ vX.Y.Z[-prerelease]
 3. 在真实目标机器执行 `kuai version` 和 `kuai status`。
 4. 生成五个 npm staging 包并运行 `npm pack --json`。
 5. 将 tarball 内容与固定 allowlist 精确比较，禁止额外文件、符号链接、源码、测试、日志、证书、token 和仓库 `.npmrc`。
-6. 使用 npm Trusted Publishing/OIDC、provenance、最小权限和发布环境保护，将四个平台包发布到 `candidate` tag。
-7. 确认四个平台包在 registry 可见后，最后发布主包到 `candidate`。
-8. 在干净的 macOS arm64、macOS x64、Windows arm64 和 Windows x64 环境从 registry 安装准确候选版本。
+6. 使用 npm Trusted Publishing/OIDC、provenance、最小权限和发布环境保护，将四个平台包发布到 `candidate` tag。发布 job 固定使用 GitHub-hosted runner、Node.js 24 和 npm 11.5.1 或更高版本。
+7. 确认四个平台包的精确版本在 registry 可见；此时仍不发布主包。
+8. 在干净的 macOS arm64、macOS x64、Windows arm64 和 Windows x64 环境安装本次本地主包 tarball。主包的精确 `optionalDependencies` 从 registry 取得对应平台包，由此在主包进入公开 registry 前验证真实依赖解析。
 9. 验证 launcher、版本、status、start、Skill 安装/status/升级/卸载。
-10. 全部通过后提升 `latest`；平台包先更新 dist-tag，主包最后更新。
+10. 全部通过后才使用同一个 Trusted Publishing/OIDC workflow 将主包直接发布到默认 `latest`；随后从 registry 再执行一次四平台安装烟测。
 
-公共发布前必须确认 `@kuai-ai` scope 的发布权限，并补齐适合公开分发的 LICENSE。缺少其中任一条件时，流水线必须在 `npm publish` 前失败。
+五个新 npm 包统一采用 MIT License，仓库根 `LICENSE` 使用标准 MIT 全文及 `Copyright (c) 2026 kuAI contributors`；每个 tarball 都必须包含该文件，manifest 的 `license` 固定为 `MIT`。公共发布前还必须确认 `@kuai-ai` scope 的发布权限；缺少 LICENSE、manifest 声明或 scope 权限中的任一项时，流水线必须在 `npm publish` 前失败。
 
 ## 9. 发布失败与回滚
 
 - 任一平台包发布失败：停止，不发布主包。
-- 主包已发布到 `candidate` 但烟测失败：deprecated 该候选版本，不提升 `latest`。
-- 已提升 `latest` 后发现问题：立即把主包 `latest` 移回上一已知良好版本，并 deprecated 故障版本。
+- 主包发布前烟测失败：停止，不发布主包；已存在的平台候选版本保持不可变，后续修复使用新的 patch 版本。
+- 主包发布后 registry 烟测失败：优先立即发布修复后的新 patch。需要紧急回退时，由 npm 维护者在本机登录并通过 2FA 手工把主包 `latest` 指回上一已知良好版本，再 deprecated 故障版本；该操作不放入只具备 OIDC Trusted Publishing 的 CI。
 - npm 已发布版本不可覆盖；修复必须使用新的 patch 版本。
 - 即使只有一个平台损坏，也使用同一个新的 patch 版本重新发布一整套五个包，保持版本集合一致；绝不覆盖故障旧版本。
+
+npm Trusted Publishing 只用于 `npm publish`（以及可选的 `npm stage publish`），不得假设 OIDC 身份同时授权 `npm dist-tag` 或 `npm deprecate`。后续版本可选择 staged publishing，但它要求包已存在且由维护者使用 2FA 批准，因此首版仍使用上述“平台包先发、主包最后发”的引导流程。
+
+由于 Trusted Publisher 是逐包在 npm 包设置中配置的，新名称首次发布不能预先依赖该配置。五个包的首次引导发布由维护者在可信本机登录、逐次完成 2FA，并严格复用相同的 tarball 验证和“平台包先发、主包最后发”顺序；发布后立即为五包分别绑定 Trusted Publisher，后续版本才走无长期 token 的 OIDC workflow。不得为引导发布把长期 npm token 写入 CI。
 
 ## 10. 测试策略
 
