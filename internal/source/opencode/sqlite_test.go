@@ -22,6 +22,27 @@ type recordingSQLiteQueryer struct {
 	queries *[]string
 }
 
+type injectingSQLiteQueryer struct{ sqliteQueryer }
+
+func (q injectingSQLiteQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if query == sqliteMessageQuery.statement && len(args) > 0 && args[0] == "s1" {
+		return q.sqliteQueryer.QueryContext(ctx, `SELECT id,session_id,time_created,data FROM message WHERE session_id=? UNION ALL SELECT NULL,'s1',70,'{"role":"user"}' UNION ALL SELECT 'bad-message-time','s1','bad-time','{"role":"user"}' UNION ALL SELECT 'bad-message-json','s1',72,'{' ORDER BY time_created,id LIMIT ?`, args...)
+	}
+	if query == sqlitePartQuery.statement && len(args) > 0 && args[0] == "s1" {
+		return q.sqliteQueryer.QueryContext(ctx, `SELECT id,message_id,session_id,time_created,data FROM part WHERE session_id=? UNION ALL SELECT NULL,'m-z-user','s1',70,'{"type":"text","text":"bad"}' UNION ALL SELECT 'bad-part-time','m-z-user','s1','bad-time','{"type":"text","text":"bad"}' UNION ALL SELECT 'bad-part-json','m-z-user','s1',72,'{' ORDER BY time_created,id LIMIT ?`, args...)
+	}
+	return q.sqliteQueryer.QueryContext(ctx, query, args...)
+}
+
+type injectingMetadataQueryer struct{ sqliteQueryer }
+
+func (q injectingMetadataQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, `FROM session AS s LEFT JOIN project AS p`) && strings.Contains(query, `ORDER BY`) {
+		return q.sqliteQueryer.QueryContext(ctx, `SELECT s.id,s.project_id,COALESCE(s.parent_id,''),s.directory,p.worktree,s.time_created,s.time_updated,s.tokens_input,s.tokens_output,s.tokens_reasoning,s.tokens_cache_read,s.tokens_cache_write FROM session AS s LEFT JOIN project AS p ON p.id=s.project_id UNION ALL SELECT NULL,'p1','','/synthetic/project','/synthetic/project',120,130,0,0,0,0,0 UNION ALL SELECT 'bad-time','p1','','/synthetic/project','/synthetic/project','not-an-integer',140,0,0,0,0,0 ORDER BY 6,1 LIMIT ?`, args...)
+	}
+	return q.sqliteQueryer.QueryContext(ctx, query, args...)
+}
+
 func (q recordingSQLiteQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	*q.queries = append(*q.queries, query)
 	return q.sqliteQueryer.QueryContext(ctx, query, args...)
@@ -33,14 +54,14 @@ func (q recordingSQLiteQueryer) QueryRowContext(ctx context.Context, query strin
 }
 
 func installSQLite(t *testing.T, root string) *sql.DB {
-	return installSQLiteFixture(t, root, true, false)
+	return installSQLiteFixture(t, root, true)
 }
 
 func installSQLiteWithUsage(t *testing.T, root string, withUsage bool) *sql.DB {
-	return installSQLiteFixture(t, root, withUsage, false)
+	return installSQLiteFixture(t, root, withUsage)
 }
 
-func installSQLiteFixture(t *testing.T, root string, withUsage, nullableMetadata bool) *sql.DB {
+func installSQLiteFixture(t *testing.T, root string, withUsage bool) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
 	if err != nil {
@@ -54,9 +75,6 @@ func installSQLiteFixture(t *testing.T, root string, withUsage, nullableMetadata
 		sessionSchema = `CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, directory TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, tokens_input INTEGER NOT NULL DEFAULT 0, tokens_output INTEGER NOT NULL DEFAULT 0, tokens_reasoning INTEGER NOT NULL DEFAULT 0, tokens_cache_read INTEGER NOT NULL DEFAULT 0, tokens_cache_write INTEGER NOT NULL DEFAULT 0)`
 		parentInsert = `INSERT INTO session VALUES ('parent','p1',NULL,'/synthetic/project',10,20,0,0,0,0,0)`
 		sessionInsert = `INSERT INTO session VALUES ('s1','p1','parent','/synthetic/project',30,90,11,22,3,4,5)`
-	}
-	if nullableMetadata {
-		sessionSchema = `CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER, tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0, tokens_reasoning INTEGER DEFAULT 0, tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0)`
 	}
 	statements := []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA wal_autocheckpoint=0`,
@@ -107,6 +125,10 @@ func TestSQLiteDiscoverOpenWALAndRestrictedQueries(t *testing.T) {
 	installSQLite(t, root)
 	a := New(root)
 	var queries []string
+	var specs []sqliteQuerySpec
+	previousObserver := observeSQLiteQuery
+	observeSQLiteQuery = func(spec sqliteQuerySpec) { specs = append(specs, spec) }
+	t.Cleanup(func() { observeSQLiteQuery = previousObserver })
 	a.sqliteRead = func(ctx context.Context, root, path string, maxBytes int64, fn func(sqliteQueryer) error) error {
 		return sqliteread.WithReadOnlyTx(ctx, root, path, maxBytes, func(tx *sqliteread.ReadTx) error {
 			return fn(recordingSQLiteQueryer{sqliteQueryer: tx, queries: &queries})
@@ -163,6 +185,24 @@ func TestSQLiteDiscoverOpenWALAndRestrictedQueries(t *testing.T) {
 	if len(queries) == 0 {
 		t.Fatal("no sqlite queries recorded")
 	}
+	if len(specs) == 0 {
+		t.Fatal("no structured sqlite query audit")
+	}
+	allowed := map[string][]string{
+		"project": {"id", "worktree"},
+		"session": {"id", "project_id", "parent_id", "directory", "time_created", "time_updated", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write"},
+		"message": {"id", "session_id", "time_created", "data"},
+		"part":    {"id", "message_id", "session_id", "time_created", "data"},
+	}
+	for _, spec := range specs {
+		if spec.kind != sqliteQueryData {
+			continue
+		}
+		permitted, ok := allowed[spec.table]
+		if !ok || strings.Join(spec.columns, ",") != strings.Join(permitted, ",") {
+			t.Fatalf("unexpected structured query: %#v", spec)
+		}
+	}
 	for _, query := range queries {
 		lower := strings.ToLower(query)
 		if strings.Contains(lower, "select *") {
@@ -174,6 +214,132 @@ func TestSQLiteDiscoverOpenWALAndRestrictedQueries(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSQLiteRejectsCoreViewsBeforeReadingTheirContent(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	statements := []string{
+		`CREATE TABLE credential (id TEXT,worktree TEXT,project_id TEXT,parent_id TEXT,directory TEXT,time_created INTEGER,time_updated INTEGER,tokens_input INTEGER,tokens_output INTEGER,tokens_reasoning INTEGER,tokens_cache_read INTEGER,tokens_cache_write INTEGER,session_id TEXT,message_id TEXT,data TEXT)`,
+		`CREATE VIEW project AS SELECT id,worktree FROM credential`,
+		`CREATE VIEW session AS SELECT id,project_id,parent_id,directory,time_created,time_updated,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write FROM credential`,
+		`CREATE VIEW message AS SELECT id,session_id,time_created,data FROM credential`,
+		`CREATE VIEW part AS SELECT id,message_id,session_id,time_created,data FROM credential`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var specs []sqliteQuerySpec
+	previousObserver := observeSQLiteQuery
+	observeSQLiteQuery = func(spec sqliteQuerySpec) { specs = append(specs, spec) }
+	t.Cleanup(func() { observeSQLiteQuery = previousObserver })
+	if _, err := New(root).Discover(context.Background()); err == nil {
+		t.Fatal("core views accepted")
+	}
+	for _, spec := range specs {
+		if spec.kind == sqliteQueryData {
+			t.Fatalf("view content query attempted: %#v", spec)
+		}
+	}
+}
+
+func TestSQLiteRejectsSessionIdentityWithoutPrimaryKey(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`CREATE TABLE project (id TEXT PRIMARY KEY,worktree TEXT NOT NULL)`,
+		`CREATE TABLE session (id TEXT,project_id TEXT NOT NULL,parent_id TEXT,directory TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL)`,
+		`CREATE TABLE message (id TEXT PRIMARY KEY,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL)`,
+		`CREATE TABLE part (id TEXT PRIMARY KEY,message_id TEXT NOT NULL,session_id TEXT NOT NULL,time_created INTEGER NOT NULL,data TEXT NOT NULL)`,
+		`INSERT INTO project VALUES ('p1','/synthetic/one'),('p2','/synthetic/two')`,
+		`INSERT INTO session VALUES ('duplicate','p1',NULL,'/synthetic/one',1,2),('duplicate','p2',NULL,'/synthetic/two',3,4)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := New(root).Discover(context.Background()); err == nil {
+		t.Fatal("non-unique session identity accepted")
+	}
+}
+
+func TestSQLiteMalformedMessageAndPartRowsAreIsolated(t *testing.T) {
+	root := t.TempDir()
+	installSQLite(t, root)
+	a := New(root)
+	a.sqliteRead = func(ctx context.Context, root, path string, maxBytes int64, fn func(sqliteQueryer) error) error {
+		return sqliteread.WithReadOnlyTx(ctx, root, path, maxBytes, func(tx *sqliteread.ReadTx) error {
+			return fn(injectingSQLiteQueryer{sqliteQueryer: tx})
+		})
+	}
+	sessions, err := a.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := findSession(t, sessions, "opencode:s1")
+	if s.MessageCount != 2 || s.MalformedCount != 7 {
+		t.Fatalf("healthy rows lost or malformed rows missed: %#v", s)
+	}
+	if r, err := a.Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	} else {
+		r.Close()
+	}
+}
+
+func TestSQLiteCancellationDuringRowProcessingPropagates(t *testing.T) {
+	root := t.TempDir()
+	installSQLite(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	a := New(root)
+	a.sqliteRead = func(inner context.Context, root, path string, maxBytes int64, fn func(sqliteQueryer) error) error {
+		return sqliteread.WithReadOnlyTx(inner, root, path, maxBytes, func(tx *sqliteread.ReadTx) error {
+			return fn(cancelingSQLiteQueryer{sqliteQueryer: tx, cancel: cancel})
+		})
+	}
+	if _, err := a.Discover(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation swallowed: %v", err)
+	}
+}
+
+func TestSQLiteDiscoverEnforcesGlobalBudgets(t *testing.T) {
+	root := t.TempDir()
+	installSQLite(t, root)
+	tests := map[string]sqliteScanLimits{
+		"sessions":  {maxSessions: 1, maxRows: 100, maxPayloadBytes: 1 << 20, maxCanonicalBytes: 1 << 20},
+		"rows":      {maxSessions: 10, maxRows: 3, maxPayloadBytes: 1 << 20, maxCanonicalBytes: 1 << 20},
+		"payload":   {maxSessions: 10, maxRows: 100, maxPayloadBytes: 8, maxCanonicalBytes: 1 << 20},
+		"canonical": {maxSessions: 10, maxRows: 100, maxPayloadBytes: 1 << 20, maxCanonicalBytes: 8},
+	}
+	for name, limits := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := New(root).discoverSQLiteWithLimits(context.Background(), limits); err == nil {
+				t.Fatal("global scan budget bypassed")
+			}
+		})
+	}
+}
+
+type cancelingSQLiteQueryer struct {
+	sqliteQueryer
+	cancel context.CancelFunc
+}
+
+func (q cancelingSQLiteQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if query == sqliteMessageQuery.statement {
+		q.cancel()
+	}
+	return q.sqliteQueryer.QueryContext(ctx, query, args...)
 }
 
 func TestSQLiteAuthorizationContractRequeriesAndRejectsMutation(t *testing.T) {
@@ -259,32 +425,22 @@ func TestSQLiteMalformedSessionDoesNotHideHealthySession(t *testing.T) {
 	}
 }
 
-func TestSQLiteNullableAndMalformedMetadataRowsAreIsolated(t *testing.T) {
+func TestSQLiteMalformedMetadataRowsAreIsolated(t *testing.T) {
 	root := t.TempDir()
-	db := installSQLiteFixture(t, root, true, true)
-	statements := []string{
-		`INSERT INTO session VALUES ('s-null','p1',NULL,'/synthetic/project',NULL,NULL,NULL,NULL,NULL,NULL,NULL)`,
-		`INSERT INTO message VALUES ('null-message','s-null',201,'{"role":"user"}')`,
-		`INSERT INTO part VALUES ('null-part','null-message','s-null',202,'{"type":"text","text":"nullable metadata session"}')`,
-		`INSERT INTO session VALUES (NULL,'p1',NULL,'/synthetic/project',120,130,0,0,0,0,0)`,
-		`INSERT INTO session VALUES ('bad-time','p1',NULL,'/synthetic/project','not-an-integer',140,0,0,0,0,0)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	installSQLite(t, root)
 	a := New(root)
+	a.sqliteRead = func(ctx context.Context, root, path string, maxBytes int64, fn func(sqliteQueryer) error) error {
+		return sqliteread.WithReadOnlyTx(ctx, root, path, maxBytes, func(tx *sqliteread.ReadTx) error {
+			return fn(injectingMetadataQueryer{sqliteQueryer: tx})
+		})
+	}
 	sessions, err := a.Discover(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	findSession(t, sessions, "opencode:s1")
-	nullable := findSession(t, sessions, "opencode:s-null")
-	if len(nullable.Usage) != 0 || !nullable.StartedAt.IsZero() || !nullable.EndedAt.IsZero() {
-		t.Fatalf("nullable metadata not safely defaulted: %#v", nullable)
-	}
-	if r, err := a.Open(context.Background(), nullable); err != nil {
+	healthy := findSession(t, sessions, "opencode:s1")
+	if r, err := a.Open(context.Background(), healthy); err != nil {
 		t.Fatal(err)
 	} else {
 		r.Close()
