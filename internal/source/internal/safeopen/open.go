@@ -8,9 +8,14 @@ import (
 	"sync"
 )
 
-// ErrDirectoryLimit reports that a bounded directory read found more entries
-// than the caller allowed. It deliberately contains no filesystem path.
-var ErrDirectoryLimit = errors.New("safeopen: directory entry limit exceeded")
+var (
+	// ErrDirectoryLimit reports that a bounded directory read found more
+	// entries than the caller allowed. It deliberately contains no path.
+	ErrDirectoryLimit = errors.New("safeopen: directory entry limit exceeded")
+	// ErrFileSizeLimit reports that an otherwise valid regular file is larger
+	// than the caller's byte limit. Other file validation errors never wrap it.
+	ErrFileSizeLimit = errors.New("safeopen: file size limit exceeded")
+)
 
 var errInvalidDirectoryLimit = errors.New("safeopen: invalid directory entry limit")
 var errInvalidSourceFile = errors.New("safeopen: invalid source file")
@@ -134,8 +139,11 @@ func (b *BoundRoot) OpenWithPathIdentity(relative string, maxBytes int64) (*os.F
 
 func validateSourceFile(file *os.File, maxBytes int64) error {
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+	if err != nil || !info.Mode().IsRegular() {
 		return errInvalidSourceFile
+	}
+	if info.Size() > maxBytes {
+		return ErrFileSizeLimit
 	}
 	if err := makeFileBlocking(file); err != nil {
 		return errInvalidSourceFile

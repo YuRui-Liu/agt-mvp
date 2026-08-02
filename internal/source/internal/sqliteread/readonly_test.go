@@ -55,8 +55,48 @@ func TestWithReadOnlyTxRejectsAggregateSidecarLimit(t *testing.T) {
 		}
 		total += info.Size()
 	}
-	if err := WithReadOnlyTx(context.Background(), root, path, total-1, noOpTx); err == nil {
-		t.Fatal("aggregate database and sidecar limit bypassed")
+	if err := WithReadOnlyTx(context.Background(), root, path, total-1, noOpTx); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestWithReadOnlyTxClassifiesIndividualAndAggregateFileBudgets(t *testing.T) {
+	tests := []struct {
+		name  string
+		sizes map[string]int
+		limit int64
+	}{
+		{name: "main file", sizes: map[string]int{"": 2}, limit: 1},
+		{name: "WAL file", sizes: map[string]int{"": 1, "-wal": 2}, limit: 1},
+		{name: "SHM file", sizes: map[string]int{"": 0, "-wal": 0, "-shm": 2}, limit: 1},
+		{name: "aggregate", sizes: map[string]int{"": 1, "-wal": 1, "-shm": 1}, limit: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "state.sqlite")
+			for suffix, size := range test.sizes {
+				if err := os.WriteFile(path+suffix, make([]byte, size), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			called := false
+			err := WithReadOnlyTx(context.Background(), root, path, test.limit, func(*ReadTx) error {
+				called = true
+				return nil
+			})
+			if !errors.Is(err, ErrBudgetExceeded) {
+				t.Fatalf("error=%v", err)
+			}
+			if called {
+				t.Fatal("callback invoked")
+			}
+			for suffix := range test.sizes {
+				if err := os.Remove(path + suffix); err != nil {
+					t.Fatalf("file handle leaked for %q: %v", suffix, err)
+				}
+			}
+		})
 	}
 }
 
@@ -146,8 +186,8 @@ func TestWithReadOnlyTxRejectsUnsafeInputs(t *testing.T) {
 		outside := filepath.Join(t.TempDir(), "outside.sqlite")
 		other := openWALDatabase(t, outside)
 		defer other.Close()
-		if err := WithReadOnlyTx(context.Background(), root, outside, 1<<20, noOpTx); err == nil {
-			t.Fatal("outside path accepted")
+		if err := WithReadOnlyTx(context.Background(), root, outside, 1<<20, noOpTx); err == nil || errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("outside path error=%v", err)
 		}
 	})
 
@@ -159,8 +199,8 @@ func TestWithReadOnlyTxRejectsUnsafeInputs(t *testing.T) {
 		if err := os.Symlink(path, link); err != nil {
 			t.Fatal(err)
 		}
-		if err := WithReadOnlyTx(context.Background(), root, link, 1<<20, noOpTx); err == nil {
-			t.Fatal("symlink accepted")
+		if err := WithReadOnlyTx(context.Background(), root, link, 1<<20, noOpTx); err == nil || errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("symlink error=%v", err)
 		}
 	})
 
@@ -169,8 +209,8 @@ func TestWithReadOnlyTxRejectsUnsafeInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := WithReadOnlyTx(context.Background(), root, path, info.Size()-1, noOpTx); err == nil {
-			t.Fatal("oversized database accepted")
+		if err := WithReadOnlyTx(context.Background(), root, path, info.Size()-1, noOpTx); !errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("error=%v", err)
 		}
 	})
 
@@ -181,7 +221,22 @@ func TestWithReadOnlyTxRejectsUnsafeInputs(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error=%v", err)
 		}
+		if errors.Is(err, ErrBudgetExceeded) {
+			t.Fatal("cancellation classified as budget")
+		}
 	})
+}
+
+func TestWithReadOnlyTxDoesNotClassifyNonSizeInvalidFileAsBudget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.sqlite")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := WithReadOnlyTx(context.Background(), root, path, 1, noOpTx)
+	if err == nil || errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("error=%v", err)
+	}
 }
 
 func TestWithReadOnlyTxReturnsCallbackError(t *testing.T) {

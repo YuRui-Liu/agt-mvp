@@ -302,7 +302,11 @@ func WithChatSnapshot(ctx context.Context, root, databasePath string, schema Sch
 		}
 		return ctx.Err()
 	})
-	if !callbackStarted && err != nil && err.Error() == "sqliteread: database snapshot exceeds limit" {
+	return classifyDatabaseInitializationError(err, callbackStarted)
+}
+
+func classifyDatabaseInitializationError(err error, callbackStarted bool) error {
+	if !callbackStarted && errors.Is(err, sqliteread.ErrBudgetExceeded) {
 		return ErrBudgetExceeded
 	}
 	return err

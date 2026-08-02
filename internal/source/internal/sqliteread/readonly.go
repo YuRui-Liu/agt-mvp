@@ -15,6 +15,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ErrBudgetExceeded reports that the validated main database, WAL, or SHM
+// file exceeds its byte limit, individually or in aggregate.
+var ErrBudgetExceeded = errors.New("sqliteread: database snapshot exceeds limit")
+
 var afterInitialValidation func()
 var afterSQLiteOpen func()
 
@@ -40,6 +44,9 @@ func openValidatedFileSet(root, path string, maxBytes int64) (validatedFileSet, 
 				continue
 			}
 			closeSet()
+			if errors.Is(err, safeopen.ErrFileSizeLimit) {
+				return nil, ErrBudgetExceeded
+			}
 			return nil, err
 		}
 		info, err := file.Stat()
@@ -51,7 +58,7 @@ func openValidatedFileSet(root, path string, maxBytes int64) (validatedFileSet, 
 		if info.Size() > maxBytes-total {
 			file.Close()
 			closeSet()
-			return nil, errors.New("sqliteread: database snapshot exceeds limit")
+			return nil, ErrBudgetExceeded
 		}
 		total += info.Size()
 		set[suffix] = validatedFile{file: file, info: info}

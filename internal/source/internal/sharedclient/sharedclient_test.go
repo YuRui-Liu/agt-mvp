@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/sqliteread"
 	_ "modernc.org/sqlite"
 )
 
@@ -389,6 +390,19 @@ func TestWithChatSnapshotClassifiesBudgetsMalformedRowsAndCancellation(t *testin
 		}
 	})
 
+	t.Run("callback sqliteread sentinel is preserved", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "local.db")
+		database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+		database.Close()
+		err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(ChatReader) error {
+			return sqliteread.ErrBudgetExceeded
+		})
+		if err != sqliteread.ErrBudgetExceeded || errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+
 	t.Run("canonical escaping", func(t *testing.T) {
 		root := t.TempDir()
 		path := filepath.Join(root, "local.db")
@@ -417,6 +431,20 @@ func TestWithChatSnapshotClassifiesBudgetsMalformedRowsAndCancellation(t *testin
 			t.Fatalf("error=%v", err)
 		}
 	})
+}
+
+func TestClassifyDatabaseInitializationErrorUsesTypedSentinelOnly(t *testing.T) {
+	typed := fmt.Errorf("wrapped: %w", sqliteread.ErrBudgetExceeded)
+	if err := classifyDatabaseInitializationError(typed, false); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("typed error=%v", err)
+	}
+	if err := classifyDatabaseInitializationError(typed, true); err != typed {
+		t.Fatalf("callback error=%v", err)
+	}
+	sameText := errors.New(sqliteread.ErrBudgetExceeded.Error())
+	if err := classifyDatabaseInitializationError(sameText, false); err != sameText || errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("same-text error=%v", err)
+	}
 }
 
 func TestChatReaderSerializesConcurrentBudgetUse(t *testing.T) {

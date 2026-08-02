@@ -1,6 +1,7 @@
 package safeopen
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,84 @@ import (
 	"runtime"
 	"testing"
 )
+
+func TestFileOpenSizeLimitSentinelIsExactAcrossAPIs(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.json")
+	if err := os.WriteFile(path, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+
+	tests := []struct {
+		name string
+		open func(int64) (*os.File, error)
+	}{
+		{name: "Open", open: func(limit int64) (*os.File, error) { return Open(root, path, limit) }},
+		{name: "BoundRoot.Open", open: func(limit int64) (*os.File, error) { return bound.Open("session.json", limit) }},
+		{name: "BoundRoot.OpenWithPathIdentity", open: func(limit int64) (*os.File, error) {
+			file, _, err := bound.OpenWithPathIdentity("session.json", limit)
+			return file, err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" exact", func(t *testing.T) {
+			file, err := test.open(4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Close()
+		})
+		t.Run(test.name+" plus one", func(t *testing.T) {
+			file, err := test.open(3)
+			if file != nil {
+				file.Close()
+				t.Fatal("oversized file returned")
+			}
+			if !errors.Is(err, ErrFileSizeLimit) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestFileSizeLimitSentinelDoesNotMatchNonSizeFailures(t *testing.T) {
+	root := t.TempDir()
+	bound, err := Bind(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	if err := os.Mkdir(filepath.Join(root, "directory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := bound.Open("directory", 1); err == nil || errors.Is(err, ErrFileSizeLimit) {
+		if file != nil {
+			file.Close()
+		}
+		t.Fatalf("directory error=%v", err)
+	}
+	if runtime.GOOS != "windows" {
+		outside := filepath.Join(t.TempDir(), "outside")
+		if err := os.WriteFile(outside, []byte("safe"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		if file, err := Open(root, link, 1); err == nil || errors.Is(err, ErrFileSizeLimit) {
+			if file != nil {
+				file.Close()
+			}
+			t.Fatalf("symlink error=%v", err)
+		}
+	}
+}
 
 func TestReadDirLimitRejectsDirectoryOverLimit(t *testing.T) {
 	root := t.TempDir()
