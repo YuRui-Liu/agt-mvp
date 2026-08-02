@@ -56,6 +56,11 @@ class SingleBinaryContractTest(unittest.TestCase):
         ):
             self.assertIn(target, release)
 
+    def test_node_package_manager_matches_committed_lockfile(self):
+        package = (ROOT / "package.json").read_text(encoding="utf-8")
+        self.assertNotIn('"packageManager": "pnpm', package)
+        self.assertFalse((ROOT / ".npmrc").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

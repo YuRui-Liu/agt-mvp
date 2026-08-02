@@ -6,6 +6,8 @@ TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/kuai-build-test.XXXXXX")
 trap 'rm -rf "$TEST_ROOT"' EXIT HUP INT TERM
 mkdir -p "$TEST_ROOT/repo/scripts" "$TEST_ROOT/repo/cmd/kuai" "$TEST_ROOT/fakebin"
 cp "$SOURCE_ROOT/scripts/build-kuai-release.sh" "$TEST_ROOT/repo/scripts/"
+cp "$SOURCE_ROOT/build.sh" "$TEST_ROOT/repo/build.sh"
+chmod +x "$TEST_ROOT/repo/build.sh"
 
 cat >"$TEST_ROOT/fakebin/go" <<'EOF'
 #!/bin/sh
@@ -22,6 +24,16 @@ if [ "${FAIL_BUILD_FOR:-}" = "$GOOS-$GOARCH" ]; then exit 9; fi
 printf 'stable kuai %s/%s\n' "$GOOS" "$GOARCH" >"$output"
 EOF
 chmod +x "$TEST_ROOT/fakebin/go"
+
+KUAI_BUILD_OUTPUT="$TEST_ROOT/direct-kuai" KUAI_VERSION='bad version' \
+  PATH="$TEST_ROOT/fakebin:/bin:/usr/bin" "$TEST_ROOT/repo/build.sh" >/dev/null 2>&1 && {
+  echo "invalid build version unexpectedly accepted" >&2
+  exit 1
+}
+KUAI_BUILD_OUTPUT="$TEST_ROOT/direct-kuai" KUAI_VERSION=2.3.4 \
+  GOOS=linux GOARCH=arm64 PATH="$TEST_ROOT/fakebin:/bin:/usr/bin" \
+  "$TEST_ROOT/repo/build.sh"
+grep -q '^stable kuai linux/arm64$' "$TEST_ROOT/direct-kuai"
 
 run_build() {
   PATH="$TEST_ROOT/fakebin:/bin:/usr/bin" \

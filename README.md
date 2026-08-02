@@ -136,8 +136,10 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 bash tests/test_kuai_install_sh.sh
 bash tests/test_build_kuai_release_sh.sh
+bash tests/test_kci_pipeline_build_sh.sh
+bash tests/test_assemble_kuai_checksums_sh.sh
 python3 -m unittest tests.test_docs tests.test_single_binary_contract -v
-bash -n install.sh
+bash -n install.sh build.sh kci-pipeline-build.sh scripts/build-kuai-release.sh scripts/assemble-kuai-checksums.sh
 KUAI_VERSION=1.0.0 sh ./scripts/build-kuai-release.sh
 git diff --check
 ```
@@ -159,12 +161,14 @@ go version -m ./dist/kuai-darwin-arm64
 
 | 流水线 | 资源池 | 产物 | 签名方式 |
 | --- | --- | --- | --- |
-| macOS ARM | macOS M 芯片物理机池 | `kuai-darwin-arm64` | codesign + notarization + staple |
-| macOS x64 | macOS Intel 物理机池 | `kuai-darwin-amd64` | codesign + notarization + staple |
-| Windows | windows 物理机池 | `kuai-windows-amd64.exe` | Http EV 签名服务 |
-| Linux | 任意 | `kuai-linux-amd64` | 无需签名 |
+| macOS ARM | macOS M 芯片物理机池 | `kuai-darwin-arm64` | codesign + notarytool |
+| macOS x64 | macOS Intel 物理机池 | `kuai-darwin-amd64` | codesign + notarytool |
+| Windows ARM | Windows ARM64 物理机池 | `kuai-windows-arm64.exe` | HTTPS EV 签名服务 + Authenticode 验证 |
+| Windows x64 | Windows x64 物理机池 | `kuai-windows-amd64.exe` | HTTPS EV 签名服务 + Authenticode 验证 |
+| Linux ARM | Linux ARM64 物理机池 | `kuai-linux-arm64` | 无需签名 |
+| Linux x64 | Linux x64 物理机池 | `kuai-linux-amd64` | 无需签名 |
 
-`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。两个平台变量缺失时脚本立即失败，不会静默产出空包。
+`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。`UPLOAD_PLATFORM`、`UPLOAD_ARCH` 和 `UPLOAD_PACKAGE_VERSION` 都必须显式提供；流水线还要求与本地发布链路相同的 Go 1.26.5，缺失或不匹配立即失败。每个目标先在仓库内的隔离 staging 目录生成和签名，验证完成后才移动到真实的 `dist` 目录；`dist` 符号链接会被拒绝。
 
 本地可模拟天琴环境变量验证：
 
@@ -174,12 +178,14 @@ UPLOAD_PLATFORM=darwin UPLOAD_ARCH=arm64 UPLOAD_PACKAGE_VERSION=1.0.0 \
 ./dist/kuai-darwin-arm64 status
 ```
 
-两个位置参数分别是是否签名与是否公证，默认均为 `true`；macOS 生产包必须开启公证。签名后不得再修改二进制字节，否则签名失效。
+两个位置参数分别是是否签名与是否公证，默认均为 `true`；SIGN 与 NOTARIZE 只接受 true 或 false，其他值会失败。正式 macOS 流水线使用 `true true`，并预先在构建机钥匙串创建 notarytool profile，再通过 `APPLE_NOTARY_PROFILE` 传入 profile 名；密码不作为命令行参数传递。裸 Mach-O 不执行 stapler，公证提交成功后仍会再次执行严格 codesign 验证。可通过 `APPLE_SIGNING_IDENTITY` 覆盖默认签名身份。
 
-每条流水线只产出自己平台的 `dist/kuai-<os>-<arch>[.exe]` 与配套 `.sha256` 分片。`install.sh` 需要的合并 `SHA256SUMS` 由发布汇总环节拼接全部分片生成：
+正式 Windows 流水线使用 `true false`，并通过 `WINDOWS_SIGNING_PUBLISHER` 指定期望的证书发布者。远程签名下载完成后必须通过 `signtool verify /pa /all /v`，且输出包含该发布者，才会覆盖 staging 中的未签名文件。签名服务的未知状态立即失败。Linux 流水线显式使用 `false false`。签名后不得再修改二进制字节，否则签名失效。
+
+每条流水线只产出自己平台的 `dist/kuai-<os>-<arch>[.exe]` 与配套 `.sha256` 分片。发布汇总任务必须收齐精确六个平台分片，再使用校验脚本生成 `install.sh` 所需的唯一 `SHA256SUMS`；脚本拒绝缺失、陈旧、重复、非规范文件名和非 64 位十六进制摘要：
 
 ```bash
-cat dist/*.sha256 > SHA256SUMS
+./scripts/assemble-kuai-checksums.sh ./dist ./dist/SHA256SUMS
 ```
 
 产物上传 KCDN 后，安装时通过 `KUAI_RELEASE_URL` 指向对应目录；该变量默认指向 GitHub Release，必须是 HTTPS：

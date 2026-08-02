@@ -50,6 +50,7 @@ class DocumentationTests(unittest.TestCase):
             "install.ps1",
             "build.sh",
             "scripts/build-kuai-release.sh",
+            "scripts/assemble-kuai-checksums.sh",
             "kuai.md",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
@@ -174,6 +175,18 @@ class DocumentationTests(unittest.TestCase):
             "windows/arm64",
         ):
             self.assertIn(target, self.release)
+
+    def test_kci_release_docs_require_explicit_secure_inputs(self):
+        for phrase in (
+            "UPLOAD_PACKAGE_VERSION",
+            "APPLE_NOTARY_PROFILE",
+            "WINDOWS_SIGNING_PUBLISHER",
+            "scripts/assemble-kuai-checksums.sh",
+            "SIGN 与 NOTARIZE 只接受 true 或 false",
+        ):
+            self.assertIn(phrase, self.readme)
+        self.assertNotIn("APPLE_APP_SPECIFIC_PASSWORD", self.readme)
+        self.assertNotIn("cat dist/*.sha256", self.readme)
 
     def test_installation_is_verified_and_atomic(self):
         for document in (self.readme, self.skill):

@@ -10,6 +10,11 @@ set -- $(go version)
 }
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+build_script="$root/build.sh"
+[ -f "$build_script" ] && [ ! -L "$build_script" ] && [ -x "$build_script" ] || {
+  echo "kuai: executable project build.sh is required" >&2
+  exit 1
+}
 version=${KUAI_VERSION:-}
 [ -n "$version" ] || {
   version=$(git -C "$root" describe --tags --always --dirty 2>/dev/null || printf dev)
@@ -50,9 +55,9 @@ do
   output="$stage/kuai-$platform-$architecture$suffix"
   (
     cd "$root"
-    CGO_ENABLED=0 GOOS="$platform" GOARCH="$architecture" \
-      go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" \
-      -o "$output" ./cmd/kuai
+    KUAI_BUILD_OUTPUT="$output" KUAI_VERSION="$version" \
+      CGO_ENABLED=0 GOOS="$platform" GOARCH="$architecture" \
+      "$build_script"
   )
 done
 
