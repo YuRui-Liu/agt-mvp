@@ -1,0 +1,224 @@
+package opencode
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/YuRui-Liu/agt-mvp/internal/source"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/adaptertest"
+	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/sqliteread"
+	_ "modernc.org/sqlite"
+)
+
+type recordingSQLiteQueryer struct {
+	sqliteQueryer
+	queries *[]string
+}
+
+func (q recordingSQLiteQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	*q.queries = append(*q.queries, query)
+	return q.sqliteQueryer.QueryContext(ctx, query, args...)
+}
+
+func (q recordingSQLiteQueryer) QueryRowContext(ctx context.Context, query string, args ...any) (*sql.Row, error) {
+	*q.queries = append(*q.queries, query)
+	return q.sqliteQueryer.QueryRowContext(ctx, query, args...)
+}
+
+func installSQLite(t *testing.T, root string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	statements := []string{
+		`PRAGMA journal_mode=WAL`, `PRAGMA wal_autocheckpoint=0`,
+		`CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)`,
+		`CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, directory TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, tokens_input INTEGER NOT NULL DEFAULT 0, tokens_output INTEGER NOT NULL DEFAULT 0, tokens_reasoning INTEGER NOT NULL DEFAULT 0, tokens_cache_read INTEGER NOT NULL DEFAULT 0, tokens_cache_write INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL)`,
+		`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL)`,
+		`CREATE TABLE account (id TEXT, secret TEXT)`, `CREATE TABLE account_state (id TEXT, token TEXT)`,
+		`CREATE TABLE control_account (id TEXT, credential TEXT)`, `CREATE TABLE credential (id TEXT, token TEXT)`,
+		`CREATE TABLE token (id TEXT, value TEXT)`, `CREATE TABLE session_share (session_id TEXT, url TEXT)`,
+		`CREATE TABLE permission (session_id TEXT, data TEXT)`, `CREATE TABLE event (id TEXT, data TEXT)`,
+		`CREATE TABLE session_input (session_id TEXT, data TEXT)`,
+		`PRAGMA wal_checkpoint(TRUNCATE)`,
+		`INSERT INTO account VALUES ('bait','synthetic-secret')`,
+		`INSERT INTO project VALUES ('p1','/synthetic/project',10,90)`,
+		`INSERT INTO session VALUES ('parent','p1',NULL,'/synthetic/project',10,20,0,0,0,0,0)`,
+		`INSERT INTO session VALUES ('s1','p1','parent','/synthetic/project',30,90,11,22,3,4,5)`,
+		`INSERT INTO message VALUES ('m-user','s1',40,'{"id":"m-user","sessionID":"s1","role":"user","time":{"created":40}}')`,
+		`INSERT INTO message VALUES ('m-assistant','s1',50,'{"id":"m-assistant","sessionID":"s1","role":"assistant","modelID":"synthetic-model","time":{"created":50}}')`,
+		`INSERT INTO part VALUES ('p-user','m-user','s1',41,'{"id":"p-user","messageID":"m-user","sessionID":"s1","type":"text","text":"synthetic user","time":{"created":41}}')`,
+		`INSERT INTO part VALUES ('p-think','m-assistant','s1',51,'{"id":"p-think","messageID":"m-assistant","sessionID":"s1","type":"reasoning","text":"synthetic thought","time":{"created":51}}')`,
+		`INSERT INTO part VALUES ('p-tool','m-assistant','s1',52,'{"id":"p-tool","messageID":"m-assistant","sessionID":"s1","type":"tool","tool":"shell","callID":"call-1","state":{"status":"completed","input":{"command":"synthetic"},"output":"synthetic result"},"time":{"created":52}}')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("synthetic sqlite setup: %v", err)
+		}
+	}
+	return db
+}
+
+func findSession(t *testing.T, sessions []source.Session, id string) source.Session {
+	t.Helper()
+	for _, session := range sessions {
+		if session.ID == id {
+			return session
+		}
+	}
+	t.Fatalf("missing session %s", id)
+	return source.Session{}
+}
+
+func TestSQLiteDiscoverOpenWALAndRestrictedQueries(t *testing.T) {
+	root := t.TempDir()
+	installSQLite(t, root)
+	a := New(root)
+	var queries []string
+	a.sqliteRead = func(ctx context.Context, root, path string, maxBytes int64, fn func(sqliteQueryer) error) error {
+		return sqliteread.WithReadOnlyTx(ctx, root, path, maxBytes, func(tx *sqliteread.ReadTx) error {
+			return fn(recordingSQLiteQueryer{sqliteQueryer: tx, queries: &queries})
+		})
+	}
+	sessions, err := a.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := findSession(t, sessions, "opencode:s1")
+	if s.FormatVersion != "db-v2" || s.Scope.Type != source.ScopeProject || s.Scope.Root != "/synthetic/project" || s.ParentID != "opencode:parent" || s.MessageCount != 2 || s.SnapshotID == "" {
+		t.Fatalf("metadata=%#v", s)
+	}
+	if s.Usage["input_tokens"] != 11 || s.Usage["output_tokens"] != 22 || s.Usage["reasoning_tokens"] != 3 || s.Usage["cache_read_tokens"] != 4 || s.Usage["cache_write_tokens"] != 5 {
+		t.Fatalf("usage=%#v", s.Usage)
+	}
+	r, err := a.Open(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var types []string
+	decoder := json.NewDecoder(r)
+	for {
+		var event map[string]any
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, event["type"].(string))
+	}
+	if strings.Join(types, ",") != "message,message,tool_use,tool_result" {
+		t.Fatalf("event order/types=%v", types)
+	}
+	if len(queries) == 0 {
+		t.Fatal("no sqlite queries recorded")
+	}
+	for _, query := range queries {
+		lower := strings.ToLower(query)
+		if strings.Contains(lower, "select *") {
+			t.Fatalf("wildcard query: %s", query)
+		}
+		for _, forbidden := range []string{"account", "account_state", "control_account", "credential", " token", "session_share", "permission", " event", "session_input"} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("forbidden table in query: %s", query)
+			}
+		}
+	}
+}
+
+func TestSQLiteAuthorizationContractRequeriesAndRejectsMutation(t *testing.T) {
+	root := t.TempDir()
+	db := installSQLite(t, root)
+	other := New(root)
+	forgedSessions, err := other.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := findSession(t, forgedSessions, "opencode:s1")
+	originalDigest := forged.SnapshotID
+	forged.SnapshotID = "forged-by-another-instance"
+	a := New(root)
+	adaptertest.AuthorizationContract(t, a, func() {
+		result, err := db.Exec(`UPDATE part SET data='{"id":"p-user","messageID":"m-user","sessionID":"s1","type":"text","text":"changed"}' WHERE id='p-user'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+			t.Fatalf("mutation rows=%d err=%v", changed, err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := New(root).Discover(context.Background())
+		freshSession := findSession(t, fresh, "opencode:s1")
+		if err != nil || freshSession.SnapshotID == originalDigest {
+			t.Fatalf("mutation not reflected by fresh discovery: err=%v input=%d old=%s new=%s", err, freshSession.Usage["input_tokens"], originalDigest, freshSession.SnapshotID)
+		}
+	}, forged)
+}
+
+func TestSQLitePreferredOverLegacyDuplicate(t *testing.T) {
+	root := t.TempDir()
+	installSQLite(t, root)
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"s1", "legacy-only"} {
+		write(filepath.Join(root, "storage", "session", "p", id+".json"), `{"id":"`+id+`","directory":"/legacy"}`)
+		write(filepath.Join(root, "storage", "message", id, "m.json"), `{"id":"m","sessionID":"`+id+`","role":"user"}`)
+		write(filepath.Join(root, "storage", "part", "m", id+".json"), `{"id":"`+id+`-part","sessionID":"`+id+`","messageID":"m","type":"text","text":"legacy synthetic"}`)
+	}
+	sessions, err := New(root).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, session := range sessions {
+		if session.ID == "opencode:s1" {
+			count++
+			if session.FormatVersion != "db-v2" {
+				t.Fatalf("legacy won: %#v", session)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("duplicate count=%d sessions=%#v", count, sessions)
+	}
+	findSession(t, sessions, "opencode:legacy-only")
+}
+
+func TestSQLiteUnsupportedSchemaIsClassifiedWithoutRawError(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE session (private_column TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, err = New(root).Discover(context.Background())
+	var discovery *source.DiscoveryError
+	if !errors.As(err, &discovery) {
+		t.Fatalf("expected discovery classification, got %v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "private_column") || err.Error() != "opencode: unsupported database schema" {
+		t.Fatalf("raw schema error leaked: %v", err)
+	}
+}

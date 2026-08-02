@@ -29,11 +29,13 @@ type Adapter struct {
 	mu                sync.RWMutex
 	known             map[string]authorization
 	readFile          func(string, string) ([]byte, error)
+	sqliteRead        sqliteReadFunc
 	afterSnapshotLoad func()
 }
 type authorization struct {
 	id, digest string
-	output     []byte
+	format     string
+	ref        string
 }
 
 func New(roots ...string) *Adapter {
@@ -46,7 +48,7 @@ func New(roots ...string) *Adapter {
 			root = defaultRoot(home, runtime.GOOS, os.Getenv)
 		}
 	}
-	return &Adapter{root: root, known: map[string]authorization{}, readFile: readBytes}
+	return &Adapter{root: root, known: map[string]authorization{}, readFile: readBytes, sqliteRead: defaultSQLiteRead}
 }
 func defaultRoot(home, goos string, getenv func(string) string) string {
 	if goos == "windows" {
@@ -306,6 +308,14 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	databaseSessions, next, err := a.discoverSQLite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]source.Session{}
+	for _, session := range databaseSessions {
+		byID[session.ID] = session
+	}
 	base := filepath.Join(a.root, "storage", "session")
 	var paths []string
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
@@ -318,13 +328,14 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		return nil
 	})
 	sort.Strings(paths)
-	byID := map[string]source.Session{}
 	digests := map[string]string{}
-	outputs := map[string][]byte{}
 	conflicts := map[string]bool{}
 	for _, path := range paths {
-		s, digest, output, ok := a.inspect(ctx, path)
+		s, digest, _, ok := a.inspect(ctx, path)
 		if !ok {
+			continue
+		}
+		if existing, exists := byID[s.ID]; exists && existing.FormatVersion == databaseFormat {
 			continue
 		}
 		if conflicts[s.ID] {
@@ -337,16 +348,16 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 		}
 		byID[s.ID] = s
 		digests[s.ID] = digest
-		outputs[s.ID] = output
 	}
 	out := make([]source.Session, 0, len(byID))
 	for _, s := range byID {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	next := map[string]authorization{}
 	for _, s := range out {
-		next[s.OpaqueRef] = authorization{s.ID, digests[s.ID], outputs[s.ID]}
+		if s.FormatVersion != databaseFormat {
+			next[s.OpaqueRef] = authorization{id: s.ID, digest: digests[s.ID], format: "storage-v1", ref: s.OpaqueRef}
+		}
 	}
 	a.mu.Lock()
 	a.known = next
@@ -578,16 +589,26 @@ func (a *Adapter) Open(ctx context.Context, s source.Session) (io.ReadCloser, er
 	a.mu.RLock()
 	auth, ok := a.known[s.OpaqueRef]
 	a.mu.RUnlock()
-	if !ok || auth.id != s.ID {
+	if !ok || auth.id != s.ID || auth.format != s.FormatVersion {
 		return nil, errors.New("opencode: unknown session reference")
+	}
+	if auth.format == databaseFormat {
+		return a.openSQLite(ctx, auth, s)
 	}
 	snap, err := a.loadSnapshot(ctx, s.OpaqueRef)
 	if err != nil {
 		return nil, errors.New("opencode: stale session reference")
 	}
-	var sf sessionFile
-	if json.Unmarshal(snap.session, &sf) != nil || "opencode:"+sf.ID != s.ID || snap.digest != auth.digest {
+	sf, events, _, _, parseErr := parseSnapshot(snap)
+	if parseErr != nil || "opencode:"+sf.ID != s.ID || snap.digest != auth.digest {
 		return nil, errors.New("opencode: source changed since discovery")
 	}
-	return io.NopCloser(bytes.NewReader(append([]byte(nil), auth.output...))), nil
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	for _, event := range events {
+		if encoder.Encode(event) != nil {
+			return nil, errors.New("opencode: stale session reference")
+		}
+	}
+	return io.NopCloser(bytes.NewReader(output.Bytes())), nil
 }
