@@ -44,6 +44,25 @@ func readCLIFixture(t *testing.T) []byte {
 	return data
 }
 
+func mutateCLIFixture(t *testing.T, data []byte, mutate func(int, map[string]any)) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	for index, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		mutate(index, record)
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(encoded)
+		output.WriteByte('\n')
+	}
+	return output.Bytes()
+}
+
 func TestCLIExactDiscoveryAndCanonicalOpen(t *testing.T) {
 	root := t.TempDir()
 	fixture := readCLIFixture(t)
@@ -132,8 +151,114 @@ func TestCLIRequiresExactEncodedProjectEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := result.Sources["tongyi-lingma-cli"].State; got != source.SourceFormatUnsupported {
+	if got := result.Sources["tongyi-lingma-cli"].State; got != source.SourceReadError {
 		t.Fatalf("state=%q", got)
+	}
+}
+
+func TestCLIHealthyCandidateSurvivesBadCandidates(t *testing.T) {
+	root := t.TempDir()
+	fixture := readCLIFixture(t)
+	installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
+	unknown := mutateCLIFixture(t, fixture, func(_ int, record map[string]any) {
+		record["sessionId"] = "task-unknown"
+		record["version"] = "99-unknown"
+	})
+	installCLI(t, root, "-synthetic-course-project", "task-unknown", unknown)
+	installCLI(t, root, "-synthetic-course-project", "task-malformed", []byte("{}\n"))
+	conflict := mutateCLIFixture(t, fixture, func(index int, record map[string]any) {
+		record["sessionId"] = "task-conflict"
+		if index == 2 {
+			record["uuid"] = "event-user"
+		}
+	})
+	installCLI(t, root, "-synthetic-course-project", "task-conflict", conflict)
+	installCLI(t, root, "-synthetic-course-project", "task-oversize", bytes.Repeat([]byte("x"), maxCLILineBytes+1))
+
+	result, err := source.NewRegistry(NewCLI(root)).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Sources["tongyi-lingma-cli"].State; got != source.SourceReady {
+		t.Fatalf("state=%q", got)
+	}
+	if len(result.Sessions) != 1 || result.Sessions[0].MessageCount != 2 {
+		t.Fatalf("sessions=%#v", result.Sessions)
+	}
+}
+
+func TestCLIZeroHealthyMalformedCandidateIsReadError(t *testing.T) {
+	root := t.TempDir()
+	installCLI(t, root, "-synthetic-course-project", "task-malformed", []byte("{}\n"))
+	result, err := source.NewRegistry(NewCLI(root)).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Sources["tongyi-lingma-cli"].State; got != source.SourceReadError {
+		t.Fatalf("state=%q", got)
+	}
+}
+
+func TestCLIStrictMessageEnvelopeIsolatesInvalidLine(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "meta", mutate: func(record map[string]any) { record["isMeta"] = true }},
+		{name: "sidechain", mutate: func(record map[string]any) { record["isSidechain"] = true }},
+		{name: "user type", mutate: func(record map[string]any) { record["userType"] = "internal" }},
+		{name: "missing agent", mutate: func(record map[string]any) { delete(record, "agentId") }},
+		{name: "missing parent uuid", mutate: func(record map[string]any) { delete(record, "parentUuid") }},
+		{name: "missing request set", mutate: func(record map[string]any) { delete(record, "requestSetId") }},
+		{name: "missing message id", mutate: func(record map[string]any) { delete(record["message"].(map[string]any), "id") }},
+		{name: "numeric message id", mutate: func(record map[string]any) { record["message"].(map[string]any)["id"] = 7 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			fixture := mutateCLIFixture(t, readCLIFixture(t), func(index int, record map[string]any) {
+				if index == 0 {
+					test.mutate(record)
+				}
+			})
+			installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
+			sessions, err := NewCLI(root).Discover(context.Background())
+			if err != nil || len(sessions) != 1 {
+				t.Fatalf("sessions=%#v err=%v", sessions, err)
+			}
+			if sessions[0].MessageCount != 1 || sessions[0].MalformedCount != 1 {
+				t.Fatalf("session=%#v", sessions[0])
+			}
+		})
+	}
+}
+
+func TestCLIAgentIDMustRemainStableWithinSession(t *testing.T) {
+	root := t.TempDir()
+	fixture := mutateCLIFixture(t, readCLIFixture(t), func(index int, record map[string]any) {
+		if index == 2 {
+			record["agentId"] = "other-agent"
+		}
+	})
+	installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
+	sessions, err := NewCLI(root).Discover(context.Background())
+	if err != nil || len(sessions) != 1 || sessions[0].MessageCount != 1 || sessions[0].MalformedCount != 1 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestCLIMalformedLineDoesNotBindSessionEnvelope(t *testing.T) {
+	root := t.TempDir()
+	fixture := mutateCLIFixture(t, readCLIFixture(t), func(index int, record map[string]any) {
+		if index == 0 {
+			record["timestamp"] = "not-a-time"
+			record["agentId"] = "discarded-agent"
+		}
+	})
+	installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
+	sessions, err := NewCLI(root).Discover(context.Background())
+	if err != nil || len(sessions) != 1 || sessions[0].MessageCount != 1 || sessions[0].MalformedCount != 1 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
 }
 
@@ -317,6 +442,52 @@ func TestIDEMalformedConversationIsIsolated(t *testing.T) {
 	}
 }
 
+func TestIDEAllMalformedRowsReturnReadError(t *testing.T) {
+	root := t.TempDir()
+	db, _ := openLingmaDB(t, root, nil)
+	defer db.Close()
+	insertLingmaConversation(t, db, "bad", "/synthetic/course-project", 0)
+	if _, err := db.Exec(`UPDATE chat_message SET content=x'00' WHERE session_id='bad'`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := source.NewRegistry(NewIDE(root)).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Sources["tongyi-lingma-ide"].State; got != source.SourceReadError {
+		t.Fatalf("state=%q", got)
+	}
+}
+
+func TestIDERelativeProjectIDUsesIDEOnlyScope(t *testing.T) {
+	root := t.TempDir()
+	installCLI(t, root, "-synthetic-course-project", "task-fixture", readCLIFixture(t))
+	db, _ := openLingmaDB(t, root, nil)
+	defer db.Close()
+	insertLingmaConversation(t, db, "session-1", "project-hash", 0)
+	sessions, err := NewIDE(root).Discover(context.Background())
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+	if got := sessions[0].Scope; got.Type != source.ScopeProject || !strings.HasPrefix(got.Root, "tongyi-lingma-ide:project:") || got.Label != "Lingma IDE project" {
+		t.Fatalf("scope=%#v", got)
+	}
+	if got := sessions[0].Scope.Root; got == sharedProjectRoot("project-hash") {
+		t.Fatal("relative project ID joined shared scope")
+	}
+	cliSessions, err := NewCLI(root).Discover(context.Background())
+	if err != nil || len(cliSessions) != 1 {
+		t.Fatalf("CLI sessions=%#v err=%v", cliSessions, err)
+	}
+	scopes, err := source.GroupScopes(append(cliSessions, sessions...), bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 2 {
+		t.Fatalf("relative IDE project was guessed into CLI scope: %#v", scopes)
+	}
+}
+
 func TestIDEAuthorizationIsInstanceAndFileSetBound(t *testing.T) {
 	root := t.TempDir()
 	db, _ := openLingmaDB(t, root, nil)
@@ -455,15 +626,36 @@ func TestCanonicalTextAndProjectLabelRedactDirectPrivateValues(t *testing.T) {
 	}
 }
 
-func TestCLIStableIDConflictsFailClosed(t *testing.T) {
+func TestEncodedProjectKeyWindowsStyle(t *testing.T) {
+	if got := encodedProjectKey(`C:\work`); got != "C--work" {
+		t.Fatalf("encoded=%q", got)
+	}
+}
+
+func TestCLIWindowsStyleCWDEvidenceMatchesEncodedDirectory(t *testing.T) {
+	root := t.TempDir()
+	fixture := mutateCLIFixture(t, readCLIFixture(t), func(_ int, record map[string]any) {
+		record["cwd"] = `C:\work`
+	})
+	installCLI(t, root, "C--work", "task-fixture", fixture)
+	sessions, err := NewCLI(root).Discover(context.Background())
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	}
+	if sessions[0].Scope.Label != "work" {
+		t.Fatalf("scope=%#v", sessions[0].Scope)
+	}
+}
+
+func TestCLIStableIDConflictKeepsFirstHealthyCandidate(t *testing.T) {
 	root := t.TempDir()
 	otherRoot := t.TempDir()
 	fixture := readCLIFixture(t)
 	installCLI(t, root, "-synthetic-course-project", "task-fixture", fixture)
 	installCLI(t, otherRoot, "-synthetic-course-project", "task-fixture", fixture)
-	_, err := NewCLI(root, otherRoot).Discover(context.Background())
-	if err == nil {
-		t.Fatal("duplicate upstream id accepted")
+	sessions, err := NewCLI(root, otherRoot).Discover(context.Background())
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
 }
 

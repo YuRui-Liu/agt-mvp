@@ -75,21 +75,30 @@ func (*CLIAdapter) Capabilities() []source.Capability {
 }
 
 type cliRecord struct {
-	UUID      string `json:"uuid"`
-	CWD       string `json:"cwd"`
-	SessionID string `json:"sessionId"`
-	Version   string `json:"version"`
-	Type      string `json:"type"`
-	Subtype   string `json:"subtype"`
-	Timestamp string `json:"timestamp"`
-	Message   struct {
-		ID      string `json:"id"`
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"message"`
+	UUID        *string     `json:"uuid"`
+	ParentUUID  *string     `json:"parentUuid"`
+	CWD         *string     `json:"cwd"`
+	SessionID   *string     `json:"sessionId"`
+	Version     *string     `json:"version"`
+	AgentID     *string     `json:"agentId"`
+	Type        *string     `json:"type"`
+	Timestamp   *string     `json:"timestamp"`
+	RequestSet  *string     `json:"requestSetId"`
+	UserType    *string     `json:"userType"`
+	IsMeta      *bool       `json:"isMeta"`
+	IsSidechain *bool       `json:"isSidechain"`
+	Message     *cliMessage `json:"message"`
+}
+
+type cliMessage struct {
+	ID      *string       `json:"id"`
+	Role    *string       `json:"role"`
+	Content *[]cliContent `json:"content"`
+}
+
+type cliContent struct {
+	Type *string `json:"type"`
+	Text *string `json:"text"`
 }
 
 type canonicalEvent struct {
@@ -103,16 +112,23 @@ type canonicalEvent struct {
 }
 
 type parsedCLI struct {
-	sessionID, cwd string
-	events         []canonicalEvent
-	seenEvents     map[string]canonicalEvent
-	seenMessages   map[string]string
-	malformed      int
-	started, ended time.Time
+	sessionID, cwd, agentID string
+	events                  []canonicalEvent
+	seenEvents              map[string]cliEventBinding
+	seenMessages            map[string]string
+	malformed               int
+	started, ended          time.Time
+}
+
+type cliEventBinding struct {
+	messageID string
+	event     canonicalEvent
 }
 
 var errUnsupportedCLI = errors.New("lingma: unsupported execution format")
 var errConflictingCLIEvent = errors.New("lingma: conflicting execution event")
+var errMalformedCLI = errors.New("lingma: malformed execution candidate")
+var errNoUsableIDEConversation = errors.New("lingma: no usable IDE conversation")
 
 func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 	a.scanMu.Lock()
@@ -128,6 +144,8 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 	seenIDs := map[string]cliAuthorization{}
 	seenRoots := map[safeopen.Identity]bool{}
 	entriesRead := 0
+	hadUnsupported := false
+	hadCandidateFailure := false
 	for _, root := range a.roots {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -195,17 +213,20 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 				relative := filepath.Join(projectRelative, entry.Name())
 				session, auth, _, err := a.snapshotCLI(ctx, bound, root, relative, taskID)
 				if errors.Is(err, errUnsupportedCLI) {
-					bound.Close()
-					return nil, source.NewDiscoveryError(source.SourceFormatUnsupported, errUnsupportedCLI)
+					hadUnsupported = true
+					continue
 				}
 				if err != nil {
-					bound.Close()
-					return nil, err
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						bound.Close()
+						return nil, ctxErr
+					}
+					hadCandidateFailure = true
+					continue
 				}
 				if previous, duplicate := seenIDs[session.ID]; duplicate {
 					if previous.snapshot != auth.snapshot || previous.root != auth.root || previous.relative != auth.relative {
-						bound.Close()
-						return nil, errors.New("lingma: duplicate CLI session")
+						hadCandidateFailure = true
 					}
 					continue
 				}
@@ -218,6 +239,14 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if len(sessions) == 0 {
+		if hadCandidateFailure {
+			return nil, errors.New("lingma: no readable CLI candidates")
+		}
+		if hadUnsupported {
+			return nil, source.NewDiscoveryError(source.SourceFormatUnsupported, errUnsupportedCLI)
+		}
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 	a.mu.Lock()
@@ -259,7 +288,7 @@ func (a *CLIAdapter) snapshotCLI(ctx context.Context, bound *safeopen.BoundRoot,
 	}
 	projectKey := filepath.Base(filepath.Dir(relative))
 	if parsed.sessionID == "" || len(parsed.events) == 0 || parsed.cwd == "" || encodedProjectKey(parsed.cwd) != projectKey {
-		return source.Session{}, cliAuthorization{}, nil, errUnsupportedCLI
+		return source.Session{}, cliAuthorization{}, nil, errMalformedCLI
 	}
 	sortCanonical(parsed.events)
 	var output bytes.Buffer
@@ -300,60 +329,71 @@ func parseCLILine(ctx context.Context, data []byte, taskID string, parsed *parse
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if record.Version == "" {
+	if record.Version == nil || *record.Version == "" {
 		parsed.malformed++
 		return nil
 	}
-	if record.Version != cliProtocolVersion {
+	if *record.Version != cliProtocolVersion {
 		return errUnsupportedCLI
 	}
-	if record.Type != "user" && record.Type != "assistant" {
-		return nil
-	}
-	if record.SessionID != taskID || !validIdentifier(record.UUID) || record.Message.ID == "" || record.Message.Role != record.Type || !validAbsoluteProject(record.CWD) {
+	if record.Type == nil || *record.Type == "" {
 		parsed.malformed++
 		return nil
 	}
-	if parsed.sessionID != "" && (parsed.sessionID != record.SessionID || parsed.cwd != filepath.Clean(record.CWD)) {
+	if *record.Type != "user" && *record.Type != "assistant" {
+		return nil
+	}
+	if record.UUID == nil || record.ParentUUID == nil || record.CWD == nil || record.SessionID == nil || record.AgentID == nil || record.Timestamp == nil || record.RequestSet == nil || record.UserType == nil || record.IsMeta == nil || record.IsSidechain == nil || record.Message == nil ||
+		*record.SessionID != taskID || !validIdentifier(*record.UUID) || (*record.ParentUUID != "" && !validOpaqueID(*record.ParentUUID)) || !validIdentifier(*record.AgentID) || !validOpaqueID(*record.RequestSet) || *record.UserType != "external" || *record.IsMeta || *record.IsSidechain ||
+		record.Message.ID == nil || record.Message.Role == nil || record.Message.Content == nil || !validIdentifier(*record.Message.ID) || *record.Message.Role != *record.Type || !validAbsoluteProject(*record.CWD) {
+		parsed.malformed++
+		return nil
+	}
+	project, projectOK := canonicalProjectPath(*record.CWD)
+	if !projectOK {
+		parsed.malformed++
+		return nil
+	}
+	if parsed.sessionID != "" && (parsed.sessionID != *record.SessionID || parsed.cwd != project || parsed.agentID != *record.AgentID) {
 		parsed.malformed++
 		return nil
 	}
 	var texts []string
-	for _, part := range record.Message.Content {
-		if part.Type != "text" {
+	for _, part := range *record.Message.Content {
+		if part.Type == nil || part.Text == nil || *part.Type != "text" {
 			parsed.malformed++
 			return nil
 		}
-		if part.Text != "" {
-			texts = append(texts, part.Text)
+		if *part.Text != "" {
+			texts = append(texts, *part.Text)
 		}
 	}
 	if len(texts) == 0 {
 		parsed.malformed++
 		return nil
 	}
-	parsed.sessionID, parsed.cwd = record.SessionID, filepath.Clean(record.CWD)
-	timestamp, err := time.Parse(time.RFC3339Nano, record.Timestamp)
+	timestamp, err := time.Parse(time.RFC3339Nano, *record.Timestamp)
 	if err != nil {
 		parsed.malformed++
 		return nil
 	}
-	event := canonicalEvent{Type: "message", Role: record.Type, Content: sanitizeCanonicalText(strings.Join(texts, "\n")), Timestamp: timestamp.UTC().Format(time.RFC3339Nano), StableID: record.UUID, at: timestamp.UnixNano(), rank: 1}
+	event := canonicalEvent{Type: "message", Role: *record.Type, Content: sanitizeCanonicalText(strings.Join(texts, "\n")), Timestamp: timestamp.UTC().Format(time.RFC3339Nano), StableID: *record.UUID, at: timestamp.UnixNano(), rank: 1}
 	if parsed.seenEvents == nil {
-		parsed.seenEvents = map[string]canonicalEvent{}
+		parsed.seenEvents = map[string]cliEventBinding{}
 		parsed.seenMessages = map[string]string{}
 	}
-	if previous, exists := parsed.seenEvents[record.UUID]; exists {
-		if previous != event {
+	if previous, exists := parsed.seenEvents[*record.UUID]; exists {
+		if previous.event != event || previous.messageID != *record.Message.ID {
 			return errConflictingCLIEvent
 		}
 		return nil
 	}
-	if previousUUID, exists := parsed.seenMessages[record.Message.ID]; exists && previousUUID != record.UUID {
+	if previousUUID, exists := parsed.seenMessages[*record.Message.ID]; exists && previousUUID != *record.UUID {
 		return errConflictingCLIEvent
 	}
-	parsed.seenEvents[record.UUID] = event
-	parsed.seenMessages[record.Message.ID] = record.UUID
+	parsed.seenEvents[*record.UUID] = cliEventBinding{messageID: *record.Message.ID, event: event}
+	parsed.seenMessages[*record.Message.ID] = *record.UUID
+	parsed.sessionID, parsed.cwd, parsed.agentID = *record.SessionID, project, *record.AgentID
 	parsed.events = append(parsed.events, event)
 	trackTime(timestamp, &parsed.started, &parsed.ended)
 	return nil
@@ -535,6 +575,9 @@ func (a *IDEAdapter) snapshotIDE(ctx context.Context, root string) ([]ideDiscove
 				discovered = append(discovered, item)
 			}
 		}
+		if len(rows) > 0 && len(discovered) == 0 {
+			return errNoUsableIDEConversation
+		}
 		return nil
 	}, a.options...)
 	if err != nil {
@@ -552,10 +595,17 @@ func (a *IDEAdapter) snapshotIDE(ctx context.Context, root string) ([]ideDiscove
 
 func (a *IDEAdapter) convertIDE(conversation sharedclient.Conversation, root string, files databaseFileSet) (ideDiscovered, bool) {
 	row := conversation.Session
-	if row.ID == "" || !validAbsoluteProject(row.ProjectID) {
+	if row.ID == "" || row.ProjectID == "" {
 		return ideDiscovered{}, false
 	}
+	scope := source.ScopeRef{Type: source.ScopeProject, Root: "tongyi-lingma-ide:project:" + digestPrefix(row.ProjectID, 32), Label: "Lingma IDE project"}
+	if validAbsoluteProject(row.ProjectID) {
+		scope = projectScope(row.ProjectID)
+	}
 	var events []canonicalEvent
+	// Machine evidence currently proves only plain user/assistant chat_message
+	// content. Records, snapshots, reasoning_content, and tool_result remain
+	// snapshot inputs but are deliberately not promoted to canonical events.
 	for _, message := range conversation.Messages {
 		if message.Role != "user" && message.Role != "assistant" {
 			continue
@@ -593,7 +643,7 @@ func (a *IDEAdapter) convertIDE(conversation sharedclient.Conversation, root str
 	session := source.Session{
 		ID: "tongyi-lingma-ide:sharedclient-db-v1:" + digestPrefix(row.ID, 24), Product: a.Product(),
 		FormatVersion: "sharedclient-db-v1", AdapterVersion: "1", Capabilities: []source.Capability{source.CapabilityMessages},
-		Scope: projectScope(row.ProjectID), StartedAt: started, EndedAt: ended, MessageCount: len(events),
+		Scope: scope, StartedAt: started, EndedAt: ended, MessageCount: len(events),
 		SnapshotID: hex.EncodeToString(snapshotSum[:]), OpaqueRef: "tongyi-lingma-ide:ref:" + strconv.FormatUint(a.instance, 10) + ":" + digestPrefix(root+"\x00"+row.ID, 24),
 	}
 	auth := ideAuthorization{id: session.ID, snapshot: session.SnapshotID, metadata: sessionMetadata(session), root: root, files: files}
@@ -720,16 +770,23 @@ func validEntryName(name string) bool {
 func validIdentifier(value string) bool {
 	return value != "" && len(value) <= 512 && !strings.ContainsAny(value, "\x00\r\n/\\")
 }
+func validOpaqueID(value string) bool {
+	return value != "" && len(value) <= 512 && !strings.ContainsAny(value, "\x00\r\n")
+}
 func validTaskID(value string) bool {
 	return strings.HasPrefix(value, "task-") && validIdentifier(value)
 }
 func validAbsoluteProject(value string) bool {
-	return value != "" && len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && !strings.ContainsAny(value, "\x00\r\n")
+	_, ok := canonicalProjectPath(value)
+	return ok
 }
 
 func projectScope(project string) source.ScopeRef {
-	clean := filepath.Clean(project)
-	label := safeProjectLabel(filepath.Base(clean))
+	clean, ok := canonicalProjectPath(project)
+	if !ok {
+		clean = project
+	}
+	label := safeProjectLabel(projectBase(clean))
 	if label == "" {
 		label = "Lingma project"
 	}
@@ -786,10 +843,56 @@ func windowsDrivePath(value string) bool {
 }
 
 func sharedProjectRoot(project string) string {
-	return "sharedclient:project:" + digestPrefix(filepath.Clean(project), 32)
+	clean, ok := canonicalProjectPath(project)
+	if !ok {
+		clean = project
+	}
+	return "sharedclient:project:" + digestPrefix(clean, 32)
 }
 func encodedProjectKey(project string) string {
-	return strings.NewReplacer("/", "-", "\\", "-").Replace(filepath.Clean(project))
+	clean, ok := canonicalProjectPath(project)
+	if !ok {
+		clean = project
+	}
+	return strings.NewReplacer(":", "-", "/", "-", "\\", "-").Replace(clean)
+}
+
+func canonicalProjectPath(value string) (string, bool) {
+	if value == "" || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
+		return "", false
+	}
+	if windowsCanonicalProject(value) {
+		return value, true
+	}
+	if filepath.IsAbs(value) && filepath.Clean(value) == value {
+		return value, true
+	}
+	return "", false
+}
+
+func windowsCanonicalProject(value string) bool {
+	if len(value) < 3 || !((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) || value[1] != ':' || value[2] != '\\' || strings.Contains(value, "/") {
+		return false
+	}
+	if len(value) == 3 {
+		return true
+	}
+	for _, segment := range strings.Split(value[3:], `\`) {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func projectBase(project string) string {
+	if windowsCanonicalProject(project) {
+		if index := strings.LastIndexByte(project, '\\'); index >= 0 && index+1 < len(project) {
+			return project[index+1:]
+		}
+		return ""
+	}
+	return filepath.Base(project)
 }
 func digestPrefix(value string, length int) string {
 	sum := sha256.Sum256([]byte(value))
