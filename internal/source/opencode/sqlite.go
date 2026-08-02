@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,22 +43,25 @@ func defaultSQLiteRead(ctx context.Context, root, path string, maxBytes int64, f
 
 var requiredSQLiteColumns = map[string][]string{
 	"project": {"id", "worktree"},
-	"session": {"id", "project_id", "parent_id", "directory", "time_created", "time_updated", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write"},
+	"session": {"id", "project_id", "parent_id", "directory", "time_created", "time_updated"},
 	"message": {"id", "session_id", "time_created", "data"},
 	"part":    {"id", "message_id", "session_id", "time_created", "data"},
 }
 
 type sqliteMeta struct {
-	id, projectID, parentID, directory, worktree    string
-	created, updated                                int64
-	input, output, reasoning, cacheRead, cacheWrite int64
+	id, projectID, parentID, directory, worktree string
+	created, updated                             int64
+	usage                                        map[string]int64
 }
 
-func validateSQLiteSchema(ctx context.Context, tx sqliteQueryer) error {
+type sqliteSchema struct{ columns map[string]map[string]bool }
+
+func validateSQLiteSchema(ctx context.Context, tx sqliteQueryer) (sqliteSchema, error) {
+	schema := sqliteSchema{columns: map[string]map[string]bool{}}
 	for _, table := range []string{"project", "session", "message", "part"} {
 		rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
 		if err != nil {
-			return errors.New("opencode: unsupported database schema")
+			return sqliteSchema{}, errors.New("opencode: unsupported database schema")
 		}
 		columns := map[string]bool{}
 		for rows.Next() {
@@ -64,42 +70,70 @@ func validateSQLiteSchema(ctx context.Context, tx sqliteQueryer) error {
 			var defaultValue any
 			if err := rows.Scan(&cid, &name, &kind, &notnull, &defaultValue, &primaryKey); err != nil {
 				rows.Close()
-				return errors.New("opencode: unsupported database schema")
+				return sqliteSchema{}, errors.New("opencode: unsupported database schema")
 			}
 			columns[name] = true
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
-			return errors.New("opencode: unsupported database schema")
+			return sqliteSchema{}, errors.New("opencode: unsupported database schema")
 		}
 		for _, name := range requiredSQLiteColumns[table] {
 			if !columns[name] {
-				return errors.New("opencode: unsupported database schema")
+				return sqliteSchema{}, errors.New("opencode: unsupported database schema")
+			}
+		}
+		schema.columns[table] = columns
+	}
+	return schema, nil
+}
+
+var sqliteUsageColumns = []struct{ column, key string }{
+	{"tokens_input", "input_tokens"},
+	{"tokens_output", "output_tokens"},
+	{"tokens_reasoning", "reasoning_tokens"},
+	{"tokens_cache_read", "cache_read_tokens"},
+	{"tokens_cache_write", "cache_write_tokens"},
+}
+
+func sqliteMetaProjection(schema sqliteSchema) string {
+	projection := `s.id,s.project_id,COALESCE(s.parent_id,''),s.directory,p.worktree,s.time_created,s.time_updated`
+	for _, usage := range sqliteUsageColumns {
+		if schema.columns["session"][usage.column] {
+			projection += ",s." + usage.column
+		} else {
+			projection += ",0"
+		}
+	}
+	return projection
+}
+
+func scanSQLiteMeta(scanner interface{ Scan(...any) error }, schema sqliteSchema) (sqliteMeta, error) {
+	var m sqliteMeta
+	var values [5]int64
+	err := scanner.Scan(&m.id, &m.projectID, &m.parentID, &m.directory, &m.worktree, &m.created, &m.updated,
+		&values[0], &values[1], &values[2], &values[3], &values[4])
+	if err == nil {
+		m.usage = map[string]int64{}
+		for index, usage := range sqliteUsageColumns {
+			if schema.columns["session"][usage.column] {
+				m.usage[usage.key] = values[index]
 			}
 		}
 	}
-	return nil
-}
-
-func scanSQLiteMeta(scanner interface{ Scan(...any) error }) (sqliteMeta, error) {
-	var m sqliteMeta
-	err := scanner.Scan(&m.id, &m.projectID, &m.parentID, &m.directory, &m.worktree, &m.created, &m.updated,
-		&m.input, &m.output, &m.reasoning, &m.cacheRead, &m.cacheWrite)
 	return m, err
 }
 
-const sqliteMetaColumns = `s.id,s.project_id,COALESCE(s.parent_id,''),s.directory,p.worktree,s.time_created,s.time_updated,s.tokens_input,s.tokens_output,s.tokens_reasoning,s.tokens_cache_read,s.tokens_cache_write`
-
-func listSQLiteMeta(ctx context.Context, tx sqliteQueryer) ([]sqliteMeta, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT `+sqliteMetaColumns+` FROM session AS s JOIN project AS p ON p.id=s.project_id ORDER BY s.time_created,s.id LIMIT ?`, maxDatabaseSessions+1)
+func listSQLiteMeta(ctx context.Context, tx sqliteQueryer, schema sqliteSchema) ([]sqliteMeta, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s JOIN project AS p ON p.id=s.project_id ORDER BY s.time_created,s.id LIMIT ?`, maxDatabaseSessions+1)
 	if err != nil {
 		return nil, errors.New("opencode: unsupported database schema")
 	}
 	defer rows.Close()
 	var out []sqliteMeta
 	for rows.Next() {
-		m, err := scanSQLiteMeta(rows)
+		m, err := scanSQLiteMeta(rows, schema)
 		if err != nil {
 			return nil, errors.New("opencode: unsupported database schema")
 		}
@@ -111,12 +145,12 @@ func listSQLiteMeta(ctx context.Context, tx sqliteQueryer) ([]sqliteMeta, error)
 	return out, nil
 }
 
-func getSQLiteMeta(ctx context.Context, tx sqliteQueryer, id string) (sqliteMeta, error) {
-	row, err := tx.QueryRowContext(ctx, `SELECT `+sqliteMetaColumns+` FROM session AS s JOIN project AS p ON p.id=s.project_id WHERE s.id=?`, id)
+func getSQLiteMeta(ctx context.Context, tx sqliteQueryer, schema sqliteSchema, id string) (sqliteMeta, error) {
+	row, err := tx.QueryRowContext(ctx, `SELECT `+sqliteMetaProjection(schema)+` FROM session AS s JOIN project AS p ON p.id=s.project_id WHERE s.id=?`, id)
 	if err != nil {
 		return sqliteMeta{}, err
 	}
-	return scanSQLiteMeta(row)
+	return scanSQLiteMeta(row, schema)
 }
 
 func (a *Adapter) discoverSQLite(ctx context.Context) ([]source.Session, map[string]authorization, error) {
@@ -129,10 +163,11 @@ func (a *Adapter) discoverSQLite(ctx context.Context) ([]source.Session, map[str
 	var sessions []source.Session
 	auths := map[string]authorization{}
 	err := a.sqliteRead(ctx, a.root, path, maxDatabaseBytes, func(tx sqliteQueryer) error {
-		if err := validateSQLiteSchema(ctx, tx); err != nil {
+		schema, err := validateSQLiteSchema(ctx, tx)
+		if err != nil {
 			return err
 		}
-		metas, err := listSQLiteMeta(ctx, tx)
+		metas, err := listSQLiteMeta(ctx, tx, schema)
 		if err != nil {
 			return err
 		}
@@ -162,16 +197,13 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 	if meta.id == "" || strings.ContainsAny(meta.id, `/\\#`) {
 		return source.Session{}, nil, "", errors.New("opencode: invalid database session")
 	}
-	sf := sessionFile{ID: meta.id, Directory: meta.directory, ParentID: meta.parentID}
-	sf.Time.Created, sf.Time.Updated = meta.created, meta.updated
-	sessionJSON, _ := json.Marshal(sf)
-	snap := snapshot{session: sessionJSON, files: map[string][]byte{}}
 	bad := 0
 	messageRows, err := tx.QueryContext(ctx, `SELECT id,session_id,time_created,data FROM message WHERE session_id=? ORDER BY time_created,id LIMIT ?`, meta.id, maxDatabaseMessages+1)
 	if err != nil {
 		return source.Session{}, nil, "", err
 	}
-	messageCount := 0
+	messageRowsSeen := 0
+	messages := map[string]messageFile{}
 	for messageRows.Next() {
 		var id, sessionID, data string
 		var created int64
@@ -179,28 +211,37 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 			messageRows.Close()
 			return source.Session{}, nil, "", err
 		}
-		messageCount++
+		messageRowsSeen++
 		if len(data) > int(maxFileBytes) {
 			bad++
 			continue
 		}
 		var envelope messageFile
-		if json.Unmarshal([]byte(data), &envelope) != nil || envelope.ID != id || envelope.SessionID != sessionID || sessionID != meta.id {
+		if json.Unmarshal([]byte(data), &envelope) != nil || id == "" || sessionID != meta.id || (envelope.Role != "user" && envelope.Role != "assistant") {
 			bad++
 			continue
 		}
-		snap.files[filepath.Join("db", "message", meta.id, id+".json")] = []byte(data)
+		envelope.ID, envelope.SessionID, envelope.Time.Created = id, sessionID, created
+		messages[id] = envelope
 	}
 	err = messageRows.Err()
 	messageRows.Close()
-	if err != nil || messageCount > maxDatabaseMessages {
+	if err != nil || messageRowsSeen > maxDatabaseMessages {
 		return source.Session{}, nil, "", errors.New("opencode: database session exceeds limit")
 	}
 	partRows, err := tx.QueryContext(ctx, `SELECT id,message_id,session_id,time_created,data FROM part WHERE session_id=? ORDER BY time_created,id LIMIT ?`, meta.id, maxDatabaseParts+1)
 	if err != nil {
 		return source.Session{}, nil, "", err
 	}
-	partCount := 0
+	type orderedPart struct {
+		created        int64
+		messageCreated int64
+		id             string
+		message        messageFile
+		part           partFile
+	}
+	partRowsSeen := 0
+	var ordered []orderedPart
 	for partRows.Next() {
 		var id, messageID, sessionID, data string
 		var created int64
@@ -208,25 +249,47 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 			partRows.Close()
 			return source.Session{}, nil, "", err
 		}
-		partCount++
+		partRowsSeen++
 		if len(data) > int(maxFileBytes) {
 			bad++
 			continue
 		}
 		var envelope partFile
-		if json.Unmarshal([]byte(data), &envelope) != nil || envelope.ID != id || envelope.MessageID != messageID || envelope.SessionID != sessionID || sessionID != meta.id {
+		message, messageOK := messages[messageID]
+		if json.Unmarshal([]byte(data), &envelope) != nil || id == "" || messageID == "" || sessionID != meta.id || !messageOK {
 			bad++
 			continue
 		}
-		snap.files[filepath.Join("db", "part", messageID, id+".json")] = []byte(data)
+		envelope.ID, envelope.MessageID, envelope.SessionID, envelope.Time.Created = id, messageID, sessionID, created
+		ordered = append(ordered, orderedPart{created: created, messageCreated: message.Time.Created, id: id, message: message, part: envelope})
 	}
 	err = partRows.Err()
 	partRows.Close()
-	if err != nil || partCount > maxDatabaseParts {
+	if err != nil || partRowsSeen > maxDatabaseParts {
 		return source.Session{}, nil, "", errors.New("opencode: database session exceeds limit")
 	}
-	_, events, messages, malformed, err := parseSnapshot(snap)
-	if err != nil || messages == 0 || len(events) == 0 {
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].created == ordered[j].created {
+			if ordered[i].messageCreated == ordered[j].messageCreated {
+				if ordered[i].message.ID == ordered[j].message.ID {
+					return ordered[i].id < ordered[j].id
+				}
+				return ordered[i].message.ID < ordered[j].message.ID
+			}
+			return ordered[i].messageCreated < ordered[j].messageCreated
+		}
+		return ordered[i].created < ordered[j].created
+	})
+	var events []event
+	for _, item := range ordered {
+		mapped, recognized, valid := mapSQLitePart(item.message, item.part, item.created)
+		if !recognized || !valid {
+			bad++
+			continue
+		}
+		events = append(events, mapped...)
+	}
+	if len(messages) == 0 || len(events) == 0 {
 		return source.Session{}, nil, "", errors.New("opencode: no valid database messages")
 	}
 	var output bytes.Buffer
@@ -252,9 +315,9 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 	session := source.Session{
 		ID: "opencode:" + meta.id, Product: "opencode", FormatVersion: databaseFormat, AdapterVersion: "1",
 		Capabilities: []source.Capability{"messages", "tools"}, Scope: scope,
-		StartedAt: time.UnixMilli(meta.created), EndedAt: time.UnixMilli(meta.updated), MessageCount: messages,
-		MalformedCount: malformed + bad, ParentID: parent,
-		Usage:     map[string]int64{"input_tokens": meta.input, "output_tokens": meta.output, "reasoning_tokens": meta.reasoning, "cache_read_tokens": meta.cacheRead, "cache_write_tokens": meta.cacheWrite},
+		StartedAt: time.UnixMilli(meta.created), EndedAt: time.UnixMilli(meta.updated), MessageCount: len(messages),
+		MalformedCount: bad, ParentID: parent,
+		Usage:     meta.usage,
 		OpaqueRef: databaseRefPrefix + meta.id,
 	}
 	metadata, err := json.Marshal(struct {
@@ -278,19 +341,64 @@ func loadSQLiteSession(ctx context.Context, tx sqliteQueryer, meta sqliteMeta) (
 	return session, output.Bytes(), session.SnapshotID, nil
 }
 
+func mapSQLitePart(message messageFile, part partFile, created int64) ([]event, bool, bool) {
+	timestamp := time.UnixMilli(created).UTC().Format(time.RFC3339Nano)
+	model := message.ModelID
+	if model == "" {
+		model = message.Model.ModelID
+	}
+	switch part.Type {
+	case "text":
+		if strings.TrimSpace(part.Text) == "" {
+			return nil, true, false
+		}
+		return []event{{Type: "message", Role: message.Role, Content: []any{map[string]any{"type": "text", "text": part.Text}}, Timestamp: timestamp, Model: model}}, true, true
+	case "reasoning":
+		if message.Role != "assistant" || strings.TrimSpace(part.Text) == "" {
+			return nil, true, false
+		}
+		return []event{{Type: "message", Role: "assistant", Content: []any{map[string]any{"type": "thinking", "thinking": part.Text}}, Timestamp: timestamp, Model: model}}, true, true
+	case "tool":
+		if message.Role != "assistant" || part.Tool == "" || part.CallID == "" {
+			return nil, true, false
+		}
+		var input any = map[string]any{}
+		if len(part.State.Input) > 0 && json.Unmarshal(part.State.Input, &input) != nil {
+			return nil, true, false
+		}
+		events := []event{{Type: "tool_use", Timestamp: timestamp, Model: model, CallID: part.CallID, Name: part.Tool, Input: input}}
+		switch part.State.Status {
+		case "completed":
+			if part.State.Output == nil {
+				return nil, true, false
+			}
+			events = append(events, event{Type: "tool_result", Timestamp: timestamp, CallID: part.CallID, Result: part.State.Output})
+		case "error":
+			if part.State.Error == nil {
+				return nil, true, false
+			}
+			events = append(events, event{Type: "tool_result", Timestamp: timestamp, CallID: part.CallID, Result: part.State.Error})
+		}
+		return events, true, true
+	default:
+		return nil, false, false
+	}
+}
+
 func (a *Adapter) openSQLite(ctx context.Context, auth authorization, expected source.Session) (io.ReadCloser, error) {
 	path := filepath.Join(a.root, "opencode.db")
 	var output []byte
 	err := a.sqliteRead(ctx, a.root, path, maxDatabaseBytes, func(tx sqliteQueryer) error {
-		if err := validateSQLiteSchema(ctx, tx); err != nil {
+		schema, err := validateSQLiteSchema(ctx, tx)
+		if err != nil {
 			return err
 		}
-		meta, err := getSQLiteMeta(ctx, tx, auth.ref)
+		meta, err := getSQLiteMeta(ctx, tx, schema, auth.ref)
 		if err != nil {
 			return err
 		}
 		session, current, digest, err := loadSQLiteSession(ctx, tx, meta)
-		if err != nil || session.ID != expected.ID || digest != auth.digest || digest != expected.SnapshotID {
+		if err != nil || digest != auth.digest || digest != expected.SnapshotID || !sameSessionMetadata(session, expected) {
 			return errors.New("opencode: source changed since discovery")
 		}
 		output = append([]byte(nil), current...)
@@ -303,4 +411,20 @@ func (a *Adapter) openSQLite(ctx context.Context, auth authorization, expected s
 		return nil, errors.New("opencode: source changed since discovery")
 	}
 	return io.NopCloser(bytes.NewReader(output)), nil
+}
+
+func sameSessionMetadata(left, right source.Session) bool {
+	return left.ID == right.ID &&
+		left.Product == right.Product &&
+		left.FormatVersion == right.FormatVersion &&
+		left.AdapterVersion == right.AdapterVersion &&
+		slices.Equal(left.Capabilities, right.Capabilities) &&
+		left.Scope == right.Scope &&
+		left.StartedAt.Equal(right.StartedAt) &&
+		left.EndedAt.Equal(right.EndedAt) &&
+		left.MessageCount == right.MessageCount &&
+		left.ParentID == right.ParentID &&
+		maps.Equal(left.Usage, right.Usage) &&
+		left.MalformedCount == right.MalformedCount &&
+		left.OpaqueRef == right.OpaqueRef
 }
