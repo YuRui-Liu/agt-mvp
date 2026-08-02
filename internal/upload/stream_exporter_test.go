@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -125,6 +126,187 @@ func TestBuildScopeOmitsCanonicalReadResultAcrossJSONLLines(t *testing.T) {
 	body := readArtifact(t, artifact)
 	if strings.Contains(body, "COMPLETE PRIVATE FILE") || !strings.Contains(body, omittedFileContent) {
 		t.Fatalf("canonical Read result leaked across JSONL lines: %s", body)
+	}
+}
+
+func TestBuildScopeCorrelatesReadResultsBeforeRedactingSensitiveIDs(t *testing.T) {
+	for _, rawID := range []string{
+		"alice@example.edu",
+		"/Users/alice/private/call-id",
+		"13812345678",
+		"sk-proj-abcdefghijklmnopqrstuvwxyz",
+	} {
+		t.Run(rawID, func(t *testing.T) {
+			scope := testScope()
+			scope.Sessions = scope.Sessions[:1]
+			lines := []string{
+				fmt.Sprintf(`{"type":"tool_use","call_id":%q,"name":"Read"}`, rawID),
+				fmt.Sprintf(`{"type":"tool_result","call_id":%q,"content":"PRIVATE FILE"}`, rawID),
+			}
+			opener := &fakeSessionOpener{data: map[string]string{"codex:2": strings.Join(lines, "\n") + "\n"}}
+			artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer artifact.Remove()
+			var pkg Package
+			if err := json.Unmarshal([]byte(readArtifact(t, artifact)), &pkg); err != nil {
+				t.Fatal(err)
+			}
+			events := pkg.Sessions[0].Events
+			if encoded, _ := json.Marshal(events); strings.Contains(string(encoded), rawID) || strings.Contains(string(encoded), "PRIVATE FILE") {
+				t.Fatalf("sensitive correlation leaked: %s", encoded)
+			}
+			firstID, _ := events[0]["call_id"].(string)
+			secondID, _ := events[1]["call_id"].(string)
+			if !strings.HasPrefix(firstID, "cid_") || firstID != secondID {
+				t.Fatalf("correlation pseudonyms do not preserve equality: %q %q", firstID, secondID)
+			}
+		})
+	}
+}
+
+func TestBuildScopeCorrelationPseudonymsAreSessionScoped(t *testing.T) {
+	scope := source.Scope{Key: "scope", Type: source.ScopeProject, Sessions: []source.Session{
+		{ID: "same-session-id", Product: "codex"},
+		{ID: "same-session-id", Product: "qoder-cli"},
+	}}
+	line := `{"type":"tool_use","id":"same-sensitive-id@example.edu","name":"Read"}` + "\n" +
+		`{"type":"tool_result","tool_use_id":"same-sensitive-id@example.edu","content":"PRIVATE"}` + "\n"
+	opener := &fakeSessionOpener{data: map[string]string{
+		"same-session-id": line,
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	var pkg Package
+	if err := json.Unmarshal([]byte(readArtifact(t, artifact)), &pkg); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := pkg.Sessions[0].Events[0]["id"].(string)
+	second, _ := pkg.Sessions[1].Events[0]["id"].(string)
+	if first == "" || second == "" || first == second || !strings.HasPrefix(first, "cid_") || !strings.HasPrefix(second, "cid_") {
+		t.Fatalf("pseudonyms are not session scoped: %q %q", first, second)
+	}
+}
+
+func TestBuildScopeFailsClosedWhenReadIDIsReusedBeforeItsResult(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","call_id":"ambiguous-id","name":"Read"}`,
+			`{"type":"tool_use","call_id":"ambiguous-id","name":"apply_patch"}`,
+			`{"type":"tool_result","call_id":"ambiguous-id","content":"MAY BE PRIVATE READ RESULT"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "MAY BE PRIVATE READ RESULT") || !strings.Contains(body, omittedFileContent) {
+		t.Fatalf("ambiguous reused ID did not fail closed: %s", body)
+	}
+}
+
+func TestBuildScopeReadCallWithMultipleIDsCannotHideResultAssociation(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","id":"event-id","call_id":"read-call-id","name":"Read"}`,
+			`{"type":"tool_result","call_id":"read-call-id","content":"PRIVATE MULTI ID RESULT"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "PRIVATE MULTI ID RESULT") {
+		t.Fatalf("alternate call association bypassed Read filtering: %s", body)
+	}
+}
+
+func TestBuildScopeCorrelatesOutOfOrderReadResultAndIsolatesReusedIDs(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_result","call_id":"shared@example.edu","content":"OUT OF ORDER PRIVATE FILE"}`,
+			`{"type":"tool_use","call_id":"shared@example.edu","name":"Read"}`,
+			`{"type":"tool_use","call_id":"shared@example.edu","name":"apply_patch"}`,
+			`{"type":"tool_result","call_id":"shared@example.edu","content":"PATCH_OK"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "OUT OF ORDER PRIVATE FILE") || !strings.Contains(body, "PATCH_OK") {
+		t.Fatalf("out-of-order or reused ID correlation failed: %s", body)
+	}
+}
+
+func TestBuildScopeOmitsRepeatedReadResultsUntilReusedIDStartsNextCall(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","call_id":"reused-id","name":"Read"}`,
+			`{"type":"tool_result","call_id":"reused-id","content":"PRIVATE CHUNK ONE"}`,
+			`{"type":"tool_result","call_id":"reused-id","content":"PRIVATE CHUNK TWO"}`,
+			`{"type":"tool_use","call_id":"reused-id","name":"apply_patch"}`,
+			`{"type":"tool_result","call_id":"reused-id","content":"PATCH_OK"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "PRIVATE CHUNK") || !strings.Contains(body, "PATCH_OK") {
+		t.Fatalf("repeated result or reused ID boundary failed: %s", body)
+	}
+}
+
+func TestBuildScopeDistinctSensitiveCorrelationIDsDoNotCollide(t *testing.T) {
+	scope := testScope()
+	scope.Sessions = scope.Sessions[:1]
+	opener := &fakeSessionOpener{data: map[string]string{
+		"codex:2": strings.Join([]string{
+			`{"type":"tool_use","call_id":"alice@example.edu","name":"Read"}`,
+			`{"type":"tool_result","call_id":"alice@example.edu","content":"ALICE PRIVATE"}`,
+			`{"type":"tool_use","call_id":"bob@example.edu","name":"apply_patch"}`,
+			`{"type":"tool_result","call_id":"bob@example.edu","content":"BOB PATCH"}`,
+		}, "\n") + "\n",
+	}}
+	artifact, err := NewStreamExporter(opener, Client{}, Limits{}).BuildScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Remove()
+	var pkg Package
+	if err := json.Unmarshal([]byte(readArtifact(t, artifact)), &pkg); err != nil {
+		t.Fatal(err)
+	}
+	events := pkg.Sessions[0].Events
+	aliceID, _ := events[0]["call_id"].(string)
+	bobID, _ := events[2]["call_id"].(string)
+	if aliceID == "" || bobID == "" || aliceID == bobID || strings.Contains(aliceID+bobID, "@") {
+		t.Fatalf("sensitive correlation IDs collided or leaked: %q %q", aliceID, bobID)
+	}
+	body := readArtifact(t, artifact)
+	if strings.Contains(body, "ALICE PRIVATE") || !strings.Contains(body, "BOB PATCH") {
+		t.Fatalf("distinct IDs were cross-correlated: %s", body)
 	}
 }
 
@@ -420,6 +602,42 @@ func TestArtifactConcurrentOpenCallsReturnIndependentReaders(t *testing.T) {
 	close(errs)
 	for concurrentErr := range errs {
 		t.Fatal(concurrentErr)
+	}
+}
+
+func TestArtifactOpenUsesBuiltFileWhenPathIsReplaced(t *testing.T) {
+	artifact, err := NewStreamExporter(&fakeSessionOpener{data: map[string]string{
+		"codex:2":       `{"message":"ORIGINAL"}` + "\n",
+		"claude-code:1": `{"message":"ORIGINAL"}` + "\n",
+	}}, Client{}, Limits{}).BuildScope(context.Background(), testScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := artifact.path
+	replacement := path + ".replacement"
+	if err := os.WriteFile(replacement, []byte(`{"message":"REPLACEMENT"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	body := readArtifact(t, artifact)
+	if !strings.Contains(body, "ORIGINAL") || strings.Contains(body, "REPLACEMENT") {
+		t.Fatalf("artifact followed replaced path: %s", body)
+	}
+	if err := artifact.Remove(); err == nil {
+		t.Fatal("artifact removal deleted a replacement path")
+	}
+	replacementBody, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(replacementBody), "REPLACEMENT") {
+		t.Fatalf("replacement path was altered: body=%q err=%v", replacementBody, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := artifact.Remove(); err != nil {
+		t.Fatalf("artifact could not close bound file after replacement removal: %v", err)
 	}
 }
 

@@ -42,15 +42,17 @@ func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *Stre
 	}
 }
 
-// Artifact is a completed immutable package file. Open may be called multiple
-// times concurrently, which lets upload retries stream the same verified
-// bytes. Remove waits until any in-progress Open has acquired its file
-// descriptor; a reader opened successfully before Remove remains owned by its
-// caller and must be closed by that caller. On platforms that refuse to unlink
-// an open file, Remove returns a safe error and retains the artifact for retry.
+// Artifact is a completed immutable package bound to the file opened during
+// construction. Open never resolves the temporary path again and may be called
+// concurrently; each caller gets an independent reader lease over those exact
+// bytes. A reader opened before Remove remains valid and must be closed by its
+// caller. On platforms that refuse to unlink an open file, Remove returns a
+// safe error and retains the artifact for retry.
 type Artifact struct {
 	mu            sync.Mutex
 	path          string
+	file          *os.File
+	readers       int
 	removed       bool
 	remove        func(string) error
 	Digest        string
@@ -65,14 +67,37 @@ func (a *Artifact) Open() (io.ReadCloser, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.path == "" {
+	if a.removed || a.file == nil {
 		return nil, errors.New("upload: artifact unavailable")
 	}
-	reader, err := os.Open(a.path)
-	if err != nil {
-		return nil, errors.New("upload: artifact unavailable")
+	a.readers++
+	return &artifactReader{
+		Reader:   io.NewSectionReader(a.file, 0, a.Bytes),
+		artifact: a,
+	}, nil
+}
+
+type artifactReader struct {
+	io.Reader
+	artifact *Artifact
+	once     sync.Once
+}
+
+func (r *artifactReader) Close() error {
+	if r == nil {
+		return nil
 	}
-	return reader, nil
+	r.once.Do(func() {
+		r.artifact.mu.Lock()
+		defer r.artifact.mu.Unlock()
+		if r.artifact.readers > 0 {
+			r.artifact.readers--
+		}
+		if r.artifact.removed && r.artifact.readers == 0 {
+			r.artifact.closeFileLocked()
+		}
+	})
+	return nil
 }
 
 func (a *Artifact) Remove() error {
@@ -81,19 +106,42 @@ func (a *Artifact) Remove() error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.path == "" {
+	if a.removed || a.file == nil {
 		return nil
+	}
+	fileInfo, statErr := a.file.Stat()
+	if statErr != nil {
+		return errors.New("upload: artifact removal failed")
+	}
+	pathInfo, pathErr := os.Lstat(a.path)
+	if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
+		return errors.New("upload: artifact removal failed")
+	}
+	if pathErr == nil && !os.SameFile(fileInfo, pathInfo) {
+		return errors.New("upload: artifact removal failed")
 	}
 	remove := a.remove
 	if remove == nil {
 		remove = os.Remove
 	}
-	if err := remove(a.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return errors.New("upload: artifact removal failed")
+	if pathErr == nil {
+		if err := remove(a.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.New("upload: artifact removal failed")
+		}
 	}
 	a.path = ""
 	a.removed = true
+	if a.readers == 0 {
+		a.closeFileLocked()
+	}
 	return nil
+}
+
+func (a *Artifact) closeFileLocked() {
+	if a.file != nil {
+		_ = a.file.Close()
+		a.file = nil
+	}
 }
 
 // BuildScope reads and redacts one session at a time. Only a single bounded
@@ -117,16 +165,18 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 		remove = os.Remove
 	}
 	defer func() {
-		// A failed export must never leave a parseable partial package behind.
-		// Truncate while the private descriptor is still open so even a later
-		// unlink failure (for example a Windows sharing violation) cannot expose
-		// session data as an apparently usable artifact.
-		if !keep {
-			_ = file.Truncate(0)
+		if keep {
+			return
 		}
+		// Best-effort destruction happens while the private descriptor is still
+		// open. If both destruction and unlink fail, return a cleanup-specific
+		// error and never return an Artifact.
+		truncateErr := file.Truncate(0)
+		syncErr := file.Sync()
 		_ = file.Close()
-		if !keep {
-			_ = remove(path)
+		removeErr := remove(path)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && (truncateErr != nil || syncErr != nil) {
+			returnErr = errors.New("upload: failed export cleanup incomplete")
 		}
 	}()
 
@@ -176,7 +226,7 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 			}
 			return nil, errors.New("upload: source session open failed")
 		}
-		events, stats, readErr := scanEvents(&contextReader{ctx: ctx, reader: reader}, e.limits)
+		events, stats, readErr := scanEvents(&contextReader{ctx: ctx, reader: reader}, e.limits, session.Product+"\x00"+session.ID)
 		closeErr := reader.Close()
 		if readErr != nil {
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
@@ -252,12 +302,10 @@ func (e *StreamExporter) BuildScope(ctx context.Context, scope source.Scope) (_ 
 	if err := file.Sync(); err != nil {
 		return nil, errors.New("upload: package sync failed")
 	}
-	if err := file.Close(); err != nil {
-		return nil, errors.New("upload: package close failed")
-	}
 	keep = true
 	return &Artifact{
 		path:          path,
+		file:          file,
 		remove:        os.Remove,
 		Digest:        digestHex(sum),
 		Bytes:         writer.written,

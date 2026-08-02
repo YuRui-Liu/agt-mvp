@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
 	"math"
+	"sort"
 	"unicode/utf8"
 )
 
@@ -30,7 +32,7 @@ func withDefaultLimits(limits Limits) Limits {
 	return limits
 }
 
-func scanEvents(reader io.Reader, limits Limits) ([]map[string]any, Stats, error) {
+func scanEvents(reader io.Reader, limits Limits, correlationNamespace string) ([]map[string]any, Stats, error) {
 	sessionReadLimit := limits.MaxSessionBytes
 	if sessionReadLimit < math.MaxInt64 {
 		sessionReadLimit++
@@ -62,9 +64,7 @@ func scanEvents(reader io.Reader, limits Limits) ([]map[string]any, Stats, error
 		return advance, token, err
 	})
 	var (
-		events  []map[string]any
-		total   Stats
-		readIDs = make(map[string]struct{})
+		rawEvents []map[string]any
 	)
 	for scanner.Scan() {
 		if counted.bytes > limits.MaxSessionBytes {
@@ -84,14 +84,7 @@ func scanEvents(reader io.Reader, limits Limits) ([]map[string]any, Stats, error
 		if err := json.Unmarshal(line, &event); err != nil || event == nil {
 			return nil, Stats{}, errors.New("session export JSON invalid")
 		}
-		collectReadToolIDs(event, readIDs)
-		redacted, stats, err := RedactEvent(event)
-		if err != nil {
-			return nil, Stats{}, errors.New("session export nesting invalid")
-		}
-		stats.OmittedReads += omitCorrelatedReadResults(redacted, readIDs)
-		events = append(events, redacted)
-		addStats(&total, stats)
+		rawEvents = append(rawEvents, event)
 	}
 	if counted.bytes > limits.MaxSessionBytes {
 		return nil, Stats{}, errors.New("session export exceeds limit")
@@ -104,6 +97,18 @@ func scanEvents(reader io.Reader, limits Limits) ([]map[string]any, Stats, error
 			return nil, Stats{}, err
 		}
 		return nil, Stats{}, errors.New("invalid session export stream")
+	}
+	omittedReads := markCorrelatedReadResults(rawEvents)
+	pseudonyms := pseudonymizeCorrelationIDs(rawEvents, correlationNamespace)
+	events := make([]map[string]any, 0, len(rawEvents))
+	total := Stats{OmittedReads: omittedReads, Replacements: pseudonyms}
+	for _, event := range rawEvents {
+		redacted, stats, err := RedactEvent(event)
+		if err != nil {
+			return nil, Stats{}, errors.New("session export nesting invalid")
+		}
+		events = append(events, redacted)
+		addStats(&total, stats)
 	}
 	return events, total, nil
 }
@@ -119,47 +124,222 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func collectReadToolIDs(value any, ids map[string]struct{}) {
-	switch typed := value.(type) {
-	case map[string]any:
-		if isReadTool(typed) {
-			if id := readCallID(typed); id != "" {
-				ids[id] = struct{}{}
+type toolCallOccurrence struct {
+	ids      []string
+	read     bool
+	resolved bool
+	order    int
+}
+
+type toolResultOccurrence struct {
+	ids   []string
+	value map[string]any
+	order int
+}
+
+func markCorrelatedReadResults(events []map[string]any) int {
+	var calls []*toolCallOccurrence
+	var results []toolResultOccurrence
+	order := 0
+	for _, event := range events {
+		walkEventMaps(event, func(value map[string]any) {
+			current := order
+			order++
+			if isToolCallShape(value) {
+				if ids := callAssociationIDs(value); len(ids) != 0 {
+					calls = append(calls, &toolCallOccurrence{ids: ids, read: isReadTool(value), order: current})
+				}
+			}
+			if isToolResultShape(value) {
+				if ids := resultAssociationIDs(value); len(ids) != 0 {
+					results = append(results, toolResultOccurrence{ids: ids, value: value, order: current})
+				}
+			}
+		})
+	}
+	omitted := 0
+	callsByID := make(map[string][]*toolCallOccurrence)
+	for _, call := range calls {
+		for _, id := range call.ids {
+			callsByID[id] = append(callsByID[id], call)
+		}
+	}
+	taintedIDs := make(map[string]bool)
+	for _, result := range results {
+		call, matchedID := nearestCall(callsByID, result)
+		if call == nil {
+			continue
+		}
+		if !call.read && !taintedIDs[matchedID] && hasUnresolvedReadBefore(callsByID[matchedID], call.order) {
+			taintedIDs[matchedID] = true
+		}
+		call.resolved = true
+		if !call.read && !taintedIDs[matchedID] {
+			continue
+		}
+		for key, current := range result.value {
+			if !isReadPayloadKey(key) || current == omittedFileContent {
+				continue
+			}
+			result.value[key] = omittedFileContent
+			omitted++
+		}
+	}
+	return omitted
+}
+
+func hasUnresolvedReadBefore(calls []*toolCallOccurrence, before int) bool {
+	for _, call := range calls {
+		if call.order >= before {
+			break
+		}
+		if call.read && !call.resolved {
+			return true
+		}
+	}
+	return false
+}
+
+func nearestCall(callsByID map[string][]*toolCallOccurrence, result toolResultOccurrence) (*toolCallOccurrence, string) {
+	var preceding, following *toolCallOccurrence
+	precedingID, followingID := "", ""
+	for _, id := range result.ids {
+		calls := callsByID[id]
+		if len(calls) == 0 {
+			continue
+		}
+		index := sort.Search(len(calls), func(index int) bool { return calls[index].order >= result.order })
+		if index > 0 {
+			call := calls[index-1]
+			if preceding == nil || call.order > preceding.order {
+				preceding, precedingID = call, id
 			}
 		}
-		for _, child := range typed {
-			collectReadToolIDs(child, ids)
+		if index < len(calls) {
+			call := calls[index]
+			if following == nil || call.order < following.order {
+				following, followingID = call, id
+			}
+		}
+	}
+	if preceding != nil {
+		return preceding, precedingID
+	}
+	return following, followingID
+}
+
+func isToolCallShape(value map[string]any) bool {
+	if len(callAssociationIDs(value)) == 0 || isToolResultShape(value) {
+		return false
+	}
+	if isReadTool(value) {
+		return true
+	}
+	for _, field := range []string{"type", "role"} {
+		name := normalizeName(prioritizedStringField(value, field))
+		if name == "tooluse" || name == "toolcall" || name == "functioncall" {
+			return true
+		}
+	}
+	return prioritizedStringField(value, "name", "toolname") != ""
+}
+
+func callAssociationIDs(input map[string]any) []string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	ids := make([]string, 0, 4)
+	for _, wanted := range []string{"toolcallid", "tooluseid", "callid", "id"} {
+		for _, key := range keys {
+			if normalizeName(key) != wanted {
+				continue
+			}
+			id, ok := input[key].(string)
+			if ok && id != "" && !containsString(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func isToolResultShape(value map[string]any) bool {
+	for _, field := range []string{"type", "role"} {
+		switch normalizeName(prioritizedStringField(value, field)) {
+		case "toolresult", "toolresponse", "functioncalloutput":
+			return true
+		}
+	}
+	return false
+}
+
+func walkEventMaps(value any, visit func(map[string]any)) {
+	switch typed := value.(type) {
+	case map[string]any:
+		visit(typed)
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			walkEventMaps(typed[key], visit)
 		}
 	case []any:
 		for _, child := range typed {
-			collectReadToolIDs(child, ids)
+			walkEventMaps(child, visit)
 		}
 	}
 }
 
-func omitCorrelatedReadResults(value any, ids map[string]struct{}) int {
-	omitted := 0
-	switch typed := value.(type) {
-	case map[string]any:
-		if isCorrelatedReadResult(typed, ids) {
-			for key := range typed {
-				if !isReadPayloadKey(key) {
+func pseudonymizeCorrelationIDs(events []map[string]any, namespace string) int {
+	replacements := 0
+	for _, event := range events {
+		walkEventMaps(event, func(value map[string]any) {
+			for key, current := range value {
+				if !isCorrelationIDKey(key) {
 					continue
 				}
-				if current, ok := typed[key].(string); ok && current == omittedFileContent {
+				raw, ok := current.(string)
+				if !ok || raw == "" {
 					continue
 				}
-				typed[key] = omittedFileContent
-				omitted++
+				value[key] = correlationPseudonym(namespace, raw)
+				replacements++
 			}
-		}
-		for _, child := range typed {
-			omitted += omitCorrelatedReadResults(child, ids)
-		}
-	case []any:
-		for _, child := range typed {
-			omitted += omitCorrelatedReadResults(child, ids)
-		}
+		})
 	}
-	return omitted
+	return replacements
+}
+
+func isCorrelationIDKey(key string) bool {
+	switch normalizeName(key) {
+	case "id", "callid", "toolcallid", "tooluseid", "parentcallid", "parenttoolcallid", "parenttooluseid":
+		return true
+	default:
+		return false
+	}
+}
+
+func correlationPseudonym(namespace, raw string) string {
+	sum := sha256.Sum256([]byte(namespace + "\x00" + raw))
+	// Encode each nibble as a letter so the stable identifier cannot itself be
+	// mistaken for a phone number or another secret by the string redactor.
+	encoded := make([]byte, 32)
+	for index, value := range sum[:16] {
+		encoded[index*2] = 'a' + (value >> 4)
+		encoded[index*2+1] = 'a' + (value & 0x0f)
+	}
+	return "cid_" + string(encoded)
 }
