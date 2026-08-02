@@ -1,0 +1,6 @@
+{"type":"session_meta","uuid":"meta-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:00.000001Z","cwd":"/synthetic/course-project"}
+{"type":"user","uuid":"user-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:01.000001Z","cwd":"/synthetic/course-project","message":{"content":"Build the bounded reader."}}
+{"type":"progress","uuid":"progress-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:02.000001Z","cwd":"/synthetic/course-project","data":{"type":"hook_progress","hookName":"before","hookEvent":"run","command":"fixture command"}}
+{"type":"assistant","uuid":"assistant-reasoning-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:03.000001Z","cwd":"/synthetic/course-project","message":{"content":[{"type":"thinking","thinking":"Check every bound."}]}}
+{"type":"progress","uuid":"progress-finish-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:04.000001Z","cwd":"/synthetic/course-project","data":{"type":"hook_progress","hookName":"after","hookEvent":"run","command":"fixture command"}}
+{"type":"assistant","uuid":"assistant-text-fixture","sessionId":"session-fixture","timestamp":"2026-01-01T00:00:05.000001Z","cwd":"/synthetic/course-project","message":{"content":[{"type":"text","text":"All bounds are enforced."}]}}
