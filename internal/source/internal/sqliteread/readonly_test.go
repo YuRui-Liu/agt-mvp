@@ -42,6 +42,69 @@ func TestWithReadOnlyTxReadsCommittedWALAndRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestWithReadOnlyTxPinsSnapshotBeforeCallbackFirstQuery(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.sqlite")
+	writer := openWALDatabase(t, path)
+	defer writer.Close()
+
+	err := WithReadOnlyTx(context.Background(), root, path, 1<<20, func(tx *ReadTx) error {
+		if _, err := writer.Exec(`INSERT INTO items(id,value) VALUES (2,'after-pin')`); err != nil {
+			return err
+		}
+		var count int
+		row, err := tx.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM items`)
+		if err != nil {
+			return err
+		}
+		if err := row.Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			t.Fatalf("snapshot saw %d rows", count)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWithReadOnlyTxRejectsWALGrowthBetweenSnapshotPinAndRevalidation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.sqlite")
+	writer := openWALDatabase(t, path)
+	defer writer.Close()
+	before, err := os.Stat(path + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSQLiteOpen = func() {
+		if _, err := writer.Exec(`INSERT INTO items(id,value) VALUES (2,'during-revalidation-window')`); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.Stat(path + "-wal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Size() == before.Size() {
+			t.Fatal("WAL fixture did not grow")
+		}
+	}
+	defer func() { afterSQLiteOpen = nil }()
+	called := false
+	err = WithReadOnlyTx(context.Background(), root, path, 1<<20, func(*ReadTx) error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("WAL growth accepted")
+	}
+	if called {
+		t.Fatal("callback invoked after WAL growth")
+	}
+}
+
 func TestWithReadOnlyTxRejectsAggregateSidecarLimit(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state.sqlite")
@@ -150,7 +213,7 @@ func TestWithReadOnlyTxRejectsSidecarIdentityChanges(t *testing.T) {
 						t.Fatal(err)
 					}
 				case "appear":
-					if err := os.WriteFile(path+"-wal", []byte{}, 0o600); err != nil {
+					if err := os.WriteFile(path+"-wal", []byte("unexpected"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				case "disappear":
@@ -309,7 +372,7 @@ func TestWithReadOnlyTxPreservesUnixBackslashesInDatabaseName(t *testing.T) {
 	if _, err := decoyDB.Exec(`UPDATE items SET value = 'decoy' WHERE id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	decoyDB.Close()
+	defer decoyDB.Close()
 
 	var got string
 	err := WithReadOnlyTx(context.Background(), root, decoy, 1<<20, func(tx *ReadTx) error {

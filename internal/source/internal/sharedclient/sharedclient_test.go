@@ -247,6 +247,149 @@ func TestWithChatSnapshotSupportsQoderSessionSchema(t *testing.T) {
 	}
 }
 
+func TestChatReaderQueriesEachTableOnceAcrossMultipleReads(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+	defer database.Close()
+	insertFixtureConversation(t, database, LingmaIDEV1)
+	if _, err := database.Exec(`INSERT INTO chat_session(session_id,user_id,session_title,project_id,gmt_create,gmt_modified) VALUES ('session-2','identity-secret','title-secret','project-hash',5,6)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO chat_record(request_id,session_id,chat_task,question,gmt_create) VALUES ('request-2','session-2','chat','second',4)`); err != nil {
+		t.Fatal(err)
+	}
+
+	var trace []QueryEvent
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+		sessions, err := reader.ListSessions(context.Background())
+		if err != nil {
+			return err
+		}
+		if len(sessions) != 2 || sessions[0].ID != "session-2" || sessions[1].ID != "session-1" {
+			t.Fatalf("sessions=%#v", sessions)
+		}
+		for _, id := range []string{"session-1", "session-1", "session-2"} {
+			conversation, err := reader.ReadConversation(context.Background(), id)
+			if err != nil {
+				return err
+			}
+			if conversation.Session.ID != id {
+				t.Fatalf("conversation=%#v", conversation)
+			}
+		}
+		return nil
+	}, WithQueryObserver(func(event QueryEvent) { trace = append(trace, event) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, event := range trace {
+		if event.Kind == QueryData {
+			counts[event.Table]++
+		}
+	}
+	for _, table := range []string{"chat_session", "chat_record", "chat_message", "chat_snapshot"} {
+		if counts[table] != 1 {
+			t.Fatalf("data query counts=%v", counts)
+		}
+	}
+}
+
+func TestChatReaderGlobalRowLimitCountsOtherSessionsBeforeConversation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+	defer database.Close()
+	for _, statement := range []string{
+		`INSERT INTO chat_session(session_id,user_id,session_title,project_id,gmt_create) VALUES ('session-1','u','t','p',1)`,
+		`INSERT INTO chat_session(session_id,user_id,session_title,project_id,gmt_create) VALUES ('session-2','u','t','p',2)`,
+		`INSERT INTO chat_record(request_id,session_id,chat_task,question,gmt_create) VALUES ('request-1','session-1','chat','one',1)`,
+		`INSERT INTO chat_record(request_id,session_id,chat_task,question,gmt_create) VALUES ('request-2','session-2','chat','two',2)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := generousDatabaseLimits()
+	limits.MaxRows = 3
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, limits, func(reader ChatReader) error {
+		_, err := reader.ReadConversation(context.Background(), "session-1")
+		return err
+	})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestChatReaderCachedReadsDoNotReconsumeBudgets(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+	defer database.Close()
+	insertFixtureConversation(t, database, LingmaIDEV1)
+	limits := generousDatabaseLimits()
+	limits.MaxSessions = 1
+	limits.MaxRows = 4
+	limits.MaxPayloadBytes = 34
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, limits, func(reader ChatReader) error {
+		if _, err := reader.ListSessions(context.Background()); err != nil {
+			return err
+		}
+		for range 2 {
+			if _, err := reader.ReadConversation(context.Background(), "session-1"); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatReaderSortsGloballyLoadedConversationRowsInGo(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+	defer database.Close()
+	for _, statement := range []string{
+		`INSERT INTO chat_session(session_id,user_id,session_title,project_id,gmt_create) VALUES ('session-1','u','t','p',1)`,
+		`INSERT INTO chat_record(request_id,session_id,chat_task,gmt_create) VALUES ('record-z','session-1','chat',3)`,
+		`INSERT INTO chat_record(request_id,session_id,chat_task,gmt_create) VALUES ('record-a','session-1','chat',3)`,
+		`INSERT INTO chat_record(request_id,session_id,chat_task,gmt_create) VALUES ('record-first','session-1','chat',2)`,
+		`INSERT INTO chat_message(id,session_id,gmt_create) VALUES ('message-z','session-1',3)`,
+		`INSERT INTO chat_message(id,session_id,gmt_create) VALUES ('message-a','session-1',3)`,
+		`INSERT INTO chat_message(id,session_id,gmt_create) VALUES ('message-first','session-1',2)`,
+		`INSERT INTO chat_snapshot(snapshot_id,session_id,gmt_create) VALUES ('snapshot-z','session-1',3)`,
+		`INSERT INTO chat_snapshot(snapshot_id,session_id,gmt_create) VALUES ('snapshot-a','session-1',3)`,
+		`INSERT INTO chat_snapshot(snapshot_id,session_id,gmt_create) VALUES ('snapshot-first','session-1',2)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+		conversation, err := reader.ReadConversation(context.Background(), "session-1")
+		if err != nil {
+			return err
+		}
+		if got := []string{conversation.Records[0].RequestID, conversation.Records[1].RequestID, conversation.Records[2].RequestID}; !slices.Equal(got, []string{"record-first", "record-a", "record-z"}) {
+			t.Fatalf("records=%v", got)
+		}
+		if got := []string{conversation.Messages[0].ID, conversation.Messages[1].ID, conversation.Messages[2].ID}; !slices.Equal(got, []string{"message-first", "message-a", "message-z"}) {
+			t.Fatalf("messages=%v", got)
+		}
+		if got := []string{conversation.Snapshots[0].ID, conversation.Snapshots[1].ID, conversation.Snapshots[2].ID}; !slices.Equal(got, []string{"snapshot-first", "snapshot-a", "snapshot-z"}) {
+			t.Fatalf("snapshots=%v", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWithChatSnapshotRejectsSchemaDriftBeforeDataQueries(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -480,18 +623,16 @@ func TestChatReaderSerializesConcurrentBudgetUse(t *testing.T) {
 		}
 		close(release)
 		results := []error{<-firstDone, <-secondDone}
-		successes, budgets := 0, 0
+		successes := 0
 		for _, err := range results {
 			switch {
 			case err == nil:
 				successes++
-			case errors.Is(err, ErrBudgetExceeded):
-				budgets++
 			default:
 				t.Fatalf("result=%v", err)
 			}
 		}
-		if successes != 1 || budgets != 1 {
+		if successes != 2 {
 			t.Fatalf("results=%v", results)
 		}
 		return nil
@@ -555,6 +696,40 @@ func TestChatReaderCanceledCallDoesNotWaitForConcurrentRead(t *testing.T) {
 	}
 }
 
+func TestChatReaderInvalidatesAfterCancellationInterruptsOneTimeLoad(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "local.db")
+	database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+	defer database.Close()
+	insertFixtureConversation(t, database, LingmaIDEV1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queries := 0
+	err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, generousDatabaseLimits(), func(reader ChatReader) error {
+		if _, err := reader.ReadConversation(ctx, "session-1"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted load error=%v", err)
+		}
+		if _, err := reader.ListSessions(context.Background()); !errors.Is(err, ErrReaderInvalidated) {
+			t.Fatalf("list after interrupted load error=%v", err)
+		}
+		if _, err := reader.ReadConversation(context.Background(), "session-1"); !errors.Is(err, ErrReaderInvalidated) {
+			t.Fatalf("read after interrupted load error=%v", err)
+		}
+		return nil
+	}, WithQueryObserver(func(event QueryEvent) {
+		if event.Kind == QueryData && event.Table == "chat_record" {
+			queries++
+			cancel()
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queries != 1 {
+		t.Fatalf("record queries=%d", queries)
+	}
+}
+
 func TestFixedQueryPlansContainNoWildcardDynamicOrProhibitedData(t *testing.T) {
 	if len(fixedSchemaQueries) != 5 {
 		t.Fatalf("schema queries=%d", len(fixedSchemaQueries))
@@ -574,7 +749,7 @@ func TestFixedQueryPlansContainNoWildcardDynamicOrProhibitedData(t *testing.T) {
 		if query.kind != QueryData || !slices.Contains([]string{"chat_session", "chat_record", "chat_message", "chat_snapshot"}, query.table) {
 			t.Fatalf("data query=%#v", query)
 		}
-		if strings.Contains(lower, "select *") || strings.ContainsAny(lower, "$@:") {
+		if strings.Contains(lower, "select *") || strings.ContainsAny(lower, "$@:") || strings.Contains(lower, " order by ") || strings.Contains(lower, " where ") {
 			t.Fatalf("unsafe query=%q", query.statement)
 		}
 		for _, column := range banned {
@@ -582,6 +757,172 @@ func TestFixedQueryPlansContainNoWildcardDynamicOrProhibitedData(t *testing.T) {
 				t.Fatalf("query exposes %q: %#v", column, query)
 			}
 		}
+	}
+}
+
+func TestBodyQueriesGuardEveryTextCellBeforeMaterialization(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		spec    querySpec
+		columns []string
+	}{
+		{name: "record", spec: recordQuery, columns: []string{"question", "answer", "reasoning_content"}},
+		{name: "message", spec: messageQuery, columns: []string{"content", "tool_result"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			statement := strings.ToLower(test.spec.statement)
+			for _, column := range test.columns {
+				if !strings.Contains(statement, "typeof("+column+")") {
+					t.Fatalf("query does not expose %s storage type: %q", column, test.spec.statement)
+				}
+				if !strings.Contains(statement, "length(cast("+column+" as blob))") {
+					t.Fatalf("query does not expose %s byte length: %q", column, test.spec.statement)
+				}
+				if !strings.Contains(statement, "case when typeof("+column+")='text'") || !strings.Contains(statement, "then "+column+" else null end") {
+					t.Fatalf("query does not guard %s value: %q", column, test.spec.statement)
+				}
+			}
+			if strings.Count(statement, "case when") != len(test.columns) {
+				t.Fatalf("query guards=%d want %d: %q", strings.Count(statement, "case when"), len(test.columns), test.spec.statement)
+			}
+			if strings.Count(statement, "<=?") != len(test.columns) {
+				t.Fatalf("query guard limits=%d want %d: %q", strings.Count(statement, "<=?"), len(test.columns), test.spec.statement)
+			}
+		})
+	}
+}
+
+func TestBodyCellPayloadLimitsAreExactAndApplyToEveryColumn(t *testing.T) {
+	const limit = 32
+	for _, test := range []struct {
+		name, table, idColumn, bodyColumn string
+	}{
+		{name: "record question", table: "chat_record", idColumn: "request_id", bodyColumn: "question"},
+		{name: "record answer", table: "chat_record", idColumn: "request_id", bodyColumn: "answer"},
+		{name: "record reasoning", table: "chat_record", idColumn: "request_id", bodyColumn: "reasoning_content"},
+		{name: "message content", table: "chat_message", idColumn: "id", bodyColumn: "content"},
+		{name: "message tool result", table: "chat_message", idColumn: "id", bodyColumn: "tool_result"},
+	} {
+		for _, size := range []int{limit, limit + 1} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, size), func(t *testing.T) {
+				root := t.TempDir()
+				path := filepath.Join(root, "local.db")
+				database := openSharedClientFixture(t, path, LingmaIDEV1, nil)
+				defer database.Close()
+				if _, err := database.Exec(`INSERT INTO chat_session(session_id,user_id,session_title,project_id,gmt_create) VALUES ('session-1','u','t','p',1)`); err != nil {
+					t.Fatal(err)
+				}
+				body := strings.Repeat("x", size)
+				var statement string
+				if test.table == "chat_record" {
+					statement = fmt.Sprintf("INSERT INTO chat_record(%s,session_id,chat_task,%s,gmt_create) VALUES ('row-1','session-1','chat',?,2)", test.idColumn, test.bodyColumn)
+				} else {
+					statement = fmt.Sprintf("INSERT INTO chat_message(%s,session_id,%s,gmt_create) VALUES ('row-1','session-1',?,2)", test.idColumn, test.bodyColumn)
+				}
+				if _, err := database.Exec(statement, body); err != nil {
+					t.Fatal(err)
+				}
+				limits := generousDatabaseLimits()
+				limits.MaxPayloadBytes = limit
+				var got string
+				err := WithChatSnapshot(context.Background(), root, path, LingmaIDEV1, limits, func(reader ChatReader) error {
+					conversation, err := reader.ReadConversation(context.Background(), "session-1")
+					if err != nil {
+						return err
+					}
+					if test.table == "chat_record" {
+						switch test.bodyColumn {
+						case "question":
+							got = conversation.Records[0].Question
+						case "answer":
+							got = conversation.Records[0].Answer
+						case "reasoning_content":
+							got = conversation.Records[0].ReasoningContent
+						}
+					} else if test.bodyColumn == "content" {
+						got = conversation.Messages[0].Content
+					} else {
+						got = conversation.Messages[0].ToolResult
+					}
+					return err
+				})
+				if size == limit && err != nil {
+					t.Fatal(err)
+				}
+				if size == limit && got != body {
+					t.Fatalf("body length=%d want %d", len(got), len(body))
+				}
+				if size == limit+1 && !errors.Is(err, ErrBudgetExceeded) {
+					t.Fatalf("error=%v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestGuardedTextDistinguishesNullOversizeAndMalformedStorage(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		values []any
+		limit  int64
+		want   string
+		err    error
+	}{
+		{name: "null", values: []any{"null", nil, nil}, limit: 0},
+		{name: "exact", values: []any{"text", int64(3), "abc"}, limit: 3, want: "abc"},
+		{name: "oversize value suppressed by SQL", values: []any{"text", int64(4), nil}, limit: 3, err: ErrBudgetExceeded},
+		{name: "blob", values: []any{"blob", int64(3), nil}, limit: 3, err: ErrMalformedConversation},
+		{name: "integer", values: []any{"integer", int64(3), nil}, limit: 3, err: ErrMalformedConversation},
+		{name: "guard contract broken", values: []any{"text", int64(4), "abcd"}, limit: 3, err: ErrMalformedConversation},
+		{name: "byte length mismatch", values: []any{"text", int64(2), "abc"}, limit: 3, err: ErrMalformedConversation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			decoder := &storageDecoder{values: test.values}
+			got, err := decoder.guardedText(test.limit)
+			if got != test.want || !errors.Is(err, test.err) {
+				t.Fatalf("text=%q error=%v want text=%q error=%v", got, err, test.want, test.err)
+			}
+		})
+	}
+}
+
+func TestFixedDataQueriesDoNotUseTemporarySorts(t *testing.T) {
+	for _, query := range fixedDataQueries {
+		t.Run(query.table+fmt.Sprint(len(query.columns)), func(t *testing.T) {
+			schema := LingmaIDEV1
+			if query.statement == qoderSessionQuery.statement {
+				schema = QoderIDEV1
+			}
+			root := t.TempDir()
+			path := filepath.Join(root, "local.db")
+			database := openSharedClientFixture(t, path, schema, nil)
+			defer database.Close()
+			arguments := make([]any, strings.Count(query.statement, "?"))
+			for index := range arguments {
+				arguments[index] = 1
+			}
+			rows, err := database.Query(`EXPLAIN QUERY PLAN `+query.statement, arguments...)
+			if err != nil {
+				t.Fatalf("query %q: %v", query.statement, err)
+			}
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				if strings.Contains(strings.ToUpper(detail), "TEMP B-TREE") {
+					rows.Close()
+					t.Fatalf("query %q plan=%q", query.statement, detail)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			rows.Close()
+		})
 	}
 }
 
@@ -597,7 +938,7 @@ func generousDatabaseLimits() Limits {
 
 func assertSafeQueryTrace(t *testing.T, trace []QueryEvent) {
 	t.Helper()
-	if len(trace) != 10 {
+	if len(trace) != 9 {
 		t.Fatalf("trace=%#v", trace)
 	}
 	if trace[0].Kind != QuerySchema || trace[0].Table != "" {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 
 	"github.com/YuRui-Liu/agt-mvp/internal/source/internal/sqliteread"
 )
@@ -12,6 +13,9 @@ import (
 var (
 	ErrUnsupportedSchema     = errors.New("sharedclient: unsupported database schema")
 	ErrMalformedConversation = errors.New("sharedclient: malformed conversation")
+	// ErrReaderInvalidated reports that an operation-local cancellation
+	// interrupted a one-time cache load, so the reader cannot safely retry it.
+	ErrReaderInvalidated = errors.New("sharedclient: reader invalidated")
 )
 
 // SchemaID is a closed identifier for an evidenced SharedClient schema.
@@ -106,31 +110,26 @@ var fixedSchemaQueries = []querySpec{
 var (
 	lingmaSessionColumns = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "stop_reason", "parent_session_id", "parent_tool_call_id"}
 	qoderSessionColumns  = []string{"session_id", "project_id", "gmt_create", "gmt_modified", "session_type", "mode", "version", "status", "last_user_query_at", "stop_reason", "parent_session_id", "parent_tool_call_id"}
-	recordColumns        = []string{"request_id", "session_id", "question", "answer", "reasoning_content", "gmt_create", "gmt_modified", "finish_status"}
-	messageColumns       = []string{"id", "session_id", "request_id", "role", "content", "tool_result", "gmt_create"}
+	recordColumns        = []string{"request_id", "session_id", "question_type", "question_bytes", "question", "answer_type", "answer_bytes", "answer", "reasoning_content_type", "reasoning_content_bytes", "reasoning_content", "gmt_create", "gmt_modified", "finish_status"}
+	messageColumns       = []string{"id", "session_id", "request_id", "role", "content_type", "content_bytes", "content", "tool_result_type", "tool_result_bytes", "tool_result", "gmt_create"}
 	snapshotColumns      = []string{"snapshot_id", "session_id", "chat_record_id", "status", "gmt_create", "gmt_modified"}
 )
 
 var (
-	lingmaSessionListQuery = querySpec{kind: QueryData, table: "chat_session", columns: lingmaSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session ORDER BY gmt_create,session_id LIMIT ?`}
-	lingmaSessionOneQuery = querySpec{kind: QueryData, table: "chat_session", columns: lingmaSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session WHERE session_id=? LIMIT ?`}
-	qoderSessionListQuery = querySpec{kind: QueryData, table: "chat_session", columns: qoderSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,status,last_user_query_at,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session ORDER BY gmt_create,session_id LIMIT ?`}
-	qoderSessionOneQuery = querySpec{kind: QueryData, table: "chat_session", columns: qoderSessionColumns,
-		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,status,last_user_query_at,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session WHERE session_id=? LIMIT ?`}
+	lingmaSessionQuery = querySpec{kind: QueryData, table: "chat_session", columns: lingmaSessionColumns,
+		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session LIMIT ?`}
+	qoderSessionQuery = querySpec{kind: QueryData, table: "chat_session", columns: qoderSessionColumns,
+		statement: `SELECT session_id,project_id,gmt_create,gmt_modified,session_type,mode,version,status,last_user_query_at,stop_reason,parent_session_id,parent_tool_call_id FROM chat_session LIMIT ?`}
 	recordQuery = querySpec{kind: QueryData, table: "chat_record", columns: recordColumns,
-		statement: `SELECT request_id,session_id,question,answer,reasoning_content,gmt_create,gmt_modified,finish_status FROM chat_record WHERE session_id=? ORDER BY gmt_create,request_id LIMIT ?`}
+		statement: `SELECT request_id,session_id,typeof(question),length(CAST(question AS BLOB)),CASE WHEN typeof(question)='text' AND length(CAST(question AS BLOB))<=? THEN question ELSE NULL END,typeof(answer),length(CAST(answer AS BLOB)),CASE WHEN typeof(answer)='text' AND length(CAST(answer AS BLOB))<=? THEN answer ELSE NULL END,typeof(reasoning_content),length(CAST(reasoning_content AS BLOB)),CASE WHEN typeof(reasoning_content)='text' AND length(CAST(reasoning_content AS BLOB))<=? THEN reasoning_content ELSE NULL END,gmt_create,gmt_modified,finish_status FROM chat_record LIMIT ?`}
 	messageQuery = querySpec{kind: QueryData, table: "chat_message", columns: messageColumns,
-		statement: `SELECT id,session_id,request_id,role,content,tool_result,gmt_create FROM chat_message WHERE session_id=? ORDER BY gmt_create,id LIMIT ?`}
+		statement: `SELECT id,session_id,request_id,role,typeof(content),length(CAST(content AS BLOB)),CASE WHEN typeof(content)='text' AND length(CAST(content AS BLOB))<=? THEN content ELSE NULL END,typeof(tool_result),length(CAST(tool_result AS BLOB)),CASE WHEN typeof(tool_result)='text' AND length(CAST(tool_result AS BLOB))<=? THEN tool_result ELSE NULL END,gmt_create FROM chat_message LIMIT ?`}
 	snapshotQuery = querySpec{kind: QueryData, table: "chat_snapshot", columns: snapshotColumns,
-		statement: `SELECT snapshot_id,session_id,chat_record_id,status,gmt_create,gmt_modified FROM chat_snapshot WHERE session_id=? ORDER BY gmt_create,snapshot_id LIMIT ?`}
+		statement: `SELECT snapshot_id,session_id,chat_record_id,status,gmt_create,gmt_modified FROM chat_snapshot LIMIT ?`}
 )
 
 var fixedDataQueries = []querySpec{
-	lingmaSessionListQuery, lingmaSessionOneQuery, qoderSessionListQuery, qoderSessionOneQuery,
-	recordQuery, messageQuery, snapshotQuery,
+	lingmaSessionQuery, qoderSessionQuery, recordQuery, messageQuery, snapshotQuery,
 }
 
 type columnDefinition struct {
@@ -259,13 +258,32 @@ func (budget *sqliteBudget) consumeCanonical(amount int64) error {
 	return consumeBytes(&budget.canonicalBytes, budget.limits.MaxCanonicalBytes, amount)
 }
 
+func (budget *sqliteBudget) remainingBodyBytes() (int64, error) {
+	payload := budget.limits.MaxPayloadBytes - budget.payloadBytes
+	canonical := budget.limits.MaxCanonicalBytes - budget.canonicalBytes
+	if payload < 0 || canonical < 0 {
+		return 0, ErrBudgetExceeded
+	}
+	return min(payload, canonical), nil
+}
+
 type chatReader struct {
-	gate     chan struct{}
-	parent   context.Context
-	tx       *sqliteread.ReadTx
-	schema   SchemaID
-	budget   *sqliteBudget
-	observer func(QueryEvent)
+	gate        chan struct{}
+	parent      context.Context
+	tx          *sqliteread.ReadTx
+	schema      SchemaID
+	budget      *sqliteBudget
+	observer    func(QueryEvent)
+	terminalErr error
+
+	sessionsLoaded, recordsLoaded, messagesLoaded, snapshotsLoaded bool
+	sessionsErr, recordsErr, messagesErr, snapshotsErr             error
+	sessions                                                       []SessionRow
+	sessionsByID                                                   map[string]SessionRow
+	recordsBySession                                               map[string][]RecordRow
+	messagesBySession                                              map[string][]MessageRow
+	snapshotsBySession                                             map[string][]SnapshotRow
+	malformed                                                      map[string]bool
 }
 
 // WithChatSnapshot validates the complete evidenced schema before exposing a
@@ -415,46 +433,19 @@ func (reader *chatReader) ListSessions(ctx context.Context) ([]SessionRow, error
 		return nil, err
 	}
 	defer releaseGate()
+	if reader.terminalErr != nil {
+		return nil, reader.terminalErr
+	}
 	combined, release, err := reader.combinedContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	ctx = combined
-	remaining := min(reader.budget.limits.MaxSessions-reader.budget.sessions, reader.budget.limits.MaxRows-reader.budget.rows)
-	if remaining < 0 {
-		return nil, ErrBudgetExceeded
+	if err := reader.loadSessions(ctx); err != nil {
+		return nil, reader.finishLoad(ctx, err)
 	}
-	spec := lingmaSessionListQuery
-	if reader.schema == QoderIDEV1 {
-		spec = qoderSessionListQuery
-	}
-	rows, err := query(ctx, reader.tx, reader.observer, spec, plusOne(remaining))
-	if err != nil {
-		return nil, dataFailure(reader.parent, ctx)
-	}
-	defer rows.Close()
-	var sessions []SessionRow
-	for rows.Next() {
-		if err := reader.checkContexts(ctx); err != nil {
-			return nil, err
-		}
-		session, err := scanSession(rows, reader.schema)
-		if err != nil || session.ID == "" || session.ProjectID == "" {
-			return nil, dataFailure(reader.parent, ctx)
-		}
-		if err := reader.budget.consumeSession(); err != nil {
-			return nil, err
-		}
-		if err := reader.budget.consumeCanonicalValue(session); err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, session)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, dataFailure(reader.parent, ctx)
-	}
-	return sessions, reader.checkContexts(ctx)
+	return append([]SessionRow(nil), reader.sessions...), reader.checkContexts(ctx)
 }
 
 func (reader *chatReader) ReadConversation(ctx context.Context, sessionID string) (Conversation, error) {
@@ -463,6 +454,9 @@ func (reader *chatReader) ReadConversation(ctx context.Context, sessionID string
 		return Conversation{}, err
 	}
 	defer releaseGate()
+	if reader.terminalErr != nil {
+		return Conversation{}, reader.terminalErr
+	}
 	combined, release, err := reader.combinedContext(ctx)
 	if err != nil {
 		return Conversation{}, err
@@ -472,61 +466,32 @@ func (reader *chatReader) ReadConversation(ctx context.Context, sessionID string
 	if sessionID == "" {
 		return Conversation{}, ErrMalformedConversation
 	}
-	session, err := reader.readOneSession(ctx, sessionID)
-	if err != nil {
-		return Conversation{}, err
-	}
-	records, err := reader.readRecords(ctx, sessionID)
-	if err != nil {
-		return Conversation{}, err
-	}
-	messages, err := reader.readMessages(ctx, sessionID)
-	if err != nil {
-		return Conversation{}, err
-	}
-	snapshots, err := reader.readSnapshots(ctx, sessionID)
-	if err != nil {
-		return Conversation{}, err
+	for _, load := range []func(context.Context) error{reader.loadSessions, reader.loadRecords, reader.loadMessages, reader.loadSnapshots} {
+		if err := load(ctx); err != nil {
+			return Conversation{}, reader.finishLoad(ctx, err)
+		}
 	}
 	if err := reader.checkContexts(ctx); err != nil {
 		return Conversation{}, err
 	}
-	return Conversation{Session: session, Records: records, Messages: messages, Snapshots: snapshots}, nil
+	session, ok := reader.sessionsByID[sessionID]
+	if !ok || reader.malformed[sessionID] {
+		return Conversation{}, ErrMalformedConversation
+	}
+	return Conversation{
+		Session:   session,
+		Records:   append([]RecordRow(nil), reader.recordsBySession[sessionID]...),
+		Messages:  append([]MessageRow(nil), reader.messagesBySession[sessionID]...),
+		Snapshots: append([]SnapshotRow(nil), reader.snapshotsBySession[sessionID]...),
+	}, nil
 }
 
-func (reader *chatReader) readOneSession(ctx context.Context, sessionID string) (SessionRow, error) {
-	spec := lingmaSessionOneQuery
-	if reader.schema == QoderIDEV1 {
-		spec = qoderSessionOneQuery
+func (reader *chatReader) finishLoad(ctx context.Context, err error) error {
+	if err != nil && reader.parent.Err() == nil && ctx != nil && ctx.Err() != nil {
+		reader.terminalErr = ErrReaderInvalidated
+		return ctx.Err()
 	}
-	rows, err := query(ctx, reader.tx, reader.observer, spec, sessionID, 2)
-	if err != nil {
-		return SessionRow{}, dataFailure(reader.parent, ctx)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if rows.Err() != nil {
-			return SessionRow{}, dataFailure(reader.parent, ctx)
-		}
-		return SessionRow{}, ErrMalformedConversation
-	}
-	session, err := scanSession(rows, reader.schema)
-	if err != nil || session.ID != sessionID || session.ProjectID == "" {
-		return SessionRow{}, dataFailure(reader.parent, ctx)
-	}
-	if rows.Next() {
-		return SessionRow{}, ErrMalformedConversation
-	}
-	if err := rows.Err(); err != nil {
-		return SessionRow{}, dataFailure(reader.parent, ctx)
-	}
-	if err := reader.budget.consumeSession(); err != nil {
-		return SessionRow{}, err
-	}
-	if err := reader.budget.consumeCanonicalValue(session); err != nil {
-		return SessionRow{}, err
-	}
-	return session, reader.checkContexts(ctx)
+	return err
 }
 
 func scanSession(scanner interface{ Scan(...any) error }, schema SchemaID) (SessionRow, error) {
@@ -608,107 +573,289 @@ func (decoder *storageDecoder) integer() (int64, bool) {
 	return integer, ok
 }
 
-func (reader *chatReader) readRecords(ctx context.Context, sessionID string) ([]RecordRow, error) {
-	rows, err := reader.queryRemainingRows(ctx, recordQuery, sessionID)
+func (decoder *storageDecoder) raw() (any, bool) {
+	if decoder.index >= len(decoder.values) {
+		return nil, false
+	}
+	value := decoder.values[decoder.index]
+	decoder.index++
+	return value, true
+}
+
+func (decoder *storageDecoder) guardedText(maxBytes int64) (string, error) {
+	storageType, typeOK := decoder.text(true)
+	lengthValue, lengthOK := decoder.raw()
+	textValue, valueOK := decoder.raw()
+	if !typeOK || !lengthOK || !valueOK {
+		return "", ErrMalformedConversation
+	}
+	switch storageType {
+	case "null":
+		if lengthValue != nil || textValue != nil {
+			return "", ErrMalformedConversation
+		}
+		return "", nil
+	case "text":
+		length, ok := lengthValue.(int64)
+		if !ok || length < 0 {
+			return "", ErrMalformedConversation
+		}
+		if length > maxBytes {
+			if textValue != nil {
+				return "", ErrMalformedConversation
+			}
+			return "", ErrBudgetExceeded
+		}
+		text, ok := textValue.(string)
+		if !ok || int64(len(text)) != length {
+			return "", ErrMalformedConversation
+		}
+		return text, nil
+	default:
+		return "", ErrMalformedConversation
+	}
+}
+
+func (reader *chatReader) loadSessions(ctx context.Context) error {
+	if reader.sessionsLoaded {
+		return reader.sessionsErr
+	}
+	reader.sessionsLoaded = true
+	reader.sessionsByID = make(map[string]SessionRow)
+	reader.malformed = make(map[string]bool)
+
+	spec := lingmaSessionQuery
+	if reader.schema == QoderIDEV1 {
+		spec = qoderSessionQuery
+	}
+	remaining := min(reader.budget.limits.MaxSessions-reader.budget.sessions, reader.budget.limits.MaxRows-reader.budget.rows)
+	if remaining < 0 {
+		reader.sessionsErr = ErrBudgetExceeded
+		return reader.sessionsErr
+	}
+	rows, err := query(ctx, reader.tx, reader.observer, spec, plusOne(remaining))
 	if err != nil {
-		return nil, err
+		reader.sessionsErr = dataFailure(reader.parent, ctx)
+		return reader.sessionsErr
 	}
 	defer rows.Close()
-	var result []RecordRow
 	for rows.Next() {
 		if err := reader.checkContexts(ctx); err != nil {
-			return nil, err
+			reader.sessionsErr = err
+			return err
+		}
+		row, err := scanSession(rows, reader.schema)
+		if err != nil || row.ID == "" || row.ProjectID == "" {
+			reader.sessionsErr = dataFailure(reader.parent, ctx)
+			return reader.sessionsErr
+		}
+		if err := reader.budget.consumeSession(); err != nil {
+			reader.sessionsErr = err
+			return err
+		}
+		if _, duplicate := reader.sessionsByID[row.ID]; duplicate {
+			reader.sessionsErr = ErrMalformedConversation
+			return reader.sessionsErr
+		}
+		if err := reader.budget.consumeCanonicalValue(row); err != nil {
+			reader.sessionsErr = err
+			return err
+		}
+		reader.sessions = append(reader.sessions, row)
+		reader.sessionsByID[row.ID] = row
+	}
+	if rows.Err() != nil {
+		reader.sessionsErr = dataFailure(reader.parent, ctx)
+		return reader.sessionsErr
+	}
+	sort.SliceStable(reader.sessions, func(left, right int) bool {
+		if reader.sessions[left].CreatedAt != reader.sessions[right].CreatedAt {
+			return reader.sessions[left].CreatedAt < reader.sessions[right].CreatedAt
+		}
+		return reader.sessions[left].ID < reader.sessions[right].ID
+	})
+	reader.sessionsErr = reader.checkContexts(ctx)
+	return reader.sessionsErr
+}
+
+func (reader *chatReader) loadRecords(ctx context.Context) error {
+	if reader.recordsLoaded {
+		return reader.recordsErr
+	}
+	reader.recordsLoaded = true
+	reader.recordsBySession = make(map[string][]RecordRow)
+	cellLimit, err := reader.budget.remainingBodyBytes()
+	if err != nil {
+		reader.recordsErr = err
+		return err
+	}
+	rows, err := reader.queryRemainingRows(ctx, recordQuery, cellLimit, cellLimit, cellLimit)
+	if err != nil {
+		reader.recordsErr = err
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := reader.checkContexts(ctx); err != nil {
+			reader.recordsErr = err
+			return err
 		}
 		decoder, err := scanStorage(rows, len(recordColumns))
 		if err != nil {
-			return nil, dataFailure(reader.parent, ctx)
+			reader.recordsErr = dataFailure(reader.parent, ctx)
+			return reader.recordsErr
 		}
 		requestID, requestOK := decoder.text(true)
 		rowSessionID, sessionOK := decoder.text(true)
-		question, questionOK := decoder.text(false)
-		answer, answerOK := decoder.text(false)
-		reasoning, reasoningOK := decoder.text(false)
+		question, questionErr := decoder.guardedText(cellLimit)
+		answer, answerErr := decoder.guardedText(cellLimit)
+		reasoning, reasoningErr := decoder.guardedText(cellLimit)
 		createdAt, createdOK := decoder.integer()
 		modifiedAt, modifiedOK := decoder.integer()
 		finishStatus, finishOK := decoder.integer()
-		if !requestOK || !sessionOK || !questionOK || !answerOK || !reasoningOK || !createdOK || !modifiedOK || !finishOK || requestID == "" || rowSessionID != sessionID {
-			return nil, dataFailure(reader.parent, ctx)
+		if !sessionOK || rowSessionID == "" {
+			reader.recordsErr = dataFailure(reader.parent, ctx)
+			return reader.recordsErr
+		}
+		if err := reader.budget.consumeRow(); err != nil {
+			reader.recordsErr = err
+			return err
+		}
+		if errors.Is(questionErr, ErrBudgetExceeded) || errors.Is(answerErr, ErrBudgetExceeded) || errors.Is(reasoningErr, ErrBudgetExceeded) {
+			reader.recordsErr = ErrBudgetExceeded
+			return reader.recordsErr
+		}
+		if !requestOK || questionErr != nil || answerErr != nil || reasoningErr != nil || !createdOK || !modifiedOK || !finishOK || requestID == "" {
+			reader.malformed[rowSessionID] = true
+			continue
 		}
 		row := RecordRow{RequestID: requestID, SessionID: rowSessionID, Question: question, Answer: answer, ReasoningContent: reasoning, CreatedAt: createdAt, ModifiedAt: modifiedAt, FinishStatus: finishStatus}
-		if err := reader.budget.consumeRow(); err != nil {
-			return nil, err
-		}
 		if err := reader.budget.consumePayload(byteLength(row.Question, row.Answer, row.ReasoningContent)); err != nil {
-			return nil, err
+			reader.recordsErr = err
+			return err
 		}
 		if err := reader.budget.consumeCanonicalValue(row); err != nil {
-			return nil, err
+			reader.recordsErr = err
+			return err
 		}
-		result = append(result, row)
+		reader.recordsBySession[rowSessionID] = append(reader.recordsBySession[rowSessionID], row)
 	}
 	if rows.Err() != nil {
-		return nil, dataFailure(reader.parent, ctx)
+		reader.recordsErr = dataFailure(reader.parent, ctx)
+		return reader.recordsErr
 	}
-	return result, reader.checkContexts(ctx)
+	for sessionID := range reader.recordsBySession {
+		rows := reader.recordsBySession[sessionID]
+		sort.SliceStable(rows, func(left, right int) bool {
+			if rows[left].CreatedAt != rows[right].CreatedAt {
+				return rows[left].CreatedAt < rows[right].CreatedAt
+			}
+			return rows[left].RequestID < rows[right].RequestID
+		})
+	}
+	reader.recordsErr = reader.checkContexts(ctx)
+	return reader.recordsErr
 }
 
-func (reader *chatReader) readMessages(ctx context.Context, sessionID string) ([]MessageRow, error) {
-	rows, err := reader.queryRemainingRows(ctx, messageQuery, sessionID)
+func (reader *chatReader) loadMessages(ctx context.Context) error {
+	if reader.messagesLoaded {
+		return reader.messagesErr
+	}
+	reader.messagesLoaded = true
+	reader.messagesBySession = make(map[string][]MessageRow)
+	cellLimit, err := reader.budget.remainingBodyBytes()
 	if err != nil {
-		return nil, err
+		reader.messagesErr = err
+		return err
+	}
+	rows, err := reader.queryRemainingRows(ctx, messageQuery, cellLimit, cellLimit)
+	if err != nil {
+		reader.messagesErr = err
+		return err
 	}
 	defer rows.Close()
-	var result []MessageRow
 	for rows.Next() {
 		if err := reader.checkContexts(ctx); err != nil {
-			return nil, err
+			reader.messagesErr = err
+			return err
 		}
 		decoder, err := scanStorage(rows, len(messageColumns))
 		if err != nil {
-			return nil, dataFailure(reader.parent, ctx)
+			reader.messagesErr = dataFailure(reader.parent, ctx)
+			return reader.messagesErr
 		}
 		id, idOK := decoder.text(true)
 		rowSessionID, sessionOK := decoder.text(true)
 		requestID, requestOK := decoder.text(false)
 		role, roleOK := decoder.text(false)
-		content, contentOK := decoder.text(false)
-		toolResult, toolOK := decoder.text(false)
+		content, contentErr := decoder.guardedText(cellLimit)
+		toolResult, toolErr := decoder.guardedText(cellLimit)
 		createdAt, createdOK := decoder.integer()
-		if !idOK || !sessionOK || !requestOK || !roleOK || !contentOK || !toolOK || !createdOK || id == "" || rowSessionID != sessionID {
-			return nil, dataFailure(reader.parent, ctx)
+		if !sessionOK || rowSessionID == "" {
+			reader.messagesErr = dataFailure(reader.parent, ctx)
+			return reader.messagesErr
+		}
+		if err := reader.budget.consumeRow(); err != nil {
+			reader.messagesErr = err
+			return err
+		}
+		if errors.Is(contentErr, ErrBudgetExceeded) || errors.Is(toolErr, ErrBudgetExceeded) {
+			reader.messagesErr = ErrBudgetExceeded
+			return reader.messagesErr
+		}
+		if !idOK || !requestOK || !roleOK || contentErr != nil || toolErr != nil || !createdOK || id == "" {
+			reader.malformed[rowSessionID] = true
+			continue
 		}
 		row := MessageRow{ID: id, SessionID: rowSessionID, RequestID: requestID, Role: role, Content: content, ToolResult: toolResult, CreatedAt: createdAt}
-		if err := reader.budget.consumeRow(); err != nil {
-			return nil, err
-		}
 		if err := reader.budget.consumePayload(byteLength(row.Content, row.ToolResult)); err != nil {
-			return nil, err
+			reader.messagesErr = err
+			return err
 		}
 		if err := reader.budget.consumeCanonicalValue(row); err != nil {
-			return nil, err
+			reader.messagesErr = err
+			return err
 		}
-		result = append(result, row)
+		reader.messagesBySession[rowSessionID] = append(reader.messagesBySession[rowSessionID], row)
 	}
 	if rows.Err() != nil {
-		return nil, dataFailure(reader.parent, ctx)
+		reader.messagesErr = dataFailure(reader.parent, ctx)
+		return reader.messagesErr
 	}
-	return result, reader.checkContexts(ctx)
+	for sessionID := range reader.messagesBySession {
+		rows := reader.messagesBySession[sessionID]
+		sort.SliceStable(rows, func(left, right int) bool {
+			if rows[left].CreatedAt != rows[right].CreatedAt {
+				return rows[left].CreatedAt < rows[right].CreatedAt
+			}
+			return rows[left].ID < rows[right].ID
+		})
+	}
+	reader.messagesErr = reader.checkContexts(ctx)
+	return reader.messagesErr
 }
 
-func (reader *chatReader) readSnapshots(ctx context.Context, sessionID string) ([]SnapshotRow, error) {
-	rows, err := reader.queryRemainingRows(ctx, snapshotQuery, sessionID)
+func (reader *chatReader) loadSnapshots(ctx context.Context) error {
+	if reader.snapshotsLoaded {
+		return reader.snapshotsErr
+	}
+	reader.snapshotsLoaded = true
+	reader.snapshotsBySession = make(map[string][]SnapshotRow)
+	rows, err := reader.queryRemainingRows(ctx, snapshotQuery)
 	if err != nil {
-		return nil, err
+		reader.snapshotsErr = err
+		return err
 	}
 	defer rows.Close()
-	var result []SnapshotRow
 	for rows.Next() {
 		if err := reader.checkContexts(ctx); err != nil {
-			return nil, err
+			reader.snapshotsErr = err
+			return err
 		}
 		decoder, err := scanStorage(rows, len(snapshotColumns))
 		if err != nil {
-			return nil, dataFailure(reader.parent, ctx)
+			reader.snapshotsErr = dataFailure(reader.parent, ctx)
+			return reader.snapshotsErr
 		}
 		id, idOK := decoder.text(true)
 		rowSessionID, sessionOK := decoder.text(true)
@@ -716,25 +863,43 @@ func (reader *chatReader) readSnapshots(ctx context.Context, sessionID string) (
 		status, statusOK := decoder.text(false)
 		createdAt, createdOK := decoder.integer()
 		modifiedAt, modifiedOK := decoder.integer()
-		if !idOK || !sessionOK || !recordOK || !statusOK || !createdOK || !modifiedOK || id == "" || rowSessionID != sessionID {
-			return nil, dataFailure(reader.parent, ctx)
+		if !sessionOK || rowSessionID == "" {
+			reader.snapshotsErr = dataFailure(reader.parent, ctx)
+			return reader.snapshotsErr
+		}
+		if err := reader.budget.consumeRow(); err != nil {
+			reader.snapshotsErr = err
+			return err
+		}
+		if !idOK || !recordOK || !statusOK || !createdOK || !modifiedOK || id == "" {
+			reader.malformed[rowSessionID] = true
+			continue
 		}
 		row := SnapshotRow{ID: id, SessionID: rowSessionID, RecordID: recordID, Status: status, CreatedAt: createdAt, ModifiedAt: modifiedAt}
-		if err := reader.budget.consumeRow(); err != nil {
-			return nil, err
-		}
 		if err := reader.budget.consumeCanonicalValue(row); err != nil {
-			return nil, err
+			reader.snapshotsErr = err
+			return err
 		}
-		result = append(result, row)
+		reader.snapshotsBySession[rowSessionID] = append(reader.snapshotsBySession[rowSessionID], row)
 	}
 	if rows.Err() != nil {
-		return nil, dataFailure(reader.parent, ctx)
+		reader.snapshotsErr = dataFailure(reader.parent, ctx)
+		return reader.snapshotsErr
 	}
-	return result, reader.checkContexts(ctx)
+	for sessionID := range reader.snapshotsBySession {
+		rows := reader.snapshotsBySession[sessionID]
+		sort.SliceStable(rows, func(left, right int) bool {
+			if rows[left].CreatedAt != rows[right].CreatedAt {
+				return rows[left].CreatedAt < rows[right].CreatedAt
+			}
+			return rows[left].ID < rows[right].ID
+		})
+	}
+	reader.snapshotsErr = reader.checkContexts(ctx)
+	return reader.snapshotsErr
 }
 
-func (reader *chatReader) queryRemainingRows(ctx context.Context, spec querySpec, sessionID string) (*sql.Rows, error) {
+func (reader *chatReader) queryRemainingRows(ctx context.Context, spec querySpec, arguments ...any) (*sql.Rows, error) {
 	if err := reader.checkContexts(ctx); err != nil {
 		return nil, err
 	}
@@ -742,7 +907,8 @@ func (reader *chatReader) queryRemainingRows(ctx context.Context, spec querySpec
 	if remaining < 0 {
 		return nil, ErrBudgetExceeded
 	}
-	rows, err := query(ctx, reader.tx, reader.observer, spec, sessionID, plusOne(remaining))
+	arguments = append(arguments, plusOne(remaining))
+	rows, err := query(ctx, reader.tx, reader.observer, spec, arguments...)
 	if err != nil {
 		return nil, dataFailure(reader.parent, ctx)
 	}

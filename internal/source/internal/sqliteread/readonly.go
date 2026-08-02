@@ -72,13 +72,24 @@ func (set validatedFileSet) close() {
 	}
 }
 
-func sameValidatedFileSet(first, second validatedFileSet) bool {
-	if len(first) != len(second) {
-		return false
+// sameValidatedOpenSet permits only the empty WAL and its shared-memory index
+// that SQLite itself may create while opening a clean database whose journal
+// mode is WAL. Files that existed before open must retain identity and size.
+func sameValidatedOpenSet(before, opened validatedFileSet) bool {
+	for suffix, original := range before {
+		current, ok := opened[suffix]
+		if !ok || !os.SameFile(original.info, current.info) || original.info.Size() != current.info.Size() {
+			return false
+		}
 	}
-	for suffix, original := range first {
-		current, ok := second[suffix]
-		if !ok || !os.SameFile(original.info, current.info) {
+	for suffix, current := range opened {
+		if _, existed := before[suffix]; existed {
+			continue
+		}
+		if suffix != "-wal" && suffix != "-shm" {
+			return false
+		}
+		if suffix == "-wal" && current.info.Size() != 0 {
 			return false
 		}
 	}
@@ -143,6 +154,26 @@ func WithReadOnlyTx(ctx context.Context, root, path string, maxBytes int64, fn f
 		return err
 	}
 	defer tx.Rollback()
+	opened, err := openValidatedFileSet(root, path, maxBytes)
+	if err != nil {
+		return err
+	}
+	defer opened.close()
+	if !sameValidatedOpenSet(validated, opened) {
+		return errors.New("sqliteread: database or sidecar changed during open")
+	}
+	readTx := &ReadTx{tx: tx}
+	var schemaObjects int
+	pin, err := readTx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema`)
+	if err != nil {
+		return err
+	}
+	if err := pin.Scan(&schemaObjects); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if afterSQLiteOpen != nil {
 		afterSQLiteOpen()
 	}
@@ -151,11 +182,11 @@ func WithReadOnlyTx(ctx context.Context, root, path string, maxBytes int64, fn f
 		return err
 	}
 	defer current.close()
-	if !sameValidatedFileSet(validated, current) {
+	if !sameValidatedOpenSet(opened, current) {
 		return errors.New("sqliteread: database or sidecar changed during open")
 	}
 
-	if err := fn(&ReadTx{tx: tx}); err != nil {
+	if err := fn(readTx); err != nil {
 		return err
 	}
 	return ctx.Err()
