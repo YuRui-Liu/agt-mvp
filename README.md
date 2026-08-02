@@ -56,7 +56,7 @@ if (Test-Path -LiteralPath "$HOME\.claude\skills\kuai\SKILL.md") { throw "目标
 Copy-Item -LiteralPath ".\kuai.md" -Destination "$HOME\.claude\skills\kuai\SKILL.md"
 ```
 
-之后可说“运行 kuAI”“扫描 Agent 项目”或“生成分析海报”。skill 只检查并调用同一个统一安装器和 `kuai` 客户端，不另写扫描器、脱敏器或上传器。
+之后可说“运行 kuAI”“扫描 Agent 项目”或“安全提交会话数据”。skill 只检查并调用同一个统一安装器和 `kuai` 客户端，不另写扫描器、脱敏器或上传器。
 
 ## Assessment Scope 与支持范围
 
@@ -109,13 +109,13 @@ Scope 归组优先级为 Project → Workspace → Conversation Group → Sessio
 - 用户选择 Scope 后，`kuai` 在本地流式解析，删除禁止字段、Read 正文、附件、二进制和完整文件副本，再递归处理 secret、绝对路径、用户名与 PII。
 - 用户必须查看本地脱敏摘要，完成手机号验证和数据用途授权，客户端才允许上传。
 - Mock 模式在本地模拟协议且不访问公网。HTTP 模式下，HR-B 接收脱敏包、保存授权并创建异步任务；服务端分析不是“本地分析”。
-- 手机号、OTP、启动 token、完整 poster ticket、原始 session 和脱敏前副本不得进入上传包或日志。
+- 手机号、OTP、启动 token、原始 session 和脱敏前副本不得进入上传包或日志。
 
 ## Mock 流程与恢复
 
-完整流程为：扫描 → 主动选择一个 Assessment Scope → 本地脱敏预览 → 手机验证 → 用途授权 → 上传 → 异步分析 → 直接下载图片海报。前台轮询约 30 秒，超时后保留或重新打开同一个本地页面继续查看。
+完整 C 端流程为：扫描 → 主动选择一个 Assessment Scope → 本地脱敏预览 → 手机验证 → 用途授权 → 上传 → 展示提交成功回执。提交成功是本地页面的终态；C 端不轮询或展示后续分析、画像与海报。
 
-`kuai status` 只输出本地 CLI 版本、默认服务模式和重新运行 `kuai start` 的建议。浏览器任务 ID 保存在 `sessionStorage`，CLI 无权读取，因此 `status` 不声称查询或恢复当前远端任务。
+`kuai status` 只输出本地 CLI 版本、默认服务模式和重新运行 `kuai start` 的建议。浏览器仅在 `sessionStorage` 保存认证与幂等上传草稿，CLI 无权读取，因此 `status` 不声称查询或恢复提交状态。
 
 ## 配置、调试和失败场景
 

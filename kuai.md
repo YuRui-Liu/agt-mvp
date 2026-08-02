@@ -1,6 +1,6 @@
 ---
 name: kuai
-description: Use when a user asks to run kuAI, scan local Agent sessions, create an assessment scope, check kuai CLI status, or download an analysis poster. Covers install verification, background UI startup, and read-only scan diagnostics.
+description: Use when a user asks to run kuAI, scan local Agent sessions, create an assessment scope, check kuai CLI status, or securely submit redacted session data. Covers install verification, background UI startup, and read-only scan diagnostics.
 version: "1.0.0"
 ---
 
@@ -143,11 +143,11 @@ Catalog 中有 22 个 ready 来源：`aider`、`claude-code`、`cline`、`codebu
 3. 只有用户确认所选 Scope、检查脱敏摘要，并明确完成手机号验证和数据用途授权后，才允许上传。
 4. 不得暗示服务端在本地运行或在本地分析。`kuai` 只在本地扫描、导出和脱敏；授权后的脱敏包由 HR-B 接收，分析发生在服务端。
 
-## 6. 异步任务与海报
+## 6. 提交成功回执
 
-上传完成只表示脱敏包已成功交付，不表示分析已完成。前台轮询约 30 秒；仍未完成时告知用户任务已进入异步处理，应保持或重新打开同一个本地页面查看。不要声称 `kuai status` 能恢复浏览器中的任务 ID。
+上传完成后，页面只展示服务端返回的提交成功回执。它是当前 C 端流程的终态，不轮询或展示后续分析、画像与海报，也不要向用户承诺分析完成时间。
 
-任务完成后，海报是可直接下载的图片；引导用户点击下载，不要要求复制图片地址、ticket 或启动 URL。
+用户可以返回校招职位或重新提交一个新的 Assessment Scope。不要声称 `kuai status` 能查询提交状态；浏览器中的认证信息和幂等上传草稿不会暴露给 CLI。
 
 ## 7. 禁止事项
 
@@ -171,5 +171,4 @@ Catalog 中有 22 个 ready 来源：`aider`、`claude-code`、`cline`、`codebu
 - 等待 30 秒后日志文件仍为空：进程未成功写出启动事件，检查 `$log.err`，不要重复启动更多实例。
 - 启动了多个实例：`kuai` 不做单实例保护，各实例监听不同端口。停掉多余进程，只保留一个。
 - 浏览器未打开：使用 `--no-browser` 后按第 2 节取端口，只在用户的私密终端中使用完整启动 URL。
-- 上传或分析失败：在本地页面读取安全错误码；`kuai status` 仅用于检查 CLI 安装和恢复入口。
-- 超过 30 秒未完成：这是异步路径，不要重复上传；稍后查询同一任务。
+- 上传失败：在本地页面读取安全错误码；同一次准备会复用幂等键，按页面提示重试。`kuai status` 仅用于检查 CLI 安装和恢复入口。

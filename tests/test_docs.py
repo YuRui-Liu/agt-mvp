@@ -28,11 +28,12 @@ class DocumentationTests(unittest.TestCase):
             "手机号验证",
             "数据用途授权",
             "HR-B",
-            "30 秒",
-            "直接下载图片海报",
+            "提交成功回执",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.readme)
+        for obsolete in ("异步分析", "直接下载图片海报", "前台轮询约 30 秒"):
+            self.assertNotIn(obsolete, self.readme)
 
     def test_readme_and_skill_describe_one_binary(self):
         for document in (self.readme, self.skill):
@@ -217,6 +218,14 @@ class DocumentationTests(unittest.TestCase):
         for document in (self.readme, self.skill):
             self.assertIn("sessionStorage", document)
             self.assertRegex(document, r"(不查询|不能读取|无法读取|无权读取)")
+
+    def test_skill_ends_customer_flow_at_submission_receipt(self):
+        for document in (self.readme, self.skill):
+            self.assertIn("提交成功", document)
+            self.assertIn("不轮询", document)
+            self.assertRegex(document, r"不轮询.{0,12}(?:或展示|、不展示).{0,12}画像.{0,4}海报")
+            self.assertNotIn("异步任务与海报", document)
+            self.assertNotIn("下载分析海报", document)
 
     def test_no_common_documentation_typos_or_legacy_entrypoints(self):
         combined = self.readme + self.skill
