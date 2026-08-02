@@ -130,7 +130,7 @@ func TestCompressCWDAndCollisionFallback(t *testing.T) {
 	mismatchRoot := t.TempDir()
 	installCodeBuddy(t, mismatchRoot, "different", codeBuddyUUID, []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}],"cwd":"/synthetic/project"}`+"\n"))
 	got, err = New(mismatchRoot).Discover(context.Background())
-	if err != nil || len(got) != 1 || got[0].Scope.Type != source.ScopeSessionCollection {
+	if err != nil || len(got) != 0 {
 		t.Fatalf("mismatch sessions=%#v err=%v", got, err)
 	}
 
@@ -165,7 +165,7 @@ func TestCompressCWDAndCollisionFallback(t *testing.T) {
 			}
 			installCodeBuddy(t, invalidRoot, CompressCWD(invalid), codeBuddyUUID, append(body, '\n'))
 			sessions, err := New(invalidRoot).Discover(context.Background())
-			if err != nil || len(sessions) != 1 || sessions[0].Scope.Type != source.ScopeSessionCollection {
+			if err != nil || len(sessions) != 0 {
 				t.Fatalf("sessions=%#v err=%v", sessions, err)
 			}
 		})
@@ -218,10 +218,50 @@ func TestInvalidRecordCannotChooseCWDAndUnknownSameIDCannotReplace(t *testing.T)
 	}
 }
 
+func TestDuplicateIDOnlyUsesValidatedRecognizedRecords(t *testing.T) {
+	t.Run("invalid-and-unknown-cannot-replace-valid-message", func(t *testing.T) {
+		root := t.TempDir()
+		body := strings.Join([]string{
+			`{"id":"same","type":"message","role":"user","content":[{"type":"input_text","text":"kept"}],"cwd":"/dedupe/project"}`,
+			`{"id":"same","type":"message","role":"system","content":[{"type":"input_text","text":"invalid"}],"cwd":"/dedupe/project"}`,
+			`{"id":"same","type":"custom-title","content":"unknown","cwd":"/dedupe/project"}`,
+		}, "\n") + "\n"
+		installCodeBuddy(t, root, "dedupe-project", codeBuddyUUID, []byte(body))
+		a := New(root)
+		sessions, err := a.Discover(context.Background())
+		if err != nil || len(sessions) != 1 || sessions[0].MalformedCount != 1 || sessions[0].Scope.Type != source.ScopeProject {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		events := codeBuddyEvents(t, a, sessions[0])
+		if len(events) != 1 || events[0]["type"] != "message" || events[0]["content"] != "kept" {
+			t.Fatalf("events=%#v", events)
+		}
+	})
+
+	t.Run("validated-cross-type-replacement-precedes-tool-transaction", func(t *testing.T) {
+		root := t.TempDir()
+		body := strings.Join([]string{
+			`{"id":"cross","type":"message","role":"user","content":[{"type":"input_text","text":"replaced"}],"cwd":"/cross/type"}`,
+			`{"id":"cross","type":"function_call","callId":"call","name":"lookup","arguments":{},"cwd":"/cross/type"}`,
+			`{"id":"result","type":"function_call_result","callId":"call","name":"lookup","status":"completed","output":"kept","cwd":"/cross/type"}`,
+		}, "\n") + "\n"
+		installCodeBuddy(t, root, "cross-type", codeBuddyUUID, []byte(body))
+		a := New(root)
+		sessions, err := a.Discover(context.Background())
+		if err != nil || len(sessions) != 1 || sessions[0].MalformedCount != 0 {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		events := codeBuddyEvents(t, a, sessions[0])
+		if len(events) != 2 || events[0]["type"] != "tool_use" || events[1]["type"] != "tool_result" {
+			t.Fatalf("events=%#v", events)
+		}
+	})
+}
+
 func TestToolPairingIsStrictAtomicAndIncompleteIsSafeError(t *testing.T) {
 	root := t.TempDir()
 	body := strings.Join([]string{
-		`{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}`,
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}],"cwd":"/collection"}`,
 		`{"type":"function_call","callId":"c1","name":"one","arguments":{}}`,
 		`{"type":"function_call","callId":"c2","name":"two","arguments":{}}`,
 		`{"type":"function_call_result","callId":"orphan","name":"one","status":"completed","output":"bad"}`,
@@ -278,7 +318,7 @@ func TestToolResultStatusProviderErrorTypesAndAtomicRollback(t *testing.T) {
 	t.Run("recognized-invalid-does-not-resolve-call", func(t *testing.T) {
 		root := t.TempDir()
 		body := strings.Join([]string{
-			`{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}],"cwd":"/collection"}`,
 			`{"type":"function_call","callId":"c1","name":"one","arguments":{}}`,
 			`{"type":"function_call_result","callId":"c1","name":"one","status":"success","output":"alias"}`,
 			`{"type":"function_call_result","callId":"c1","name":"one","status":"in_progress","output":"not-result"}`,
@@ -336,6 +376,72 @@ func TestReservedProjectDirectoriesAreExcludedCaseInsensitively(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProjectDirectoryRequiresValidatedCWDEvidence(t *testing.T) {
+	t.Run("decoy-directories-are-never-trusted", func(t *testing.T) {
+		for _, project := range []string{"credentials", "CREDENTIALS", "oauth", "device", "config", "user-history"} {
+			t.Run(project, func(t *testing.T) {
+				root := t.TempDir()
+				body := fmt.Sprintf(`{"type":"message","role":"user","content":[{"type":"input_text","text":"decoy"}],"cwd":%q}`+"\n", "/"+project)
+				installCodeBuddy(t, root, project, codeBuddyUUID, []byte(body))
+				a := New(root)
+				sessions, err := a.Discover(context.Background())
+				if err != nil || len(sessions) != 0 || len(a.known) != 0 {
+					t.Fatalf("decoy trusted: sessions=%#v known=%d err=%v", sessions, len(a.known), err)
+				}
+			})
+		}
+	})
+
+	t.Run("unproven-directory-is-rejected", func(t *testing.T) {
+		cases := map[string]string{
+			"missing":  `{"type":"message","role":"user","content":[{"type":"input_text","text":"missing"}]}`,
+			"relative": `{"type":"message","role":"user","content":[{"type":"input_text","text":"relative"}],"cwd":"relative-project"}`,
+			"mismatch": `{"type":"message","role":"user","content":[{"type":"input_text","text":"mismatch"}],"cwd":"/other/project"}`,
+			"unknown": strings.Join([]string{
+				`{"type":"message","role":"user","content":[{"type":"input_text","text":"missing"}]}`,
+				`{"type":"custom-title","cwd":"/unknown"}`,
+			}, "\n"),
+			"invalid": strings.Join([]string{
+				`{"type":"message","role":"user","content":[{"type":"input_text","text":"missing"}]}`,
+				`{"type":"message","role":"system","content":[{"type":"input_text","text":"invalid"}],"cwd":"/invalid"}`,
+			}, "\n"),
+		}
+		for project, body := range cases {
+			t.Run(project, func(t *testing.T) {
+				root := t.TempDir()
+				installCodeBuddy(t, root, project, codeBuddyUUID, []byte(body+"\n"))
+				a := New(root)
+				sessions, err := a.Discover(context.Background())
+				if err != nil || len(sessions) != 0 || len(a.known) != 0 {
+					t.Fatalf("unproven directory trusted: sessions=%#v known=%d err=%v", sessions, len(a.known), err)
+				}
+			})
+		}
+	})
+
+	t.Run("sibling-session-can-prove-project", func(t *testing.T) {
+		root := t.TempDir()
+		installCodeBuddy(t, root, "trusted-project", codeBuddyUUID, []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"evidence"}],"cwd":"/trusted/project"}`+"\n"))
+		installCodeBuddy(t, root, "trusted-project", codeBuddyUUID2, []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"missing cwd"}]}`+"\n"))
+		sessions, err := New(root).Discover(context.Background())
+		if err != nil || len(sessions) != 2 {
+			t.Fatalf("sessions=%#v err=%v", sessions, err)
+		}
+		var projects, collections int
+		for _, session := range sessions {
+			switch session.Scope.Type {
+			case source.ScopeProject:
+				projects++
+			case source.ScopeSessionCollection:
+				collections++
+			}
+		}
+		if projects != 1 || collections != 1 {
+			t.Fatalf("scope counts project=%d collection=%d", projects, collections)
+		}
+	})
 }
 
 func TestStableIDIncludesRootProjectAndStem(t *testing.T) {

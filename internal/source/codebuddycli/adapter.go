@@ -44,6 +44,15 @@ type authorization struct {
 	rootIdentity                                        safeopen.Identity
 	pathIdentity                                        pathIdentity
 	fileInfo                                            os.FileInfo
+	projectEvidence                                     bool
+	evidenceRelative, evidenceUUID, evidenceDigest      string
+	evidencePathIdentity                                pathIdentity
+	evidenceFileInfo                                    os.FileInfo
+}
+
+type discoveredSession struct {
+	session source.Session
+	auth    authorization
 }
 
 type Adapter struct {
@@ -214,6 +223,8 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 				return nil, errors.New("codebuddy-cli: directory limit")
 			}
 			sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+			projectSessions := make([]discoveredSession, 0)
+			evidenceIndex := -1
 			for _, file := range files {
 				if err := ctx.Err(); err != nil {
 					bound.Close()
@@ -233,10 +244,29 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 					bound.Close()
 					return nil, err
 				}
-				if !valid || seenIDs[session.ID] {
+				if !valid {
+					continue
+				}
+				projectSessions = append(projectSessions, discoveredSession{session: session, auth: auth})
+				if evidenceIndex < 0 && auth.projectEvidence {
+					evidenceIndex = len(projectSessions) - 1
+				}
+			}
+			if evidenceIndex < 0 {
+				continue
+			}
+			proof := projectSessions[evidenceIndex].auth
+			for _, discovered := range projectSessions {
+				session, auth := discovered.session, discovered.auth
+				if seenIDs[session.ID] {
 					continue
 				}
 				seenIDs[session.ID] = true
+				auth.evidenceRelative = proof.relative
+				auth.evidenceUUID = proof.uuid
+				auth.evidenceDigest = proof.digest
+				auth.evidencePathIdentity = proof.pathIdentity
+				auth.evidenceFileInfo = proof.fileInfo
 				out = append(out, session)
 				next[session.OpaqueRef] = auth
 			}
@@ -256,7 +286,7 @@ func validProjectDir(entry os.DirEntry) bool {
 		return false
 	}
 	switch strings.ToLower(entry.Name()) {
-	case "history", "settings", "mcp", "auth", "logs", "log", "cache", "plugins", "blobs", "subagents", "tool-results", "rollback", "meta":
+	case "history", "settings", "mcp", "auth", "logs", "log", "cache", "plugins", "blobs", "subagents", "tool-results", "rollback", "meta", "credentials", "oauth", "device", "config", "user-history":
 		return false
 	default:
 		return true
@@ -312,17 +342,24 @@ type parsedSession struct {
 	start, end                     time.Time
 	cwd                            string
 	cwdSeen, cwdTrusted            bool
+	projectEvidence                bool
 	tools, reasoning, messageEvent bool
 }
 
 type toolState struct{ name string }
+
+type validatedRecord struct {
+	id        string
+	events    []event
+	cwd       any
+	timestamp string
+}
 
 func parse(ctx context.Context, data []byte, project string) (parsedSession, bool) {
 	parsed := parsedSession{cwdTrusted: true}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 4096), maxLineBytes+1)
 	records := make([]map[string]any, 0)
-	positions := map[string]int{}
 	count := 0
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -345,21 +382,13 @@ func parse(ctx context.Context, data []byte, project string) (parsedSession, boo
 		if !recognizedType(typeName) {
 			continue
 		}
-		id, _ := record["id"].(string)
-		if id != "" {
-			if position, exists := positions[id]; exists {
-				records[position] = record
-				continue
-			}
-			positions[id] = len(records)
-		}
 		records = append(records, record)
 	}
 	if scanner.Err() != nil || ctx.Err() != nil {
 		return parsedSession{}, false
 	}
-	pending := map[string]toolState{}
-	completed := map[string]bool{}
+	validated := make([]validatedRecord, 0, len(records))
+	positions := map[string]int{}
 	for _, record := range records {
 		if ctx.Err() != nil {
 			return parsedSession{}, false
@@ -428,16 +457,34 @@ func parse(ctx context.Context, data []byte, project string) (parsedSession, boo
 		if !valid {
 			continue
 		}
-		if !validateToolTransaction(events, pending, completed) {
+		value := validatedRecord{events: events, cwd: record["cwd"], timestamp: timestamp}
+		value.id, _ = record["id"].(string)
+		if value.id != "" {
+			if position, exists := positions[value.id]; exists {
+				validated[position] = value
+				continue
+			}
+			positions[value.id] = len(validated)
+		}
+		validated = append(validated, value)
+	}
+	pending := map[string]toolState{}
+	completed := map[string]bool{}
+	for _, record := range validated {
+		if ctx.Err() != nil {
+			return parsedSession{}, false
+		}
+		if !validateToolTransaction(record.events, pending, completed) {
 			parsed.malformed++
 			continue
 		}
+		events := record.events
 		if len(parsed.events)+len(events) > maxSessionEvents {
 			return parsedSession{}, false
 		}
-		observeCWD(&parsed, record["cwd"], project)
-		if timestamp != "" {
-			trackTime(timestamp, &parsed.start, &parsed.end)
+		observeCWD(&parsed, record.cwd, project)
+		if record.timestamp != "" {
+			trackTime(record.timestamp, &parsed.start, &parsed.end)
 		}
 		for _, value := range events {
 			switch value.Type {
@@ -614,6 +661,7 @@ func observeCWD(parsed *parsedSession, raw any, project string) {
 		parsed.cwdTrusted = false
 		return
 	}
+	parsed.projectEvidence = true
 	if parsed.cwdSeen && parsed.cwd != clean {
 		parsed.cwdTrusted = false
 		return
@@ -763,6 +811,7 @@ func (a *Adapter) snapshot(ctx context.Context, item candidate) (source.Session,
 		id: session.ID, digest: session.SnapshotID, metadata: sessionMetadata(session),
 		root: item.root, relative: item.relative, project: item.project, uuid: item.uuid,
 		rootIdentity: item.rootIdentity, pathIdentity: pathIdentity{directories: identities}, fileInfo: info,
+		projectEvidence: parsed.projectEvidence,
 	}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
@@ -829,6 +878,22 @@ func (a *Adapter) Open(ctx context.Context, session source.Session) (io.ReadClos
 	}
 	if !valid || fresh.ID != session.ID || fresh.SnapshotID != session.SnapshotID || freshAuth.metadata != auth.metadata ||
 		freshAuth.digest != auth.digest || !os.SameFile(auth.fileInfo, freshAuth.fileInfo) || !samePathIdentity(auth.pathIdentity, freshAuth.pathIdentity) {
+		return nil, errors.New("codebuddy-cli: source changed")
+	}
+	var evidence authorization
+	if auth.evidenceRelative == auth.relative {
+		evidence = freshAuth
+	} else {
+		evidenceItem := candidate{
+			root: auth.root, relative: auth.evidenceRelative, project: auth.project, uuid: auth.evidenceUUID,
+			rootIdentity: bound.Identity(), bound: bound,
+		}
+		_, evidence, _, valid = a.snapshot(ctx, evidenceItem)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if !valid || !evidence.projectEvidence || evidence.digest != auth.evidenceDigest || !os.SameFile(auth.evidenceFileInfo, evidence.fileInfo) || !samePathIdentity(auth.evidencePathIdentity, evidence.pathIdentity) {
 		return nil, errors.New("codebuddy-cli: source changed")
 	}
 	return io.NopCloser(bytes.NewReader(output)), nil
