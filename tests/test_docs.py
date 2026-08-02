@@ -48,36 +48,118 @@ class DocumentationTests(unittest.TestCase):
         for path in (
             "install.sh",
             "install.ps1",
+            "build.sh",
             "scripts/build-kuai-release.sh",
             "kuai.md",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
 
     def test_verified_and_unsupported_sources_are_documented(self):
-        for product in (
+        ready = {
+            "aider",
             "claude-code",
-            "codex",
-            "cursor",
-            "opencode",
-            "vscode-copilot",
+            "cline",
+            "codebuddy-cli",
             "codeflicker",
+            "codex",
+            "copilot-cli",
+            "cursor",
+            "gemini-cli",
+            "hermes-agent",
+            "kimi-cli",
+            "kimi-code",
             "myflicker",
             "openclaw",
-            "hermes-agent",
-            "workbuddy",
-            "kimi-cli",
+            "opencode",
+            "qoder-cli",
+            "qoder-ide",
             "qwen-code",
+            "tongyi-lingma-cli",
+            "tongyi-lingma-ide",
+            "vscode-copilot",
+            "workbuddy",
+        }
+        unsupported = {
             "trae",
             "trae-work",
             "kimi-work",
-            "tongyi-lingma",
-            "qoder",
             "qoder-work",
-            "codebuddy",
-        ):
-            with self.subTest(product=product):
-                self.assertIn(f"`{product}`", self.readme)
-        self.assertIn("仅检测、不可选择", self.readme)
+            "codebuddy-ide",
+            "kiro",
+        }
+        self.assertEqual(len(ready), 22)
+        self.assertEqual(len(unsupported), 6)
+        readme_scope = self.readme.split("## Assessment Scope 与支持范围", 1)[1].split("## 隐私与 HR-B 边界", 1)[0]
+        readme_ready, readme_unsupported = readme_scope.split("仅检测、不可选择", 1)
+        row_products = lambda text: set(re.findall(r"^\| `([^`]+)` / [^|]+ \|", text, flags=re.MULTILINE))
+        self.assertEqual(row_products(readme_ready), ready)
+        self.assertEqual(row_products(readme_unsupported), unsupported)
+
+        skill_sources = self.skill.split("### 支持来源", 1)[1].split("## 5. 脱敏预览与授权", 1)[0]
+        ready_sentence = skill_sources.split("。", 1)[0]
+        self.assertEqual(set(re.findall(r"`([^`]+)`", ready_sentence)), ready)
+        self.assertEqual(
+            set(re.findall(r"^\| `([^`]+)` \|", skill_sources, flags=re.MULTILINE)),
+            unsupported,
+        )
+
+        for document_name, document in (("README", self.readme), ("skill", self.skill)):
+            self.assertIn("`ready`", document)
+            self.assertIn("不等于本机可选择", document)
+            self.assertIn("仅检测、不可选择", document)
+            for obsolete in ("tongyi-lingma", "qoder", "codebuddy"):
+                with self.subTest(document=document_name, obsolete=obsolete):
+                    self.assertNotIn(f"`{obsolete}`", document)
+
+    def test_source_matrix_uses_catalog_verification_and_reason_codes(self):
+        for document in (self.readme, self.skill):
+            for value in (
+                "machine_verified",
+                "fixture_verified",
+                "export_required",
+                "unsupported",
+                "official_export_required",
+                "no_distinct_local_format",
+                "no_verified_session_schema",
+                "no_verified_transcript_body",
+            ):
+                with self.subTest(value=value):
+                    self.assertIn(f"`{value}`", document)
+        for product in ("copilot-cli", "gemini-cli"):
+            self.assertRegex(
+                self.readme,
+                rf"(?m)^\| `{re.escape(product)}` / .* \| `fixture_verified` \|$",
+            )
+        reasons = {
+            "trae": ("export_required", "official_export_required"),
+            "trae-work": ("unsupported", "no_distinct_local_format"),
+            "kimi-work": ("unsupported", "no_verified_session_schema"),
+            "qoder-work": ("unsupported", "no_distinct_local_format"),
+            "codebuddy-ide": ("unsupported", "no_verified_transcript_body"),
+            "kiro": ("unsupported", "no_verified_session_schema"),
+        }
+        for product, (verification, reason) in reasons.items():
+            for document_name, document in (("README", self.readme), ("skill", self.skill)):
+                with self.subTest(document=document_name, product=product):
+                    self.assertRegex(
+                        document,
+                        rf"(?m)^\| `{re.escape(product)}`(?: / [^|]+)? \| `{verification}` \| `{reason}` \|$",
+                    )
+
+    def test_source_matrix_keeps_distinct_products_and_read_only_root_semantics(self):
+        for document in (self.readme, self.skill):
+            self.assertIn("`copilot-cli` 不等于 `vscode-copilot`", document)
+            self.assertIn("`kimi-cli` 不等于 `kimi-code`", document)
+            self.assertIn("ready 来源", document)
+            self.assertIn("只读适配器扫描", document)
+            self.assertIn("unsupported 来源", document)
+            self.assertIn("目录", document)
+            self.assertIn("存在性检测", document)
+            self.assertNotIn("只做浅层存在性检查", document)
+
+    def test_skill_uses_portable_mktemp_templates(self):
+        self.assertIn("mktemp -t kuai-start.XXXXXX", self.skill)
+        self.assertIn("mktemp -t kuai-pid.XXXXXX", self.skill)
 
     def test_release_contract_is_static_and_cross_platform(self):
         self.assertIn("CGO_ENABLED=0", self.readme)

@@ -62,12 +62,47 @@ Copy-Item -LiteralPath ".\kuai.md" -Destination "$HOME\.claude\skills\kuai\SKILL
 
 Scope 归组优先级为 Project → Workspace → Conversation Group → Session Collection。同一项目可聚合多个 Agent 的 session；页面只显示安全 label、稳定哈希 key、来源和计数，不暴露绝对路径或本地用户名，并且不默认选择任何 Scope。
 
-| 状态 | 来源 |
-| --- | --- |
-| 已验证、可评估 | `claude-code`、`codex`、`cursor`、`opencode`、`vscode-copilot`、`codeflicker`、`myflicker`、`openclaw`、`hermes-agent`、`workbuddy`、`kimi-cli`、`qwen-code` |
-| 仅检测、不可选择 | `trae`、`trae-work`、`kimi-work`、`kimi-code`、`tongyi-lingma`、`qoder`、`qoder-work`、`codebuddy` |
+下表中的 capabilities 使用 `M`（messages）、`T`（tools）、`R`（reasoning）缩写。默认位置均相对用户目录或对应平台的应用数据目录，不展示真实本地路径。
 
-“检测到”不等于“可评估”。只有具备版本化脱敏 fixture、格式签名、只读发现与打开测试、损坏和超限回归测试的来源才能上传。
+| Product / 展示名 | 默认存储与已验证格式 | Scope / Capabilities | Verification |
+| --- | --- | --- | --- |
+| `aider` / aider | `.aider.chat.history.md`；`markdown-v1` | project 或 session collection / M | `machine_verified` |
+| `claude-code` / Claude Code | `.claude/projects`；`jsonl` | project 或 session collection / M,T | `machine_verified` |
+| `cline` / Cline | `.cline/data/sessions`；成对 JSON `v1` | project 或 session collection / M,T,R | `machine_verified` |
+| `codebuddy-cli` / CodeBuddy CLI | `.codebuddy/projects`；`jsonl-v1` | project 或 session collection / M,T,R | `machine_verified` |
+| `codeflicker` / CodeFlicker | SQLite `sqlite`；兼容项目 JSONL `jsonl` | project 或 session collection / M,T | `machine_verified` |
+| `codex` / Codex | `.codex/sessions`、`.codex/archived_sessions`；`jsonl` | project 或 session collection / M,T | `machine_verified` |
+| `copilot-cli` / GitHub Copilot CLI | `.copilot/session-state`；`flat-v1`、`directory-v2` | project 或 session collection / M,T,R | `fixture_verified` |
+| `cursor` / Cursor | `.cursor/projects/*/agent-transcripts`；`jsonl`、`txt` | project 或 session collection / M,T | `machine_verified` |
+| `gemini-cli` / Gemini CLI | `.gemini/tmp/*/chats`；`object-v1`、`stream-v1` | project 或 session collection / M,T,R | `fixture_verified` |
+| `hermes-agent` / Hermes Agent | `.hermes/state.db` 与 `.hermes/sessions`；`state-db-v1`、`jsonl-v1`、`json-v1` | conversation group / M,T | `machine_verified` |
+| `kimi-cli` / Kimi CLI | `.kimi/sessions/*/*/wire.jsonl`；`wire-v1` | session collection / M,T | `machine_verified` |
+| `kimi-code` / Kimi Code | `.kimi-code` 的 index + state + main wire；`wire-1.4` | project / M,T,R | `machine_verified` |
+| `myflicker` / MyFlicker | `.myflicker/projects`；`jsonl` | project 或 session collection / M,T | `machine_verified` |
+| `openclaw` / OpenClaw | `.openclaw/agents/*/sessions`；`jsonl-v1` | project 或 session collection / M,T | `machine_verified` |
+| `opencode` / OpenCode | 平台数据目录的 `opencode.db` 或 `storage`；`db-v2`、`storage-v1` | project 或 session collection / M,T | `machine_verified` |
+| `qoder-cli` / Qoder CLI | `.qoder/projects/*/transcript`；`transcript-v1` | project / M,R | `machine_verified` |
+| `qoder-ide` / Qoder IDE | `Qoder/SharedClientCache/cache/db/local.db`；`sharedclient-db-v1` | project / M | `machine_verified` |
+| `qwen-code` / Qwen Code | `.qwen/projects/*/chats`；`chat-jsonl-v1` | project 或 session collection / M,T | `machine_verified` |
+| `tongyi-lingma-cli` / 通义灵码 CLI | `Lingma/SharedClientCache/cli/projects`；`execution-v1` | project / M | `machine_verified` |
+| `tongyi-lingma-ide` / 通义灵码 IDE | `Lingma/SharedClientCache/cache/db/local.db`；`sharedclient-db-v1` | project / M | `machine_verified` |
+| `vscode-copilot` / GitHub Copilot for VS Code | VS Code `User/workspaceStorage`；schema `v3` | workspace 或 conversation group / M,T | `machine_verified` |
+| `workbuddy` / WorkBuddy | `.workbuddy-ai/projects`、`.workbuddy/projects`；`jsonl-v1` | project 或 session collection / M,T | `machine_verified` |
+
+仅检测、不可选择的来源没有默认扫描目录和 capabilities：
+
+| Product / 展示名 | Verification | Unsupported reason |
+| --- | --- | --- |
+| `trae` / TRAE | `export_required` | `official_export_required` |
+| `trae-work` / TRAE Work | `unsupported` | `no_distinct_local_format` |
+| `kimi-work` / Kimi Work | `unsupported` | `no_verified_session_schema` |
+| `qoder-work` / QoderWork | `unsupported` | `no_distinct_local_format` |
+| `codebuddy-ide` / CodeBuddy IDE | `unsupported` | `no_verified_transcript_body` |
+| `kiro` / Kiro | `unsupported` | `no_verified_session_schema` |
+
+`ready` 不等于本机可选择：来源必须在本次只读扫描中实际得到 ready session，且 `sessionCount > 0`，才能成为 selectable Assessment Scope。“检测到”也不等于“可评估”。只有具备版本化脱敏 fixture、格式签名、只读发现与打开测试、损坏和超限回归测试的来源才能上传。
+
+`copilot-cli` 不等于 `vscode-copilot`：前者读取 Copilot CLI 的 session-state，后者只接受带 GitHub Copilot provenance 的 VS Code v3 会话。`kimi-cli` 不等于 `kimi-code`：前者读取 `.kimi/sessions` 的 `wire-v1`，后者要求 `.kimi-code` 的 index、state 与 `wire-1.4` 共同互证。
 
 ## 隐私与 HR-B 边界
 
@@ -87,7 +122,7 @@ Scope 归组优先级为 Project → Workspace → Conversation Group → Sessio
 | 配置 | 作用 |
 | --- | --- |
 | `kuai scan` | 只读发现 session 并输出来源状态 |
-| `--source-root product=/absolute/path` | 对指定产品的绝对目录只做浅层存在性检查；不递归、不读取内容 |
+| `--source-root product=/absolute/path` | 指定 catalog 产品的显式根；ready 来源由只读适配器扫描，unsupported 来源只做单目录存在性检测 |
 | `kuai start --no-browser` | 启动本地 UI 但不自动打开浏览器 |
 | `kuai status` | 输出本地安装/模式诊断和 UI 恢复建议，不查询远端任务 |
 | `--service-mode=http --service-url=https://…` | 显式启用可信 HR-B HTTPS origin；只设置环境变量不会切换 |
@@ -112,6 +147,45 @@ git diff --check
 ```bash
 KUAI_VERSION=1.0.0 sh ./scripts/build-kuai-release.sh
 go version -m ./dist/kuai-darwin-arm64
+```
+
+`scripts/build-kuai-release.sh` 不直接编译业务代码，而是为每个平台调用项目根目录的自定义 `build.sh`。如需调整编译参数、注入构建步骤或替换编译实现，应修改 `build.sh`；发布脚本仍负责平台矩阵、产物命名和 SHA-256 清单。
+
+## 天琴流水线签名发版
+
+正式分发的产物需要代码签名：macOS 未签名会被 Gatekeeper 拦截，Windows 会触发 SmartScreen 未知发布者提示，Linux 没有系统级签名机制因而无需签名。签名在天琴（`kdev.corp.kuaishou.com`）物理机上完成，入口是 `kci-pipeline-build.sh`。
+
+每个平台一条独立流水线，且必须绑定对应平台的物理机资源池（默认资源池不可用）：
+
+| 流水线 | 资源池 | 产物 | 签名方式 |
+| --- | --- | --- | --- |
+| macOS ARM | macOS M 芯片物理机池 | `kuai-darwin-arm64` | codesign + notarization + staple |
+| macOS x64 | macOS Intel 物理机池 | `kuai-darwin-amd64` | codesign + notarization + staple |
+| Windows | windows 物理机池 | `kuai-windows-amd64.exe` | Http EV 签名服务 |
+| Linux | 任意 | `kuai-linux-amd64` | 无需签名 |
+
+`kci-pipeline-build.sh` 不自行编译，而是把天琴注入的 `UPLOAD_PLATFORM` 与 `UPLOAD_ARCH` 翻译成 `GOOS`/`GOARCH` 后调用 `build.sh`，因此版本注入与 `-trimpath` 与本地发布链路完全一致。天琴的 `UPLOAD_ARCH` 使用 `x64` 命名，脚本内映射为 `amd64`。两个平台变量缺失时脚本立即失败，不会静默产出空包。
+
+本地可模拟天琴环境变量验证：
+
+```bash
+UPLOAD_PLATFORM=darwin UPLOAD_ARCH=arm64 UPLOAD_PACKAGE_VERSION=1.0.0 \
+  bash ./kci-pipeline-build.sh false false
+./dist/kuai-darwin-arm64 status
+```
+
+两个位置参数分别是是否签名与是否公证，默认均为 `true`；macOS 生产包必须开启公证。签名后不得再修改二进制字节，否则签名失效。
+
+每条流水线只产出自己平台的 `dist/kuai-<os>-<arch>[.exe]` 与配套 `.sha256` 分片。`install.sh` 需要的合并 `SHA256SUMS` 由发布汇总环节拼接全部分片生成：
+
+```bash
+cat dist/*.sha256 > SHA256SUMS
+```
+
+产物上传 KCDN 后，安装时通过 `KUAI_RELEASE_URL` 指向对应目录；该变量默认指向 GitHub Release，必须是 HTTPS：
+
+```bash
+KUAI_RELEASE_URL=https://<kcdn-host>/kuai/1.0.0 sh ./install.sh
 ```
 
 Windows CI 还运行：

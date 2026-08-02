@@ -39,9 +39,13 @@ class SingleBinaryContractTest(unittest.TestCase):
         self.assertNotRegex(text, r"exec\.Command[^\n]*agentsview")
 
     def test_release_build_is_static_and_versioned(self):
-        text = (ROOT / "scripts/build-kuai-release.sh").read_text(encoding="utf-8")
-        self.assertIn("CGO_ENABLED=0", text)
-        self.assertIn("-X main.version=", text)
+        release = (ROOT / "scripts/build-kuai-release.sh").read_text(encoding="utf-8")
+        build = (ROOT / "build.sh").read_text(encoding="utf-8")
+        self.assertIn("CGO_ENABLED=0", release)
+        self.assertIn('build_script="$root/build.sh"', release)
+        self.assertIn('"$build_script"', release)
+        self.assertIn("-X main.version=", build)
+        self.assertIn("-trimpath", build)
         for target in (
             "darwin/amd64",
             "darwin/arm64",
@@ -50,7 +54,7 @@ class SingleBinaryContractTest(unittest.TestCase):
             "windows/amd64",
             "windows/arm64",
         ):
-            self.assertIn(target, text)
+            self.assertIn(target, release)
 
 
 if __name__ == "__main__":
