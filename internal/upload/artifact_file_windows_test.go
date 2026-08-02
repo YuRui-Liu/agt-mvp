@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestWindowsArtifactBackingDeletesOnClose(t *testing.T) {
@@ -30,5 +32,14 @@ func TestWindowsArtifactBackingDeletesOnClose(t *testing.T) {
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("private backing directory remains: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestWindowsArtifactBackingRequiresDeleteAndDeniesExternalReads(t *testing.T) {
+	if artifactDesiredAccess&windows.DELETE == 0 {
+		t.Fatal("delete-on-close backing lacks DELETE access")
+	}
+	if artifactShareMode != windows.FILE_SHARE_DELETE {
+		t.Fatalf("artifact share mode = %#x, want delete-only", artifactShareMode)
 	}
 }

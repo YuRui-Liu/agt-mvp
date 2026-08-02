@@ -42,12 +42,12 @@ func NewStreamExporter(opener SessionOpener, client Client, limits Limits) *Stre
 	}
 }
 
-// Artifact is a completed immutable package bound to the file opened during
-// construction. Open never resolves the temporary path again and may be called
+// Artifact is a completed immutable package bound to anonymous backing opened
+// during construction. Open never resolves a path and may be called
 // concurrently; each caller gets an independent reader lease over those exact
-// bytes. A reader opened before Remove remains valid and must be closed by its
-// caller. On platforms that refuse to unlink an open file, Remove returns a
-// safe error and retains the artifact for retry.
+// bytes. Remove rejects new readers and destroys the backing after the last
+// existing reader closes. Cleanup is destructive and is never retried after it
+// has been invoked, even when the operating system reports a close error.
 type Artifact struct {
 	mu            sync.Mutex
 	file          *os.File
@@ -95,7 +95,6 @@ func (r *artifactReader) Close() error {
 		}
 		if r.artifact.removePending && r.artifact.readers == 0 {
 			if err := r.artifact.closeFileLocked(); err != nil {
-				r.artifact.removePending = false
 				r.closeErr = errors.New("upload: artifact removal failed")
 			}
 		}
@@ -117,7 +116,6 @@ func (a *Artifact) Remove() error {
 		return nil
 	}
 	if err := a.closeFileLocked(); err != nil {
-		a.removePending = false
 		return errors.New("upload: artifact removal failed")
 	}
 	return nil
@@ -131,12 +129,11 @@ func (a *Artifact) closeFileLocked() error {
 	if cleanup == nil {
 		cleanup = a.file.Close
 	}
-	if err := cleanup(); err != nil {
-		return err
-	}
+	// cleanup may close or delete the backing before returning an error. Clear
+	// the references first so an uncertain descriptor can never be reopened.
 	a.file = nil
 	a.cleanup = nil
-	return nil
+	return cleanup()
 }
 
 // BuildScope reads and redacts one session at a time. Only a single bounded

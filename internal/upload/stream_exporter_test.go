@@ -757,7 +757,7 @@ func TestArtifactConcurrentRemoveIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestArtifactFailedRemoveKeepsBackingForRetryWithoutLeakingIt(t *testing.T) {
+func TestArtifactCleanupErrorPermanentlyDisablesBacking(t *testing.T) {
 	artifact, err := NewStreamExporter(&fakeSessionOpener{data: map[string]string{
 		"codex:2":       "{}\n",
 		"claude-code:1": "{}\n",
@@ -768,24 +768,24 @@ func TestArtifactFailedRemoveKeepsBackingForRetryWithoutLeakingIt(t *testing.T) 
 	realCleanup := artifact.cleanup
 	var calls atomic.Int32
 	artifact.cleanup = func() error {
-		if calls.Add(1) == 1 {
-			return errors.New("busy")
-		}
-		return realCleanup()
+		calls.Add(1)
+		_ = realCleanup()
+		return errors.New("close reported an error")
 	}
 	if err := artifact.Remove(); err == nil || strings.Contains(err.Error(), ".kuai-upload") {
-		t.Fatalf("first Remove err=%v", err)
+		t.Fatalf("Remove err=%v", err)
 	}
-	reader, err := artifact.Open()
-	if err != nil {
-		t.Fatalf("failed Remove discarded path: %v", err)
+	if reader, err := artifact.Open(); err == nil || reader != nil {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		t.Fatalf("cleanup error reopened uncertain backing: reader=%v err=%v", reader, err)
 	}
-	_ = reader.Close()
 	if err := artifact.Remove(); err != nil {
-		t.Fatalf("retry Remove: %v", err)
+		t.Fatalf("idempotent Remove after terminal cleanup: %v", err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("remove calls=%d", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("cleanup calls=%d", calls.Load())
 	}
 }
 

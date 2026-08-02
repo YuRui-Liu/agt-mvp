@@ -10,6 +10,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const (
+	artifactDesiredAccess = windows.GENERIC_READ | windows.GENERIC_WRITE | windows.DELETE
+	artifactShareMode     = windows.FILE_SHARE_DELETE
+)
+
 func createArtifactBacking(tempDir string) (*os.File, func() error, error) {
 	dir, err := os.MkdirTemp(tempDir, ".kuai-upload-*")
 	if err != nil {
@@ -23,8 +28,8 @@ func createArtifactBacking(tempDir string) (*os.File, func() error, error) {
 	}
 	handle, err := windows.CreateFile(
 		pathUTF16,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE,
+		artifactDesiredAccess,
+		artifactShareMode,
 		nil,
 		windows.CREATE_NEW,
 		windows.FILE_ATTRIBUTE_TEMPORARY|windows.FILE_FLAG_DELETE_ON_CLOSE,
