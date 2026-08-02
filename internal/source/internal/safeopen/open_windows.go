@@ -72,12 +72,7 @@ func windowsOpenAt(root windows.Handle, part string, directory bool) (windows.Ha
 	}
 	oa := &windows.OBJECT_ATTRIBUTES{RootDirectory: root, ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
 	oa.Length = uint32(unsafe.Sizeof(*oa))
-	options := uint32(windows.FILE_OPEN_REPARSE_POINT)
-	if directory {
-		options |= windows.FILE_DIRECTORY_FILE
-	} else {
-		options |= windows.FILE_NON_DIRECTORY_FILE
-	}
+	options := windowsOpenOptions(directory)
 	var handle windows.Handle
 	var iosb windows.IO_STATUS_BLOCK
 	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE, oa, &iosb, nil, 0,
@@ -91,6 +86,14 @@ func windowsOpenAt(root windows.Handle, part string, directory bool) (windows.Ha
 		return 0, errors.New("safeopen: reparse point rejected")
 	}
 	return handle, nil
+}
+
+func windowsOpenOptions(directory bool) uint32 {
+	options := uint32(windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if directory {
+		return options | windows.FILE_DIRECTORY_FILE
+	}
+	return options | windows.FILE_NON_DIRECTORY_FILE
 }
 
 func windowsOpenBound(state *boundRootState, relative string, finalDirectory bool) (windows.Handle, string, error) {
