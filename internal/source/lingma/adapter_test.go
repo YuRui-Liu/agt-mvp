@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -184,6 +185,88 @@ func TestCLIHealthyCandidateSurvivesBadCandidates(t *testing.T) {
 	}
 	if len(result.Sessions) != 1 || result.Sessions[0].MessageCount != 2 {
 		t.Fatalf("sessions=%#v", result.Sessions)
+	}
+}
+
+func TestCLIScanByteBudgetAllowsExactAndRejectsOneByteLess(t *testing.T) {
+	root := t.TempDir()
+	makeCandidate := func(task string) []byte {
+		return mutateCLIFixture(t, readCLIFixture(t), func(_ int, record map[string]any) {
+			record["sessionId"] = task
+		})
+	}
+	first := makeCandidate("task-a")
+	second := makeCandidate("task-b")
+	installCLI(t, root, "-synthetic-course-project", "task-a", first)
+	installCLI(t, root, "-synthetic-course-project", "task-b", second)
+	total := int64(len(first) + len(second))
+
+	exact := NewCLI(root)
+	exact.scanLimits.maxTotalBytes = total
+	sessions, err := exact.Discover(context.Background())
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("exact sessions=%#v err=%v", sessions, err)
+	}
+
+	over := NewCLI(root)
+	over.scanLimits.maxTotalBytes = total - 1
+	sessions, err = over.Discover(context.Background())
+	if err == nil || sessions != nil {
+		t.Fatalf("over-budget returned partial sessions=%#v err=%v", sessions, err)
+	}
+	result, registryErr := source.NewRegistry(over).Scan(context.Background())
+	if registryErr != nil {
+		t.Fatal(registryErr)
+	}
+	if got := result.Sources["tongyi-lingma-cli"].State; got != source.SourceReadError || len(result.Sessions) != 0 {
+		t.Fatalf("state=%q sessions=%#v", got, result.Sessions)
+	}
+}
+
+func TestCLIScanByteBudgetChargesUnsupportedCandidateAfterHealthy(t *testing.T) {
+	root := t.TempDir()
+	healthy := readCLIFixture(t)
+	unknown := mutateCLIFixture(t, healthy, func(_ int, record map[string]any) {
+		record["sessionId"] = "task-z-unknown"
+		record["version"] = "99-unknown"
+	})
+	healthyA := mutateCLIFixture(t, healthy, func(_ int, record map[string]any) { record["sessionId"] = "task-a" })
+	installCLI(t, root, "-synthetic-course-project", "task-a", healthyA)
+	installCLI(t, root, "-synthetic-course-project", "task-z-unknown", unknown)
+	adapter := NewCLI(root)
+	adapter.scanLimits.maxTotalBytes = int64(len(healthyA) + len(unknown) - 1)
+	if sessions, err := adapter.Discover(context.Background()); err == nil || sessions != nil {
+		t.Fatalf("unsupported candidate was free: sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestCLIScanByteBudgetChargesOversizeCandidate(t *testing.T) {
+	root := t.TempDir()
+	oversizePath := installCLI(t, root, "-synthetic-course-project", "task-a-oversize", []byte("{}\n"))
+	if err := os.Truncate(oversizePath, maxCLIFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	healthy := mutateCLIFixture(t, readCLIFixture(t), func(_ int, record map[string]any) { record["sessionId"] = "task-z" })
+	installCLI(t, root, "-synthetic-course-project", "task-z", healthy)
+	adapter := NewCLI(root)
+	adapter.scanLimits.maxTotalBytes = maxCLIFileBytes + 1 + int64(len(healthy)) - 1
+	if sessions, err := adapter.Discover(context.Background()); err == nil || sessions != nil {
+		t.Fatalf("oversize candidate was free: sessions=%#v err=%v", sessions, err)
+	}
+}
+
+func TestCLIByteBudgetIsOverflowSafeAndContextAware(t *testing.T) {
+	budget := cliByteBudget{maximum: math.MaxInt64, used: math.MaxInt64 - 1}
+	if err := budget.consume(context.Background(), 2); !errors.Is(err, errCLIScanByteBudget) {
+		t.Fatalf("overflow err=%v", err)
+	}
+	if budget.used != math.MaxInt64-1 {
+		t.Fatalf("overflow changed usage=%d", budget.used)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := budget.consume(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled err=%v", err)
 	}
 }
 

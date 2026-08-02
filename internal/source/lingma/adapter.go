@@ -27,6 +27,7 @@ import (
 const (
 	maxCLILineBytes           = 1 << 20
 	maxCLIFileBytes     int64 = 4 << 20
+	maxCLIScanBytes     int64 = 64 << 20
 	maxCLIRecords             = 4096
 	maxDirectoryEntries       = 512
 	maxGlobalEntries          = 8192
@@ -53,12 +54,33 @@ type cliAuthorization struct {
 }
 
 type CLIAdapter struct {
-	roots     []string
-	configErr error
-	instance  uint64
-	scanMu    sync.Mutex
-	mu        sync.RWMutex
-	known     map[string]cliAuthorization
+	roots      []string
+	configErr  error
+	scanLimits cliScanLimits
+	instance   uint64
+	scanMu     sync.Mutex
+	mu         sync.RWMutex
+	known      map[string]cliAuthorization
+}
+
+type cliScanLimits struct{ maxTotalBytes int64 }
+
+type cliByteBudget struct {
+	maximum int64
+	used    int64
+}
+
+var errCLIScanByteBudget = errors.New("lingma: CLI scan byte budget exceeded")
+
+func (budget *cliByteBudget) consume(ctx context.Context, size int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if budget == nil || budget.maximum <= 0 || size < 0 || budget.used < 0 || budget.used > budget.maximum || size > budget.maximum-budget.used {
+		return errCLIScanByteBudget
+	}
+	budget.used += size
+	return nil
 }
 
 func NewCLI(roots ...string) *CLIAdapter {
@@ -66,7 +88,7 @@ func NewCLI(roots ...string) *CLIAdapter {
 		roots = defaultRoots()
 	}
 	clean, err := validateRoots(roots)
-	return &CLIAdapter{roots: clean, configErr: err, instance: instanceCounter.Add(1), known: map[string]cliAuthorization{}}
+	return &CLIAdapter{roots: clean, configErr: err, scanLimits: cliScanLimits{maxTotalBytes: maxCLIScanBytes}, instance: instanceCounter.Add(1), known: map[string]cliAuthorization{}}
 }
 
 func (*CLIAdapter) Product() string { return "tongyi-lingma-cli" }
@@ -144,6 +166,7 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 	seenIDs := map[string]cliAuthorization{}
 	seenRoots := map[safeopen.Identity]bool{}
 	entriesRead := 0
+	budget := &cliByteBudget{maximum: a.scanLimits.maxTotalBytes}
 	hadUnsupported := false
 	hadCandidateFailure := false
 	for _, root := range a.roots {
@@ -211,7 +234,11 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 					continue
 				}
 				relative := filepath.Join(projectRelative, entry.Name())
-				session, auth, _, err := a.snapshotCLI(ctx, bound, root, relative, taskID)
+				session, auth, _, err := a.snapshotCLI(ctx, bound, root, relative, taskID, budget)
+				if errors.Is(err, errCLIScanByteBudget) {
+					bound.Close()
+					return nil, errCLIScanByteBudget
+				}
 				if errors.Is(err, errUnsupportedCLI) {
 					hadUnsupported = true
 					continue
@@ -255,9 +282,18 @@ func (a *CLIAdapter) Discover(ctx context.Context) ([]source.Session, error) {
 	return sessions, nil
 }
 
-func (a *CLIAdapter) snapshotCLI(ctx context.Context, bound *safeopen.BoundRoot, root, relative, taskID string) (source.Session, cliAuthorization, []byte, error) {
-	file, identities, err := bound.OpenWithPathIdentity(relative, maxCLIFileBytes)
+func (a *CLIAdapter) snapshotCLI(ctx context.Context, bound *safeopen.BoundRoot, root, relative, taskID string, budget *cliByteBudget) (source.Session, cliAuthorization, []byte, error) {
+	if budget == nil || budget.maximum <= 0 {
+		return source.Session{}, cliAuthorization{}, nil, errCLIScanByteBudget
+	}
+	file, identities, err := bound.OpenWithPathIdentity(relative, budget.maximum)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return source.Session{}, cliAuthorization{}, nil, ctxErr
+		}
+		if errors.Is(err, safeopen.ErrFileSizeLimit) {
+			return source.Session{}, cliAuthorization{}, nil, errCLIScanByteBudget
+		}
 		if os.IsNotExist(err) {
 			return source.Session{}, cliAuthorization{}, nil, errors.New("lingma: CLI source changed")
 		}
@@ -267,6 +303,14 @@ func (a *CLIAdapter) snapshotCLI(ctx context.Context, bound *safeopen.BoundRoot,
 	if statErr != nil {
 		file.Close()
 		return source.Session{}, cliAuthorization{}, nil, errors.New("lingma: CLI session read failed")
+	}
+	if err := budget.consume(ctx, info.Size()); err != nil {
+		file.Close()
+		return source.Session{}, cliAuthorization{}, nil, err
+	}
+	if info.Size() > maxCLIFileBytes {
+		file.Close()
+		return source.Session{}, cliAuthorization{}, nil, errors.New("lingma: CLI session file exceeds limit")
 	}
 	hash := sha256.New()
 	parsed := parsedCLI{}
@@ -422,7 +466,7 @@ func (a *CLIAdapter) Open(ctx context.Context, session source.Session) (io.ReadC
 	}
 	const suffix = ".session.execution.jsonl"
 	taskID := strings.TrimSuffix(filepath.Base(auth.relative), suffix)
-	fresh, freshAuth, output, err := a.snapshotCLI(ctx, bound, auth.root, auth.relative, taskID)
+	fresh, freshAuth, output, err := a.snapshotCLI(ctx, bound, auth.root, auth.relative, taskID, &cliByteBudget{maximum: maxCLIScanBytes})
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
