@@ -46,6 +46,7 @@ type Adapter struct {
 	mu           sync.RWMutex
 	known        map[string]authorization
 	afterBind    func(string)
+	beforeOpen   func(string)
 	beforeCommit func()
 }
 type authorization struct {
@@ -276,6 +277,9 @@ func (a *Adapter) Discover(ctx context.Context) ([]source.Session, error) {
 					}
 					relative := filepath.Join(dirRel, entry.Name())
 					path := filepath.Join(root, relative)
+					if a.beforeOpen != nil {
+						a.beforeOpen(path)
+					}
 					s, auth, ok := a.inspect(ctx, bound, root, path, relative)
 					if !ok {
 						continue

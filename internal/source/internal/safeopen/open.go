@@ -13,6 +13,7 @@ import (
 var ErrDirectoryLimit = errors.New("safeopen: directory entry limit exceeded")
 
 var errInvalidDirectoryLimit = errors.New("safeopen: invalid directory entry limit")
+var errInvalidSourceFile = errors.New("safeopen: invalid source file")
 
 // Identity is a stable filesystem object identity. Its representation is
 // platform-neutral so adapters can retain it without retaining open handles.
@@ -100,10 +101,9 @@ func (b *BoundRoot) Open(relative string, maxBytes int64) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+	if err := validateSourceFile(file, maxBytes); err != nil {
 		file.Close()
-		return nil, errors.New("safeopen: invalid source file")
+		return nil, err
 	}
 	return file, nil
 }
@@ -125,12 +125,22 @@ func (b *BoundRoot) OpenWithPathIdentity(relative string, maxBytes int64) (*os.F
 	if err != nil {
 		return nil, nil, err
 	}
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+	if err := validateSourceFile(file, maxBytes); err != nil {
 		file.Close()
-		return nil, nil, errors.New("safeopen: invalid source file")
+		return nil, nil, err
 	}
 	return file, identities, nil
+}
+
+func validateSourceFile(file *os.File, maxBytes int64) error {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return errInvalidSourceFile
+	}
+	if err := makeFileBlocking(file); err != nil {
+		return errInvalidSourceFile
+	}
+	return nil
 }
 
 // PathIdentity returns the bound identities for root and every directory in

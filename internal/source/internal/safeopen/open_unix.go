@@ -64,10 +64,14 @@ func openFromBound(state *boundRootState, relative string, finalDirectory bool) 
 	}
 	parts := strings.Split(relative, string(filepath.Separator))
 	for index, part := range parts {
-		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
-		if index < len(parts)-1 || finalDirectory {
-			flags |= unix.O_DIRECTORY
+		directory := index < len(parts)-1 || finalDirectory
+		if !directory {
+			next, err := openFinalFileAt(current, part)
+			current.Close()
+			return next, err
 		}
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		flags |= unix.O_DIRECTORY
 		fd, err := unix.Openat(int(current.Fd()), part, flags, 0)
 		if err != nil {
 			current.Close()
@@ -119,6 +123,26 @@ func openFileBound(state *boundRootState, relative string) (*os.File, error) {
 	return openFromBound(state, relative, false)
 }
 
+func openFinalFileAt(parent *os.File, part string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), part, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), filepath.Join(parent.Name(), part)), nil
+}
+
+func makeFileBlocking(file *os.File) error {
+	flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFL, 0)
+	if err != nil {
+		return err
+	}
+	if flags&unix.O_NONBLOCK == 0 {
+		return nil
+	}
+	_, err = unix.FcntlInt(file.Fd(), unix.F_SETFL, flags&^unix.O_NONBLOCK)
+	return err
+}
+
 func openFileWithPathIdentityBound(state *boundRootState, relative string, root Identity) (*os.File, []Identity, error) {
 	identities := []Identity{root}
 	current, err := duplicateRoot(state)
@@ -128,10 +152,16 @@ func openFileWithPathIdentityBound(state *boundRootState, relative string, root 
 	parts := strings.Split(relative, string(filepath.Separator))
 	for index, part := range parts {
 		directory := index < len(parts)-1
-		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
-		if directory {
-			flags |= unix.O_DIRECTORY
+		if !directory {
+			next, err := openFinalFileAt(current, part)
+			current.Close()
+			if err != nil {
+				return nil, nil, err
+			}
+			return next, identities, nil
 		}
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		flags |= unix.O_DIRECTORY
 		fd, err := unix.Openat(int(current.Fd()), part, flags, 0)
 		if err != nil {
 			current.Close()
@@ -140,16 +170,15 @@ func openFileWithPathIdentityBound(state *boundRootState, relative string, root 
 		next := os.NewFile(uintptr(fd), filepath.Join(current.Name(), part))
 		current.Close()
 		current = next
-		if directory {
-			identity, err := unixFileIdentity(current)
-			if err != nil {
-				current.Close()
-				return nil, nil, err
-			}
-			identities = append(identities, identity)
+		identity, err := unixFileIdentity(current)
+		if err != nil {
+			current.Close()
+			return nil, nil, err
 		}
+		identities = append(identities, identity)
 	}
-	return current, identities, nil
+	current.Close()
+	return nil, nil, errInvalidSourceFile
 }
 
 func pathIdentityBound(state *boundRootState, relative string, root Identity) ([]Identity, error) {

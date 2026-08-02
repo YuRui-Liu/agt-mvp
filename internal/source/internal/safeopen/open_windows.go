@@ -165,6 +165,8 @@ func openFileBound(state *boundRootState, relative string) (*os.File, error) {
 	return os.NewFile(uintptr(handle), name), nil
 }
 
+func makeFileBlocking(*os.File) error { return nil }
+
 func openFileWithPathIdentityBound(state *boundRootState, relative string, root Identity) (*os.File, []Identity, error) {
 	identities := []Identity{root}
 	current, err := duplicateWindowsHandle(state.handle)
