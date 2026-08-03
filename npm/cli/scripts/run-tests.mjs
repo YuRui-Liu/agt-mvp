@@ -22,6 +22,7 @@ function collectTests(directory) {
 }
 
 const result = spawnSync(process.execPath, ['--test', ...collectTests(testDirectory)], {
+  shell: false,
   stdio: 'inherit',
 });
 

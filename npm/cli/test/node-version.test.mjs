@@ -1,21 +1,32 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import {
-  isSupportedNodeVersion,
-  parseNodeMajor,
-} from '../bin/node-version.js';
+const nodeVersionModuleUrl = new URL('../bin/node-version.js', import.meta.url).href;
 
-test('rejects Node.js 23.11.0', () => {
-  assert.equal(parseNodeMajor('23.11.0'), 23);
-  assert.equal(isSupportedNodeVersion('23.11.0'), false);
-});
+function runVersionCheck(version) {
+  const source = `
+    import { isSupportedNodeVersion } from ${JSON.stringify(nodeVersionModuleUrl)};
+    process.stdout.write(String(isSupportedNodeVersion(process.argv[1])));
+  `;
 
-test('accepts Node.js 24.0.0', () => {
-  assert.equal(parseNodeMajor('24.0.0'), 24);
-  assert.equal(isSupportedNodeVersion('24.0.0'), true);
-});
+  return spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', source, version],
+    { encoding: 'utf8', shell: false },
+  );
+}
+
+for (const [version, expected] of [['23.11.0', 'false'], ['24.0.0', 'true']]) {
+  test(`Node.js ${version} support is ${expected}`, () => {
+    const result = runVersionCheck(version);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.equal(result.stdout, expected);
+  });
+}
 
 test('CLI checks Node.js before dynamically importing the business module', async () => {
   const source = await readFile(new URL('../bin/kuai.js', import.meta.url), 'utf8');

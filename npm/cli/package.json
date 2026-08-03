@@ -21,6 +21,9 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "verify:policy": "node scripts/verify-package-policy.mjs"
   },
+  "dependencies": {},
+  "optionalDependencies": {},
+  "peerDependencies": {},
   "devDependencies": {
     "typescript": "5.9.3"
   }
