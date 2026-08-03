@@ -2,6 +2,8 @@
 
 ## 1. 决策摘要
 
+> **2026-08-03 状态：已被安全可行性门禁阻止。** [可行性报告](../reports/2026-08-03-kuai-pure-javascript-feasibility.md) 的固定裁决为 `Decision: NO-GO`。下文作为条件性设计保留，不再授权开始纯 JavaScript 全量迁移；只有保留签名 Go 安全核心，或由用户另行批准降低威胁模型，才能继续。
+
 kuAI 将从随包分发 Go 原生二进制，迁移为由 Node.js 24 或更高版本直接执行的纯 JavaScript npm CLI。公开安装渠道为公共 npm registry；GitHub 保存源码、受保护 tag 和 GitHub Actions 发布流水线，并通过 npm OIDC Trusted Publishing 发布带 provenance 的包。
 
 本设计取代 `2026-08-02-kuai-npm-unsigned-distribution-design.md` 中“JavaScript launcher 启动平台原生包”的方案。新包不得包含或下载 Mach-O、PE、ELF、`.node` 原生扩展或 Go 可执行文件，也不得在安装或运行时回退到原生 kuAI。

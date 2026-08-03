@@ -1,0 +1,27 @@
+name: kuai-js-feasibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify pure JavaScript policy
+        working-directory: experiments/kuai-js-feasibility
+        run: npm run verify:policy
+      - name: Run security probes
+        working-directory: experiments/kuai-js-feasibility
+        run: npm test
