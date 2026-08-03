@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 const lifecycleHooks = ['preinstall', 'install', 'postinstall', 'prepare'];
 const runtimeDependencyFields = ['dependencies', 'optionalDependencies', 'peerDependencies'];
 const ignoredDirectories = new Set(['.git', 'node_modules']);
+// O_NOFOLLOW is not available on every supported platform. O_NONBLOCK plus
+// lstat/opened-FD identity checks below preserve safe failure semantics there.
+const regularFileOpenFlags = constants.O_RDONLY
+  | (constants.O_NOFOLLOW ?? 0)
+  | (constants.O_NONBLOCK ?? 0);
 const forbiddenMagic = [
   Buffer.from('7f454c46', 'hex'),
   Buffer.from('4d5a', 'hex'),
@@ -57,17 +62,36 @@ export function isForbiddenNativeMagic(prefix) {
   );
 }
 
-async function inspectRegularFile(path) {
+async function openVerifiedRegularFile(path, initialStatus) {
+  let handle;
+  try {
+    handle = await open(path, regularFileOpenFlags);
+  } catch (error) {
+    if (error instanceof Error && error.code === 'ELOOP') {
+      throw new Error(`symbolic link is forbidden: ${path}`);
+    }
+    throw error;
+  }
+
+  const openedStatus = await handle.stat();
+  if (!openedStatus.isFile()) {
+    await handle.close();
+    throw new Error(`unsupported special filesystem entry: ${path}`);
+  }
+  if (openedStatus.dev !== initialStatus.dev || openedStatus.ino !== initialStatus.ino) {
+    await handle.close();
+    throw new Error(`filesystem entry changed while opening: ${path}`);
+  }
+  return handle;
+}
+
+async function inspectRegularFile(path, initialStatus) {
   if (extname(path).toLowerCase() === '.node') {
     throw new Error(`native extension is forbidden: ${path}`);
   }
 
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const handle = await openVerifiedRegularFile(path, initialStatus);
   try {
-    const status = await handle.stat();
-    if (!status.isFile()) {
-      throw new Error(`unsupported special filesystem entry: ${path}`);
-    }
     const prefix = Buffer.alloc(4);
     const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
     if (isForbiddenNativeMagic(prefix.subarray(0, bytesRead))) {
@@ -102,7 +126,7 @@ async function inspectDirectory(root) {
       continue;
     }
     if (status.isFile()) {
-      await inspectRegularFile(path);
+      await inspectRegularFile(path, status);
       continue;
     }
     throw new Error(`unsupported special filesystem entry: ${path}`);
@@ -130,12 +154,8 @@ export async function verifyPackageDirectory(root) {
       throw new Error(`unsupported special filesystem entry: ${manifestPath}`);
     }
 
-    const handle = await open(manifestPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const handle = await openVerifiedRegularFile(manifestPath, manifestStatus);
     try {
-      const openedStatus = await handle.stat();
-      if (!openedStatus.isFile()) {
-        throw new Error(`unsupported special filesystem entry: ${manifestPath}`);
-      }
       manifest = JSON.parse(await handle.readFile('utf8'));
     } finally {
       await handle.close();

@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
@@ -20,7 +27,7 @@ const manifest = JSON.stringify({
   peerDependencies: {},
 });
 
-function tarHeader(name, size, type = '0', linkname = '') {
+function tarHeader(name, size, type = '0', linkname = '', options = {}) {
   const header = Buffer.alloc(512);
   header.write(name, 0, 100, 'utf8');
   header.write('0000644\0', 100, 8, 'ascii');
@@ -31,27 +38,47 @@ function tarHeader(name, size, type = '0', linkname = '') {
   header.fill(0x20, 148, 156);
   header.write(type, 156, 1, 'ascii');
   header.write(linkname, 157, 100, 'utf8');
-  header.write('ustar\0', 257, 6, 'ascii');
-  header.write('00', 263, 2, 'ascii');
+  header.write(options.magic ?? 'ustar\0', 257, 6, 'ascii');
+  header.write(options.version ?? '00', 263, 2, 'ascii');
   const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
   header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  if (options.badChecksum) header[0] ^= 1;
   return header;
 }
 
-function createTarball(entries) {
+function createTarball(entries, options = {}) {
   const fixture = mkdtempSync(join(tmpdir(), 'kuai-tarball-policy-'));
   const path = join(fixture, 'kuai-ai-cli-0.0.0-dev.tgz');
   const chunks = [];
 
   for (const entry of entries) {
     const body = Buffer.isBuffer(entry.body) ? entry.body : Buffer.from(entry.body ?? '');
-    chunks.push(tarHeader(entry.name, body.length, entry.type, entry.linkname));
+    const declaredSize = entry.size ?? body.length;
+    chunks.push(tarHeader(
+      entry.name,
+      declaredSize,
+      entry.type,
+      entry.linkname,
+      entry.headerOptions,
+    ));
     chunks.push(body);
-    chunks.push(Buffer.alloc((512 - (body.length % 512)) % 512));
+    if (!entry.omitPadding) {
+      chunks.push(Buffer.alloc((512 - (body.length % 512)) % 512));
+    }
   }
-  chunks.push(Buffer.alloc(1024));
+  chunks.push(Buffer.alloc(512 * (options.terminatorBlocks ?? 2)));
+  if (options.trailing) chunks.push(options.trailing);
   writeFileSync(path, gzipSync(Buffer.concat(chunks)));
   return { fixture, path };
+}
+
+async function verifyFixture(entries, options = {}, limits) {
+  const archive = createTarball(entries, options);
+  try {
+    await verifyTarball(archive.path, limits ? { limits } : undefined);
+  } finally {
+    rmSync(archive.fixture, { recursive: true, force: true });
+  }
 }
 
 async function withTarball(extraEntries, assertion, options = {}) {
@@ -70,11 +97,13 @@ async function withTarball(extraEntries, assertion, options = {}) {
   }
 }
 
-function runNpmPack(packageRoot, destination) {
-  const npmExecPath = process.env.npm_execpath;
+function runNpmPack(packageRoot, destination, options = {}) {
+  const npmExecPath = options.npmExecPath === undefined
+    ? process.env.npm_execpath
+    : options.npmExecPath;
   const npmCommand = npmExecPath
     ? process.execPath
-    : join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    : process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const npmArguments = npmExecPath ? [npmExecPath] : [];
   const result = spawnSync(
     npmCommand,
@@ -88,8 +117,11 @@ function runNpmPack(packageRoot, destination) {
       '--cache',
       join(destination, '.npm-cache'),
     ],
-    { cwd: packageRoot, encoding: 'utf8', shell: false },
+    { cwd: packageRoot, encoding: 'utf8', env: options.env, shell: false },
   );
+  if (result.error?.code === 'ENOENT') {
+    throw new Error('unable to execute npm from PATH');
+  }
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
@@ -97,6 +129,103 @@ function runNpmPack(packageRoot, destination) {
 test('accepts a minimal tarball containing only declared publish paths', async () => {
   await withTarball([{ name: 'package/dist/cli/main.js', body: 'export {};\n' }], verifyTarball);
 });
+
+test('rejects a symbolic link supplied as the tarball path', async () => {
+  const archive = createTarball([
+    { name: 'package/package.json', body: manifest },
+    { name: 'package/bin/kuai.js', body: 'safe' },
+  ]);
+  const link = join(archive.fixture, 'linked.tgz');
+  try {
+    writeFileSync(join(archive.fixture, 'placeholder'), '');
+    symlinkSync(archive.path, link);
+    await assert.rejects(verifyTarball(link), /symbolic link/i);
+  } finally {
+    rmSync(archive.fixture, { recursive: true, force: true });
+  }
+});
+
+test('rejects a FIFO supplied as the tarball path without blocking', { skip: process.platform === 'win32' }, () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'kuai-tarball-fifo-'));
+  const fifo = join(fixture, 'package.tgz');
+  try {
+    const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8', shell: false });
+    if (created.error?.code === 'ENOENT') return;
+    assert.equal(created.status, 0, created.stderr);
+    const result = spawnSync(process.execPath, [tarballCli, fifo], {
+      encoding: 'utf8',
+      shell: false,
+      timeout: 1_000,
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr ?? '', /regular file|special/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+for (const [label, limits] of [
+  ['compressed tarball size', { maxCompressedBytes: 1 }],
+  ['uncompressed tarball size', { maxUncompressedBytes: 512 }],
+  ['tar entry count', { maxEntries: 1 }],
+  ['regular tar entry size', { maxEntryBytes: 64 }],
+  ['packaged manifest size', { maxManifestBytes: 16 }],
+]) {
+  test(`enforces the ${label} limit`, async () => {
+    await withTarball(
+      [{ name: 'package/dist/payload.js', body: Buffer.alloc(128) }],
+      async (path) => assert.rejects(
+        verifyTarball(path, { limits }),
+        /limit|too large|exceeds/i,
+      ),
+    );
+  });
+}
+
+for (const [label, entries, options] of [
+  ['bad header checksum', [
+    { name: 'package/package.json', body: manifest, headerOptions: { badChecksum: true } },
+  ]],
+  ['invalid ustar magic', [
+    { name: 'package/package.json', body: manifest, headerOptions: { magic: 'notar\0' } },
+  ]],
+  ['invalid ustar version', [
+    { name: 'package/package.json', body: manifest, headerOptions: { version: '99' } },
+  ]],
+  ['missing end-of-archive blocks', [
+    { name: 'package/package.json', body: manifest },
+  ], { terminatorBlocks: 0 }],
+  ['a single end-of-archive block', [
+    { name: 'package/package.json', body: manifest },
+  ], { terminatorBlocks: 1 }],
+  ['non-zero trailing data', [
+    { name: 'package/package.json', body: manifest },
+  ], { trailing: Buffer.from([1]) }],
+  ['truncated entry padding', [
+    { name: 'package/package.json', body: manifest, omitPadding: true },
+  ], { terminatorBlocks: 0 }],
+  ['a directory with a non-zero size', [
+    { name: 'package/package.json', body: manifest },
+    { name: 'package/dist/', type: '5', body: 'x' },
+  ]],
+]) {
+  test(`rejects ${label}`, async () => {
+    await assert.rejects(
+      verifyFixture(entries, options),
+      /checksum|ustar|version|terminator|end-of-archive|trailing|padding|directory.*size/i,
+    );
+  });
+}
+
+for (const type of ['x', 'g', 'L', 'K']) {
+  test(`rejects unsupported tar metadata type ${type}`, async () => {
+    await withTarball(
+      [{ name: 'package/dist/metadata', type }],
+      async (path) => assert.rejects(verifyTarball(path), /unsupported special/i),
+    );
+  });
+}
 
 for (const name of [
   'package/src/index.ts',
@@ -127,6 +256,94 @@ test('rejects node_modules as a nested tarball path segment', async () => {
     [{ name: 'package/dist/node_modules/x.js', body: 'unexpected' }],
     async (path) => assert.rejects(verifyTarball(path), /node_modules|forbidden/i),
     { manifest: distOnlyManifest, includeBin: false },
+  );
+});
+
+function packageManifest(files) {
+  return JSON.stringify({
+    name: '@kuai-ai/fixture',
+    version: '0.0.0',
+    files,
+    dependencies: {},
+    optionalDependencies: {},
+    peerDependencies: {},
+  });
+}
+
+test('rejects backslashes in tarball entry paths', async () => {
+  await withTarball(
+    [{ name: 'package/dist/dir\\escape.js', body: 'unexpected' }],
+    async (path) => assert.rejects(verifyTarball(path), /backslash|invalid.*path/i),
+  );
+});
+
+test('rejects ASCII control characters in tarball entry paths', async () => {
+  await withTarball(
+    [{ name: 'package/dist/\x01escape.js', body: 'unexpected' }],
+    async (path) => assert.rejects(verifyTarball(path), /control|invalid.*path/i),
+  );
+});
+
+test('forbidden top-level tarball paths are case-insensitive', async () => {
+  await withTarball(
+    [{ name: 'package/SRC/index.js', body: 'unexpected' }],
+    async (path) => assert.rejects(verifyTarball(path), /forbidden.*path/i),
+    { manifest: packageManifest(['SRC']), includeBin: false },
+  );
+});
+
+test('rejects case-insensitive tarball path collisions', async () => {
+  await withTarball(
+    [
+      { name: 'package/dist/A.js', body: 'one' },
+      { name: 'package/dist/a.js', body: 'two' },
+    ],
+    async (path) => assert.rejects(verifyTarball(path), /duplicate|collision/i),
+  );
+});
+
+test('rejects file and directory entries with the same canonical path', async () => {
+  await withTarball(
+    [
+      { name: 'package/dist/a', body: 'file' },
+      { name: 'package/dist/a/', type: '5' },
+    ],
+    async (path) => assert.rejects(verifyTarball(path), /duplicate|conflict/i),
+  );
+});
+
+test('rejects a regular file used as an ancestor path', async () => {
+  await withTarball(
+    [
+      { name: 'package/dist/a', body: 'file' },
+      { name: 'package/dist/a/child.js', body: 'child' },
+    ],
+    async (path) => assert.rejects(verifyTarball(path), /ancestor|conflict/i),
+  );
+});
+
+test('accepts a directory used as an ancestor path', async () => {
+  await withTarball([
+    { name: 'package/dist/a/', type: '5' },
+    { name: 'package/dist/a/child.js', body: 'child' },
+  ], verifyTarball);
+});
+
+for (const invalidPath of ['dist\\escape', 'dist/\x01escape']) {
+  test(`rejects invalid package.json files path ${JSON.stringify(invalidPath)}`, async () => {
+    await withTarball(
+      [],
+      async (path) => assert.rejects(verifyTarball(path), /backslash|control|invalid.*path/i),
+      { manifest: packageManifest([invalidPath]), includeBin: false },
+    );
+  });
+}
+
+test('rejects case-insensitive package.json files collisions', async () => {
+  await withTarball(
+    [],
+    async (path) => assert.rejects(verifyTarball(path), /duplicate|collision/i),
+    { manifest: packageManifest(['dist', 'DIST']), includeBin: false },
   );
 });
 
@@ -221,6 +438,23 @@ test('npm pack does not execute package lifecycle scripts', () => {
   try {
     runNpmPack(fixture, destination);
     assert.equal(existsSync(marker), false, 'prepack lifecycle must not execute');
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('npm pack fallback reports when npm is unavailable on PATH', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'kuai-pack-no-npm-'));
+  const destination = join(fixture, 'packed');
+  mkdirSync(destination);
+  try {
+    assert.throws(
+      () => runNpmPack(fixture, destination, {
+        env: { ...process.env, PATH: '' },
+        npmExecPath: null,
+      }),
+      /unable to execute npm from PATH/,
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
