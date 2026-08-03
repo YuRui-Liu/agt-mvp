@@ -60,3 +60,9 @@ Error: SQLite Worker did not terminate within two seconds
 3. 研究带签名的最小本地安全代理，但这将不再是“纯 JavaScript 免签”方案。
 
 不删除失败测试，不通过增加无界等待、放宽两秒合同或引入未审核原生 npm 扩展将裁决改成 `GO`。
+
+## 后续用户决策
+
+2026-08-03，用户明确批准降低本地会话扫描的威胁模型：不防御同一用户权限下恶意进程精确制造的路径替换竞态，但仍要求只读、非管理员运行、路径和资源边界、本地脱敏与用户授权上传。
+
+用户同时批准保留 SQLite 数据源，并选择通过 `process.execPath` 启动独立 Node 子进程、直接只读扫描原数据库。子进程的硬超时解决本报告中 Worker 无法终止的产品可用性问题，但不改变强对抗模型的历史 `NO-GO` 结论。新的实现边界见 [本地会话扫描与 SQLite 子进程设计](../specs/2026-08-03-kuai-pure-javascript-local-session-scan-design.md)。

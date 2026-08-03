@@ -2,7 +2,7 @@
 
 ## 1. 决策摘要
 
-> **2026-08-03 状态：已被安全可行性门禁阻止。** [可行性报告](../reports/2026-08-03-kuai-pure-javascript-feasibility.md) 的固定裁决为 `Decision: NO-GO`。下文作为条件性设计保留，不再授权开始纯 JavaScript 全量迁移；只有保留签名 Go 安全核心，或由用户另行批准降低威胁模型，才能继续。
+> **2026-08-03 状态：已批准调整威胁模型并继续。** [可行性报告](../reports/2026-08-03-kuai-pure-javascript-feasibility.md) 的 `Decision: NO-GO` 仅对“完整保持 Go 强对抗安全边界”有效。用户已明确接受不防御同权限恶意进程的精确路径竞态，并批准使用独立 Node 子进程执行 SQLite 只读扫描。后续安全与 SQLite 合同以 [本地会话扫描设计](2026-08-03-kuai-pure-javascript-local-session-scan-design.md) 为准。
 
 kuAI 将从随包分发 Go 原生二进制，迁移为由 Node.js 24 或更高版本直接执行的纯 JavaScript npm CLI。公开安装渠道为公共 npm registry；GitHub 保存源码、受保护 tag 和 GitHub Actions 发布流水线，并通过 npm OIDC Trusted Publishing 发布带 provenance 的包。
 
