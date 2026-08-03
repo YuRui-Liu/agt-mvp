@@ -256,9 +256,9 @@ tag 提取出的 SemVer 同时写入 npm manifest、CLI `version` 输出、Skill
 4. 将 tarball 条目与固定 allowlist 精确比较。
 5. 扫描 tarball 和完整生产依赖树，拒绝 Mach-O、PE、ELF、`.node`、额外可执行文件和 lifecycle script。
 6. 在三平台从 tarball 进行干净全局安装，运行 CLI 与 Skill smoke tests。
-7. 使用最小权限和 OIDC Trusted Publishing 发布到 `candidate` tag，并启用 provenance。
-8. 从公共 registry 安装 candidate，再次执行三平台 smoke tests。
-9. 只有 candidate gate 全部通过后才将同一不可变版本发布或提升为 `latest`。
+7. 将唯一的最终版本 tarball 作为 CI artifact，在 macOS、Windows、Linux 上直接从该 tarball 安装并执行 smoke tests。
+8. 只有 tarball gate 全通过后，publish job 才下载同一 artifact，使用最小权限和 OIDC Trusted Publishing 一次性发布为 `latest`，并启用 provenance。
+9. 发布后从公共 registry 安装该不可变版本做验收 smoke；验收失败时立即 deprecate 该版本并停止后续发布，不尝试重发同一版本。
 
 仓库和 CI 不保存长期 npm token。只有 publish job 获得 `id-token: write`；测试、构建和 smoke jobs 只有 `contents: read`。
 
@@ -284,8 +284,8 @@ tag 提取出的 SemVer 同时写入 npm manifest、CLI `version` 输出、Skill
 3. 迁移 filesystem、SQLite、Scope、redaction、export、service 和 web 基础模块。
 4. 按 source adapter 逐个完成 Go/JavaScript fixture parity。
 5. 完成 Skill 生命周期与 Agent 协议。
-6. 发布 npm candidate，并在真实目标系统执行安装与运行验证。
-7. 完成 `start`、`status`、上传授权和全部 ready source 后发布 `latest`。
+6. 对唯一最终 tarball 在真实目标系统执行安装与运行验证。
+7. 完成 `start`、`status`、上传授权和全部 ready source 后，通过 OIDC 将已验证的同一 tarball 直接发布为 `latest`。
 8. npm 渠道稳定后，将 Go 分发标记为 legacy；它不能成为 JavaScript CLI 的运行时回退。
 
 迁移期可以并存 Go 与 TypeScript 测试工程，但公开 npm tarball 始终只包含纯 JavaScript产物。
@@ -319,8 +319,8 @@ tag 提取出的 SemVer 同时写入 npm manifest、CLI `version` 输出、Skill
 
 - tarball 固定 allowlist。
 - tarball 和生产依赖树无 Mach-O、PE、ELF、`.node` 与 lifecycle scripts。
-- macOS、Windows、Linux 的 tarball 安装、registry candidate 安装和 `latest` 安装 smoke tests。
-- GitHub Actions 权限、OIDC、provenance、candidate gate 和发布顺序静态测试。
+- macOS、Windows、Linux 的最终 tarball 安装和发布后 `latest` 安装 smoke tests。
+- GitHub Actions 权限、OIDC、provenance、tarball gate 和一次性发布顺序静态测试。
 - README 中 Node、CLI、Skill、升级和卸载命令的自动验证。
 
 ## 12. 完成标准
@@ -331,7 +331,7 @@ tag 提取出的 SemVer 同时写入 npm manifest、CLI `version` 输出、Skill
 - 所有 ready source 通过 Go/JavaScript fixture parity。
 - Agent 能通过受管 Skill 调用全局 `kuai`。
 - npm 包和完整生产依赖树中不存在项目自带原生程序或安装后下载器。
-- 三平台 candidate 与 `latest` 安装 smoke tests 通过。
+- 三平台最终 tarball 安装 smoke tests 通过，并完成发布后 `latest` 验收。
 - README 提供经过验证的 Node.js 24、CLI 与 Skill 安装命令及准确安全边界。
 - 发布使用受保护 tag、最小权限 OIDC Trusted Publishing 和 provenance。
 
