@@ -19,7 +19,7 @@ import { verifyTarball } from '../scripts/verify-tarball.mjs';
 const cliRoot = fileURLToPath(new URL('..', import.meta.url));
 const tarballCli = fileURLToPath(new URL('../scripts/verify-tarball.mjs', import.meta.url));
 const manifest = JSON.stringify({
-  name: '@kuai-ai/cli',
+  name: '@yurui-liu/kuai-cli',
   version: '0.0.0-dev',
   files: ['bin', 'dist', 'skill', 'README.md', 'LICENSE'],
   dependencies: {},
@@ -48,7 +48,7 @@ function tarHeader(name, size, type = '0', linkname = '', options = {}) {
 
 function createTarball(entries, options = {}) {
   const fixture = mkdtempSync(join(tmpdir(), 'kuai-tarball-policy-'));
-  const path = join(fixture, 'kuai-ai-cli-0.0.0-dev.tgz');
+  const path = join(fixture, 'yurui-liu-kuai-cli-0.0.0-dev.tgz');
   const chunks = [];
 
   for (const entry of entries) {
@@ -408,7 +408,7 @@ test('audits the actual scoped package produced by npm pack --json', async () =>
   try {
     const output = runNpmPack(cliRoot, fixture);
     assert.equal(output.length, 1);
-    assert.equal(output[0].filename, 'kuai-ai-cli-0.0.0-dev.tgz');
+    assert.equal(output[0].filename, 'yurui-liu-kuai-cli-0.1.0-mvp.1.tgz');
     assert.ok(output[0].files.some((entry) => entry.path === 'package.json'));
     assert.ok(output[0].files.some((entry) => entry.path === 'bin/kuai.js'));
     assert.ok(output[0].files.some((entry) => entry.path === 'dist/cli/main.js'));

@@ -1,4 +1,4 @@
-const MINIMUM_NODE_MAJOR = 24;
+const MINIMUM_NODE_MAJOR = 18;
 
 export function parseNodeMajor(version) {
   const [major] = version.split('.', 1);

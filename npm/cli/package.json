@@ -1,7 +1,7 @@
 {
-  "name": "@kuai-ai/cli",
-  "version": "0.0.0-dev",
-  "description": "The Kuai command-line interface",
+  "name": "@yurui-liu/kuai-cli",
+  "version": "0.1.0-mvp.1",
+  "description": "The Kuai command-line interface (MVP)",
   "type": "module",
   "bin": {
     "kuai": "bin/kuai.js"
@@ -9,12 +9,10 @@
   "files": [
     "bin",
     "dist",
-    "skill",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -26,5 +24,13 @@
   "peerDependencies": {},
   "devDependencies": {
     "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YuRui-Liu/agt-mvp.git"
   }
 }

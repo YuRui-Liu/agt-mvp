@@ -3,7 +3,7 @@
 import { isSupportedNodeVersion } from './node-version.js';
 
 if (!isSupportedNodeVersion(process.versions.node)) {
-  console.error('Node.js 24 or newer is required');
+  console.error('Node.js 18 or newer is required');
   process.exitCode = 1;
 } else {
   const { main } = await import('../dist/cli/main.js');

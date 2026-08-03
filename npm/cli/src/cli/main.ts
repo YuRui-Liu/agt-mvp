@@ -3,7 +3,7 @@ export interface CliIO {
   stderr(message: string): void;
 }
 
-export const VERSION = '0.0.0-dev';
+export const VERSION = '0.1.0-mvp.1';
 
 const HELP = `Usage: kuai <command>
 

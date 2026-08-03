@@ -41,7 +41,7 @@ function writeManifest(root, manifest) {
   writeFileSync(join(root, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-test('the normal @kuai-ai/cli directory passes package policy', async () => {
+test('the normal @yurui-liu/kuai-cli directory passes package policy', async () => {
   await verifyPackageDirectory(cliRoot);
 });
 
