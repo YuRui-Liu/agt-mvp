@@ -12,7 +12,6 @@ const forbiddenTopLevel = new Set([
   'tests',
   'tsconfig.json',
   'scripts',
-  'node_modules',
 ]);
 const automaticMetadata = [
   /^package\.json$/i,
@@ -94,6 +93,9 @@ function isDeclaredPath(relative, declaredPaths) {
 }
 
 function verifyAllowedPath(relative, declaredPaths) {
+  if (relative.split('/').some((segment) => segment.toLowerCase() === 'node_modules')) {
+    throw new Error(`forbidden node_modules path segment: ${relative}`);
+  }
   const topLevel = relative.split('/')[0];
   if (forbiddenTopLevel.has(topLevel)) {
     throw new Error(`forbidden tarball path: ${relative}`);
@@ -120,6 +122,9 @@ function declaredPublishPaths(manifest) {
     }
     if (forbiddenTopLevel.has(normalized.split('/')[0])) {
       throw new Error(`package.json files declares a forbidden path: ${value}`);
+    }
+    if (normalized.split('/').some((segment) => segment.toLowerCase() === 'node_modules')) {
+      throw new Error(`package.json files declares a forbidden node_modules path: ${value}`);
     }
     return normalized;
   });

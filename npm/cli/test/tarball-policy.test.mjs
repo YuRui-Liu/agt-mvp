@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,10 +54,13 @@ function createTarball(entries) {
   return { fixture, path };
 }
 
-async function withTarball(extraEntries, assertion) {
+async function withTarball(extraEntries, assertion, options = {}) {
+  const packagedManifest = options.manifest ?? manifest;
   const archive = createTarball([
-    { name: 'package/package.json', body: manifest },
-    { name: 'package/bin/kuai.js', body: '#!/usr/bin/env node\n' },
+    { name: 'package/package.json', body: packagedManifest },
+    ...(options.includeBin === false
+      ? []
+      : [{ name: 'package/bin/kuai.js', body: '#!/usr/bin/env node\n' }]),
     ...extraEntries,
   ]);
   try {
@@ -65,6 +68,30 @@ async function withTarball(extraEntries, assertion) {
   } finally {
     rmSync(archive.fixture, { recursive: true, force: true });
   }
+}
+
+function runNpmPack(packageRoot, destination) {
+  const npmExecPath = process.env.npm_execpath;
+  const npmCommand = npmExecPath
+    ? process.execPath
+    : join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+  const npmArguments = npmExecPath ? [npmExecPath] : [];
+  const result = spawnSync(
+    npmCommand,
+    [
+      ...npmArguments,
+      'pack',
+      '--json',
+      '--ignore-scripts',
+      '--pack-destination',
+      destination,
+      '--cache',
+      join(destination, '.npm-cache'),
+    ],
+    { cwd: packageRoot, encoding: 'utf8', shell: false },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
 }
 
 test('accepts a minimal tarball containing only declared publish paths', async () => {
@@ -86,6 +113,22 @@ for (const name of [
     );
   });
 }
+
+test('rejects node_modules as a nested tarball path segment', async () => {
+  const distOnlyManifest = JSON.stringify({
+    name: '@kuai-ai/fixture',
+    version: '0.0.0',
+    files: ['dist'],
+    dependencies: {},
+    optionalDependencies: {},
+    peerDependencies: {},
+  });
+  await withTarball(
+    [{ name: 'package/dist/node_modules/x.js', body: 'unexpected' }],
+    async (path) => assert.rejects(verifyTarball(path), /node_modules|forbidden/i),
+    { manifest: distOnlyManifest, includeBin: false },
+  );
+});
 
 test('rejects a tarball path outside the package prefix', async () => {
   await withTarball(
@@ -146,32 +189,38 @@ for (const [label, hex] of nativeMagic) {
 test('audits the actual scoped package produced by npm pack --json', async () => {
   const fixture = mkdtempSync(join(tmpdir(), 'kuai-real-pack-'));
   try {
-    const npmExecPath = process.env.npm_execpath;
-    const npmCommand = npmExecPath
-      ? process.execPath
-      : join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
-    const npmArguments = npmExecPath ? [npmExecPath] : [];
-    const result = spawnSync(
-      npmCommand,
-      [
-        ...npmArguments,
-        'pack',
-        '--json',
-        '--pack-destination',
-        fixture,
-        '--cache',
-        join(fixture, '.npm-cache'),
-      ],
-      { cwd: cliRoot, encoding: 'utf8', shell: false },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    const output = JSON.parse(result.stdout);
+    const output = runNpmPack(cliRoot, fixture);
     assert.equal(output.length, 1);
     assert.equal(output[0].filename, 'kuai-ai-cli-0.0.0-dev.tgz');
     assert.ok(output[0].files.some((entry) => entry.path === 'package.json'));
     assert.ok(output[0].files.some((entry) => entry.path === 'bin/kuai.js'));
     assert.ok(output[0].files.some((entry) => entry.path === 'dist/cli/main.js'));
     await verifyTarball(join(fixture, output[0].filename));
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('npm pack does not execute package lifecycle scripts', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'kuai-pack-lifecycle-'));
+  const destination = join(fixture, 'packed');
+  const marker = join(fixture, 'prepack.marker');
+  mkdirSync(destination);
+  writeFileSync(join(fixture, 'index.js'), 'export {};\n');
+  writeFileSync(
+    join(fixture, 'write-marker.cjs'),
+    "require('node:fs').writeFileSync('prepack.marker', 'executed');\n",
+  );
+  writeFileSync(join(fixture, 'package.json'), `${JSON.stringify({
+    name: 'kuai-pack-lifecycle-fixture',
+    version: '0.0.0',
+    files: ['index.js'],
+    scripts: { prepack: 'node write-marker.cjs' },
+  }, null, 2)}\n`);
+
+  try {
+    runNpmPack(fixture, destination);
+    assert.equal(existsSync(marker), false, 'prepack lifecycle must not execute');
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
