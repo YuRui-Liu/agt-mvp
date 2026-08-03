@@ -1,0 +1,50 @@
+name: Publish @yurui-liu/kuai-cli to GitHub Packages
+
+on:
+  push:
+    branches:
+      - kuai-node
+    paths:
+      - 'npm/cli/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dev dependencies
+        working-directory: npm/cli
+        run: npm ci
+      - name: Build and test
+        working-directory: npm/cli
+        run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: '@yurui-liu'
+      - name: Install dev dependencies
+        working-directory: npm/cli
+        run: npm ci
+      - name: Build
+        working-directory: npm/cli
+        run: npm run build
+      - name: Publish to GitHub Packages
+        working-directory: npm/cli
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
